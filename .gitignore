@@ -1,1 +1,9 @@
 target/
+
+# Mac and backups files
+*~
+.DS_Store
+
+# IntelliJ Specific
+*.iml
+.idea/
