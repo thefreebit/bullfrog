@@ -21,7 +21,7 @@ glowroot.controller('ReportCtrl', [
   '$location',
   function ($scope, $location) {
     // \u00b7 is &middot;
-    document.title = 'Reports \u00b7 Glowroot';
+    document.title = 'Reports \u00b7 BullFrog';
     $scope.$parent.activeNavbarItem = 'report';
 
     $scope.currentUrl = function () {

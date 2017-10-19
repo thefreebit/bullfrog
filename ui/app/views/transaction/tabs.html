@@ -37,7 +37,7 @@
        ng-keydown="keydownTab('tab_traces', 'tab_services', $event)"
        ng-if="agentRollup.permissions.transaction.queries"
        id="tab_queries">
-      Queries
+      DB Queries
     </a>
   </li>
   <li role="presentation" ng-class="{active: activeTabItem === 'service-calls'}">
@@ -46,7 +46,7 @@
        ng-keydown="keydownTab('tab_queries', 'tab_profile', $event)"
        ng-if="agentRollup.permissions.transaction.serviceCalls"
        id="tab_services">
-      Service calls
+      HTTP calls
     </a>
   </li>
   <li role="presentation" ng-class="{active: activeTabItem === 'profile'}">

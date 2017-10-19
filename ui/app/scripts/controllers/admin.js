@@ -21,7 +21,7 @@ glowroot.controller('AdminCtrl', [
   '$location',
   function ($scope, $location) {
     // \u00b7 is &middot;
-    document.title = 'Administration \u00b7 Glowroot';
+    document.title = 'Administration \u00b7 BullFrog';
     $scope.$parent.activeNavbarItem = 'gears';
 
     $scope.isAnonymous = function () {

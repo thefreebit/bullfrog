@@ -20,7 +20,7 @@
   <!-- intentionally not using <meta http-equiv="X-UA-Compatible" content="IE=edge">
        and instead sending http response header X-UA-Compatible: IE=edge
        see https://github.com/h5bp/html5-boilerplate/blob/master/src/doc/html.md#x-ua-compatible -->
-  <title>Glowroot</title>
+  <title>BullFrog</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
   <!-- this base href tag is replaced with server-side dynamic base href tag plus layout json object
@@ -111,7 +111,7 @@
         <span class="icon-bar"></span>
       </button>
       <div class="navbar-brand">
-        Glowroot
+        BullFrog
       </div>
     </div>
     <div class="ng-cloak"
@@ -240,15 +240,11 @@
     {{navbarErrorMessage}}
   </div>
   <div ui-view></div>
-  <!-- modals need to be outside other content so that aria-hidden="true" can be applied to all other content when a
-   modal is visible (see modals.js), but modals still need to be inside of the "main" region -->
-  <div id="modalContent"></div>
-</main>
-<footer class="ng-cloak"
-        role="contentinfo"
-        id="footer">
-  Glowroot version {{layout.glowrootVersion}}
-</footer>
+  <div id="push"></div>
+</div>
+<div class="ng-cloak" id="footer">
+  BullFrog: Powered by <a href="https://glowroot.org/">Glowroot</a> - Glowroot version {{layout.glowrootVersion}}
+</div>
 
 <!-- build:js({.tmp,.}) scripts/vendor.js -->
 <script src="bower_components/jquery/dist/jquery.js"></script>

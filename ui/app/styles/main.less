@@ -163,6 +163,7 @@ body {
   // contracted down to a single screen, e.g. when showing or hiding content
   overflow-y: scroll;
   font-family: 'Open Sans', sans-serif;
+  background-color: @gt-bagkround-color;
 }
 
 .gt-header {
@@ -209,7 +210,7 @@ body {
 }
 
 .gt-header-page-name li a:hover, ul.nav li.dropdown > ul.dropdown-menu > li a:hover {
-  background-color: #edeae4;
+  background-color: #fff;
 }
 
 .gt-header-page-name li button:hover {
@@ -232,13 +233,14 @@ body {
   cursor: pointer;
   display: inline-block;
   padding: 3px 30px 4px 20px;
-  background: #edeae4;
+  background: #fff;
   border-radius: 8px;
   color: inherit;
 }
 
-.gt-header-page-name .dropdown-toggle:hover {
-  background-color: darken(#edeae4, 5%);
+.gt-header-page-name .dropdown-toggle:hover,
+.gt-header-page-name .dropdown-toggle:focus {
+  background-color: darken(#fff, 5%);
   text-decoration: none;
 }
 

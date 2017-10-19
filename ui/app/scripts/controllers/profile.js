@@ -20,7 +20,7 @@ glowroot.controller('ProfileCtrl', [
   '$scope',
   function ($scope) {
     // \u00b7 is &middot;
-    document.title = 'Profile \u00b7 Glowroot';
+    document.title = 'Profile \u00b7 BullFrog';
     $scope.$parent.activeNavbarItem = 'gears';
   }
 ]);

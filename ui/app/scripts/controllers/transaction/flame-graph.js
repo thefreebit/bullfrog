@@ -24,7 +24,7 @@ glowroot.controller('TransactionFlameGraphCtrl', [
   'queryStrings',
   function ($scope, $location, $http, httpErrors, queryStrings) {
     // \u00b7 is &middot;
-    document.title = 'Transactions \u00b7 Glowroot';
+    document.title = 'Transactions \u00b7 BullFrog';
     $scope.$parent.activeNavbarItem = 'transaction';
 
     $scope.transactionType = $location.search()['transaction-type'];

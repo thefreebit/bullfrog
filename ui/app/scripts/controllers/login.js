@@ -26,7 +26,7 @@ glowroot.controller('LoginCtrl', [
   'httpErrors',
   function ($scope, $http, $rootScope, $location, $timeout, login, httpErrors) {
     // \u00b7 is &middot;
-    document.title = 'Login \u00b7 Glowroot';
+    document.title = 'Login \u00b7 BullFrog';
     $scope.$parent.activeNavbarItem = 'login';
 
     // initialize page binding object

@@ -24,7 +24,7 @@ glowroot.controller('JvmCtrl', [
   'queryStrings',
   function ($scope, $location, $http, $timeout, queryStrings) {
     // \u00b7 is &middot;
-    document.title = 'JVM \u00b7 Glowroot';
+    document.title = 'JVM \u00b7 BullFrog';
     $scope.$parent.activeNavbarItem = 'jvm';
 
     $scope.range = {};
