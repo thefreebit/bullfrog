@@ -13,6 +13,14 @@
   See the License for the specific language governing permissions and
   limitations under the License.
 -->
+<ul class="nav nav-tabs" ng-if="!layout.central || agentRollupId">
+<li ng-repeat="tt in layout.agentRollups[agentRollupId].transactionTypes"
+    ng-class="{active: tt === transactionType}" role="presentation">
+  <a ng-href="{{currentTabUrl()}}{{headerQueryString(layout.agentRollups[agentRollupId], tt)}}">
+    {{tt}}
+  </a>
+</li>
+</ul>
 <div class="gt-header clearfix"
      style="padding-bottom: 46px;">
   <div class="gt-header-page-name pull-left">
@@ -39,43 +47,6 @@
             {{agentRollup.indentedDisplay}}
           </option>
         </select>
-      </span>
-      <span ng-if="!layout.central || agentRollupId">
-        <!-- don't use border to simulate vertical bar since this will jitter on reload (at least in Chrome)
-             while chrome guesses the placement of the border based on default font and then it moves slightly
-             once font is available -->
-        <span class="gt-inline-block gt-separator">
-          |
-        </span>
-        <span class="gt-inline-block"
-              ng-show="hideTransactionTypeDropdown()">
-          {{transactionType}}
-        </span>
-        <span class="gt-inline-block gt-header-menu"
-              ng-hide="hideTransactionTypeDropdown()"
-              style="margin: 20px 0 8px;">
-          <span class="dropdown">
-            <button type="button"
-                    class="btn dropdown-toggle btn-flat"
-                    data-toggle="dropdown"
-                    role="button"
-                    style="padding-right: 16px;">
-              {{transactionType || '&lt;transaction type&gt;'}}
-              <span class="bs-caret"><span class="caret" style="margin-top: -2px; margin-left: 2px;"></span></span>
-            </button>
-            <ul class="dropdown-menu"
-                role="menu">
-              <li ng-repeat="tt in layout.agentRollups[agentRollupId].transactionTypes"
-                  ng-hide="tt === transactionType">
-                <a role="menuitem"
-                   tabindex="-1"
-                   ng-href="{{currentTabUrl()}}{{headerQueryString(layout.agentRollups[agentRollupId], tt)}}">
-                  {{tt}}
-                </a>
-              </li>
-            </ul>
-          </span>
-        </span>
       </span>
     </div>
   </div>

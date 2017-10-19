@@ -28,7 +28,7 @@ glowroot.controller('TransactionCtrl', [
   function ($scope, $location, $timeout, queryStrings, charts, headerDisplay, shortName, defaultSummarySortOrder) {
 
     // \u00b7 is &middot;
-    document.title = headerDisplay + ' \u00b7 Glowroot';
+    document.title = headerDisplay + ' \u00b7 BullFrog';
     $scope.$parent.activeNavbarItem = shortName;
 
     if ($scope.layout.central) {

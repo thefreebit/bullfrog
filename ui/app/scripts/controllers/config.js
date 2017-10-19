@@ -23,7 +23,7 @@ glowroot.controller('ConfigCtrl', [
   'queryStrings',
   function ($scope, $location, $timeout, queryStrings) {
     // \u00b7 is &middot;
-    document.title = 'Configuration \u00b7 Glowroot';
+    document.title = 'Configuration \u00b7 BullFrog';
     $scope.$parent.activeNavbarItem = 'gears';
 
     $scope.hideAgentRollupDropdown = function () {
