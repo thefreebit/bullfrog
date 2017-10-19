@@ -15,31 +15,25 @@
  */
 package org.glowroot.agent.config;
 
-import java.io.File;
-import java.io.IOException;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-
-import javax.annotation.Nullable;
-
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.collect.Ordering;
-import com.google.common.collect.Sets;
-import org.immutables.value.Value;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import com.google.common.collect.*;
 import org.glowroot.agent.config.PropertyValue.PropertyType;
 import org.glowroot.agent.plugin.api.config.ConfigListener;
 import org.glowroot.agent.util.JavaVersion;
 import org.glowroot.common.util.ObjectMappers;
 import org.glowroot.common.util.OnlyUsedByTests;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig;
+import org.immutables.value.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
+import java.io.File;
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 public class ConfigService {
 
@@ -403,6 +397,8 @@ public class ConfigService {
                     .addMbeanAttributes(ImmutableMBeanAttribute.of("SystemCpuLoad", false));
         }
         defaultGaugeConfigs.add(operatingSystemMBean.build());
+        // Add Artifactory default gauges
+        defaultGaugeConfigs.addAll((new ArtifactoryGaugeConfig()).getDefaultGaugeConfigs());
         return ImmutableList.copyOf(defaultGaugeConfigs);
     }
 
