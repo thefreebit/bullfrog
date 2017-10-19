@@ -15,15 +15,6 @@
  */
 package org.glowroot.tests;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.PrintWriter;
-import java.net.ServerSocket;
-import java.net.URL;
-import java.security.SecureRandom;
-import java.util.Properties;
-
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.Session;
 import com.google.common.base.Charsets;
@@ -39,6 +30,11 @@ import com.saucelabs.common.SauceOnDemandAuthentication;
 import com.saucelabs.common.SauceOnDemandSessionIdProvider;
 import com.saucelabs.junit.SauceOnDemandTestWatcher;
 import kr.motd.maven.os.Detector;
+import org.glowroot.agent.it.harness.Container;
+import org.glowroot.agent.it.harness.Containers;
+import org.glowroot.agent.it.harness.impl.JavaagentContainer;
+import org.glowroot.agent.it.harness.impl.LocalContainer;
+import org.glowroot.central.CentralModule;
 import org.junit.rules.TestWatcher;
 import org.openqa.selenium.Dimension;
 import org.openqa.selenium.WebDriver;
@@ -51,11 +47,14 @@ import org.rauschig.jarchivelib.CompressionType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.glowroot.agent.it.harness.Container;
-import org.glowroot.agent.it.harness.Containers;
-import org.glowroot.agent.it.harness.impl.JavaagentContainer;
-import org.glowroot.agent.it.harness.impl.LocalContainer;
-import org.glowroot.central.CentralModule;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PrintWriter;
+import java.net.ServerSocket;
+import java.net.URL;
+import java.security.SecureRandom;
+import java.util.Properties;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 
@@ -227,9 +226,9 @@ public class WebDriverSetup {
         Files.asCharSink(adminFile, Charsets.UTF_8).write("{\"web\":{\"port\":" + uiPort + "}}");
         Container container;
         if (Containers.useJavaagent()) {
-            container = new JavaagentContainer(testDir, true, ImmutableList.of());
+            container = new JavaagentContainer(testDir, true, ImmutableList.<String>of());
         } else {
-            container = new LocalContainer(testDir, true, ImmutableMap.of());
+            container = new LocalContainer(testDir, true, ImmutableMap.<String, String>of());
         }
         // wait for UI to be available (UI starts asynchronously in order to not block startup)
         AsyncHttpClient asyncHttpClient = new AsyncHttpClient();
