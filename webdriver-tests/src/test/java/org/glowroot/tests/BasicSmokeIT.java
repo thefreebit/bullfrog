@@ -30,21 +30,17 @@ import com.google.common.base.Stopwatch;
 import com.google.common.collect.Sets;
 import com.machinepublishers.jbrowserdriver.JBrowserDriver;
 import io.netty.handler.codec.http.QueryStringDecoder;
+import org.glowroot.tests.jvm.JvmSidebar;
+import org.glowroot.tests.util.Utils;
 import org.junit.AfterClass;
 import org.junit.Assume;
 import org.junit.BeforeClass;
 import org.junit.Test;
-import org.openqa.selenium.By;
-import org.openqa.selenium.JavascriptExecutor;
-import org.openqa.selenium.Keys;
-import org.openqa.selenium.StaleElementReferenceException;
-import org.openqa.selenium.WebElement;
+import org.openqa.selenium.*;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
 
-import org.glowroot.tests.jvm.JvmSidebar;
 import org.glowroot.tests.reporting.AdhocPage;
-import org.glowroot.tests.util.Utils;
 
 import static java.util.concurrent.TimeUnit.HOURS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -288,6 +284,7 @@ public class BasicSmokeIT extends WebDriverIT {
         Utils.withWait(driver, By.xpath("//button[normalize-space()='Force GC']")).click();
 
         jvmSidebar.getMBeanTreeLink().click();
+        Utils.withWait(driver, By.xpath("//button[@gt-label='Expand']")).click();
         List<WebElement> elements = new WebDriverWait(driver, 30).until(ExpectedConditions
                 .visibilityOfAllElementsLocatedBy(By.className("gt-mbean-unexpanded-content")));
         for (WebElement element : elements) {

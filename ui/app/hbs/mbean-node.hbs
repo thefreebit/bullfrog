@@ -1,6 +1,6 @@
 {{#if objectName}}
   <div data-object-name="{{objectName}}"
-       style="margin-left: {{mbeanNodeIndentPx .}}px;">
+       style="margin-left: {{mbeanNodeIndentPx .}}px;" ng-show='expanded[{{parentId}}]'>
     {{#if expanded}}
       {{> mbeanNodeExpanded}}
     {{^}}
@@ -8,7 +8,15 @@
     {{/if}}
   </div>
 {{^}}
-  <div style="margin-left: {{mbeanNodeIndentPx .}}px;">
-    {{nodeName}}
+  <div style="margin-left: {{mbeanNodeIndentPx .}}px;"
+    {{#if isRoot}}
+      >
+      <a ng-click='expanded[{{parentId}}] = !expanded[{{parentId}}]' class='gt-root-link'>{{nodeName}}
+        <i class="fa fa-minus-circle" aria-hidden="true" ng-show='expanded[{{parentId}}]'></i>
+        <i class="fa fa-plus-circle" aria-hidden="true" ng-show='!expanded[{{parentId}}]'></i></a>
+    {{^}}
+      ng-show='expanded[{{parentId}}]'>
+      {{nodeName}}
+    {{/if}}
   </div>
 {{/if}}
