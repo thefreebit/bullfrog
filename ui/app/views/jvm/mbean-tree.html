@@ -20,6 +20,10 @@
 </div>
 <!-- need ng-show instead of ng-if here so #mbeanTree can be populated during loading -->
 <div ng-show="loaded && !agentNotConnected">
+  <div class="btn-group btn-group-lg" role="group">
+    <button type="button" class="btn btn-default" ng-click="setAllExpanded(true)" gt-label="Expand">Expand All</button>
+    <button type="button" class="btn btn-default" ng-click="setAllExpanded(false)">Collapse All</button>
+  </div>
   <div gt-button
        gt-label="Refresh"
        gt-click="refresh(deferred)"

@@ -15,13 +15,6 @@
  */
 package org.glowroot.tests;
 
-import java.io.File;
-import java.io.IOException;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.Executors;
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -32,19 +25,21 @@ import com.ning.http.client.AsyncHttpClient;
 import com.ning.http.client.Request;
 import com.ning.http.client.Response;
 import io.netty.handler.codec.http.QueryStringDecoder;
+import org.glowroot.tests.jvm.JvmSidebar;
+import org.glowroot.tests.util.Utils;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
-import org.openqa.selenium.By;
-import org.openqa.selenium.JavascriptExecutor;
-import org.openqa.selenium.Keys;
-import org.openqa.selenium.StaleElementReferenceException;
-import org.openqa.selenium.WebElement;
+import org.openqa.selenium.*;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
 
-import org.glowroot.tests.jvm.JvmSidebar;
-import org.glowroot.tests.util.Utils;
+import java.io.File;
+import java.io.IOException;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
 
 import static java.util.concurrent.TimeUnit.HOURS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -303,6 +298,7 @@ public class BasicSmokeIT extends WebDriverIT {
         jvmSidebar.getHeapHistogramLink().click();
 
         jvmSidebar.getMBeanTreeLink().click();
+        Utils.withWait(driver, By.xpath("//button[@gt-label='Expand']")).click();
         List<WebElement> elements = new WebDriverWait(driver, 30).until(ExpectedConditions
                 .visibilityOfAllElementsLocatedBy(By.className("gt-mbean-unexpanded-content")));
         for (WebElement element : elements) {

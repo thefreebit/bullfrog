@@ -18,13 +18,16 @@
 
 glowroot.controller('JvmMBeanTreeCtrl', [
   '$scope',
+  '$compile',
   '$location',
   '$http',
   'httpErrors',
   'queryStrings',
-  function ($scope, $location, $http, httpErrors, queryStrings) {
+  function ($scope, $compile, $location, $http, httpErrors, queryStrings) {
 
     $scope.$parent.heading = 'MBean tree';
+    $scope.expanded = [];       // A true/false list of expanded root nodes
+
 
     if ($scope.hideMainContent()) {
       return;
@@ -72,21 +75,37 @@ glowroot.controller('JvmMBeanTreeCtrl', [
       $location.search(query).replace();
     }
 
-    function renderNext(mbeanNodes, start) {
+    function renderNext(mbeanNodes, start, lastParent) {
       // large numbers of mbean nodes (e.g. 20,000) render much faster when grouped into sub-divs
       var batchSize = 500;
       var i;
       var html = '';
+      if (lastParent === undefined || lastParent === null) {
+          lastParent = 0;
+      }
+
       for (i = start; i < Math.min(start + batchSize, mbeanNodes.length); i++) {
+        if (mbeanNodes[i].depth === 0) {
+            mbeanNodes[i].isRoot = true;
+            lastParent++;
+            $scope.expanded[lastParent] = false;
+        }
+        mbeanNodes[i].parentId = lastParent;
         html += JST['mbean-node'](mbeanNodes[i]);
       }
       $('#mbeanTree').append(html);
       if (start + 100 < mbeanNodes.length) {
         setTimeout(function () {
-          renderNext(mbeanNodes, start + batchSize);
+          renderNext(mbeanNodes, start + batchSize, lastParent);
         }, 10);
       }
     }
+
+    $scope.setAllExpanded = function(val) {
+      for (var i = 1; i < $scope.expanded.length; ++i) {
+        $scope.expanded[i] = val;
+      }
+    };
 
     $scope.refresh = function (deferred) {
       var queryData = {
@@ -115,10 +134,12 @@ glowroot.controller('JvmMBeanTreeCtrl', [
             }
             recurse(response.data, 0);
             $('#mbeanTree').empty();
+            $scope.expanded = [];
             renderNext(flattened, 0);
             if (deferred) {
               deferred.resolve('Refreshed');
             }
+            $compile($('#mbeanTree').contents())($scope);
           }, function (response) {
             httpErrors.handle(response, $scope, deferred);
           });
@@ -184,6 +205,7 @@ glowroot.controller('JvmMBeanTreeCtrl', [
             }
             node.attributeMap = response.data;
             $parent.html(JST['mbean-node-expanded'](node));
+            $compile($parent.contents())($scope);
           }, function (response) {
             spinner.stop();
             httpErrors.handle(response, $scope);
