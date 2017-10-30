@@ -367,7 +367,7 @@ public class MainEntryPoint {
 
     private static void addProperties(File dir, Map<String, String> properties)
             throws IOException {
-        File propFile = new File(dir, "glowroot.properties");
+        File propFile = new File(dir, "bullfrog.properties");
         if (!propFile.exists()) {
             return;
         }

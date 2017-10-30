@@ -50,8 +50,8 @@ public class Directories {
     public Directories(@Nullable File glowrootJarFile) throws IOException {
         glowrootDir = getGlowrootDir(glowrootJarFile);
 
-        // check for glowroot.properties file in glowrootDir
-        File propFile = new File(glowrootDir, "glowroot.properties");
+        // check for bullfrog.properties file in glowrootDir
+        File propFile = new File(glowrootDir, "bullfrog.properties");
         props = new Properties();
         if (propFile.exists()) {
             InputStream in = new FileInputStream(propFile);

@@ -145,7 +145,8 @@ public class CentralModule {
                     extra = ", this can be changed by adding the JVM arg -Dglowroot.central.dir=..."
                             + " to your servlet container startup";
                 }
-                startupLogger.info("Glowroot home: {}", centralDir.getAbsolutePath(), extra);
+                startupLogger.info("Glowroot home: {} (location for bullfrog.properties file{})",
+                        centralDir.getAbsolutePath(), extra);
             }
 
             CentralConfiguration centralConfig = getCentralConfiguration(directories.getConfDir());
