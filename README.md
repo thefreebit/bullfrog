@@ -5,12 +5,12 @@ BullFrog is an Artifactory specific open source Java APM based on [Glowroot](htt
 
 ## Requirements
 
-* Java 6+
+* Java 8+
 * Artifactory 4+
 
 ## BullFrog Additions
 
-BullFrog builds on top of [Glowroot](https://github.com/glowroot/glowroot). The early phase will include Artifactory gauge defaults, cosmetic, terminology changes. 
+BullFrog builds on top of [Glowroot](https://github.com/glowroot/glowroot). The early phase will include Artifactory gauge defaults, cosmetic, and terminology changes. 
 
 The next phases will add:
 
@@ -18,9 +18,20 @@ The next phases will add:
 * View Artifactory specific properties from the BullFrog UI
 * Alerts for known bottleneck resources (connections, threads, db, etc)
 
+## Demo
+
+You can visit the [BullFrog demo site](http://demo.bullfrog.live) and explore the many features. You can also navigate the [Artifactory instance](http://artifactory.bullfrog.live) that is being monitored to get a feel of what you can expect to record.
+
 ## Installation Instructions 
 
-*Stay Tuned*
+The installation instructions depend on your set up. There are two options, the standalone and the central collection option. 
+
+### Standalone Installation
+The standalone option is a good choice if you only want to monitor 1 Artifactory instance. You can read the instructions on the [Agent Installation wiki](https://github.com/thefreebit/bullfrog/wiki/Agent-Installation).
+
+### Central Collector Installation
+The central collector option is the way to go if you want to monitor multiple Artifactory instances from a single location. You will need to first set up the central server and then configure the agents to talk to it.
+You can read the instructions on the [Central Collector Installation wiki](https://github.com/thefreebit/bullfrog/wiki/Central-Collector-Installation).
 
 ## Please report any issues!
 
