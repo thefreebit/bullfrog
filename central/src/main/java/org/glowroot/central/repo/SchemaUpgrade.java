@@ -15,25 +15,7 @@
  */
 package org.glowroot.central.repo;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map.Entry;
-import java.util.Properties;
-import java.util.Set;
-import java.util.UUID;
-
-import javax.annotation.Nullable;
-
-import com.datastax.driver.core.BoundStatement;
-import com.datastax.driver.core.KeyspaceMetadata;
-import com.datastax.driver.core.PreparedStatement;
-import com.datastax.driver.core.ResultSet;
-import com.datastax.driver.core.Row;
-import com.datastax.driver.core.TableMetadata;
+import com.datastax.driver.core.*;
 import com.datastax.driver.core.exceptions.InvalidConfigurationInQueryException;
 import com.datastax.driver.core.exceptions.NoHostAvailableException;
 import com.datastax.driver.core.utils.UUIDs;
@@ -42,22 +24,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Stopwatch;
-import com.google.common.collect.ArrayListMultimap;
-import com.google.common.collect.ListMultimap;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Multimap;
-import com.google.common.collect.Multimaps;
-import com.google.common.collect.Sets;
+import com.google.common.collect.*;
 import com.google.protobuf.InvalidProtocolBufferException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import org.glowroot.central.util.Session;
-import org.glowroot.common.config.CentralStorageConfig;
-import org.glowroot.common.config.ConfigDefaults;
-import org.glowroot.common.config.ImmutableCentralWebConfig;
-import org.glowroot.common.config.PermissionParser;
-import org.glowroot.common.config.StorageConfig;
+import org.glowroot.common.config.*;
 import org.glowroot.common.util.ObjectMappers;
 import org.glowroot.common.util.PropertiesFiles;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig;
@@ -69,11 +39,19 @@ import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.OldAlertConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.UiConfig;
 import org.glowroot.wire.api.model.Proto.OptionalInt32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.*;
+import java.util.Map.Entry;
 
 import static com.google.common.base.Preconditions.checkNotNull;
-import static java.util.concurrent.TimeUnit.DAYS;
-import static java.util.concurrent.TimeUnit.HOURS;
-import static java.util.concurrent.TimeUnit.SECONDS;
+import static java.util.concurrent.TimeUnit.*;
 
 public class SchemaUpgrade {
 
@@ -1192,9 +1170,9 @@ public class SchemaUpgrade {
         if (contextPathNode != null && !contextPathNode.asText().equals("/")) {
             contextPathText = contextPathNode.asText();
         }
-        File propFile = new File("glowroot-central.properties");
+        File propFile = new File("bullfrog-central.properties");
         if (!propFile.exists()) {
-            startupLogger.warn("glowroot-central.properties file does not exist, so not populating"
+            startupLogger.warn("bullfrog-central.properties file does not exist, so not populating"
                     + " ui properties");
             return false;
         }
@@ -1241,12 +1219,12 @@ public class SchemaUpgrade {
             sb.append("\n");
         }
         if (sb.length() == 0) {
-            // glowroot-central.properties file has been updated
+            // bullfrog-central.properties file has been updated
             return false;
         }
         if (props.containsKey("jgroups.configurationFile")) {
             startupLogger.error("When running in a cluster, you must manually upgrade"
-                    + " the glowroot-central.properties files on each node to add the following"
+                    + " the bullfrog-central.properties files on each node to add the following"
                     + " properties:\n\n" + sb + "\n\n");
             throw new IllegalStateException(
                     "Glowroot central could not start, see error message above for instructions");

@@ -15,17 +15,12 @@
  */
 package org.glowroot.central;
 
-import java.io.IOException;
+import com.google.common.base.Strings;
 
-import javax.security.auth.callback.Callback;
-import javax.security.auth.callback.CallbackHandler;
-import javax.security.auth.callback.NameCallback;
-import javax.security.auth.callback.PasswordCallback;
-import javax.security.auth.callback.UnsupportedCallbackException;
+import javax.security.auth.callback.*;
 import javax.security.sasl.AuthorizeCallback;
 import javax.security.sasl.RealmCallback;
-
-import com.google.common.base.Strings;
+import java.io.IOException;
 
 public class SaslCallbackHandler implements CallbackHandler {
 
@@ -34,7 +29,7 @@ public class SaslCallbackHandler implements CallbackHandler {
     public SaslCallbackHandler() {
         String jgroupsPassword = System.getProperty("jgroups.password");
         if (Strings.isNullOrEmpty(jgroupsPassword)) {
-            throw new IllegalStateException("jgroups.password in glowroot-central.properties is"
+            throw new IllegalStateException("jgroups.password in bullfrog-central.properties is"
                     + " required, this can be set to any text, and is used by the glowroot central"
                     + " nodes to authenticate with one another and prevent rogue nodes from joining"
                     + " the cluster");

@@ -15,6 +15,25 @@
  */
 package org.glowroot.central;
 
+import com.google.common.base.Charsets;
+import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Maps;
+import com.google.common.io.CharStreams;
+import io.netty.buffer.ByteBuf;
+import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.glowroot.ui.ChunkSource;
+import org.glowroot.ui.ChunkSource.ChunkCopier;
+import org.glowroot.ui.CommonHandler;
+import org.glowroot.ui.CommonHandler.CommonRequest;
+import org.glowroot.ui.CommonHandler.CommonResponse;
+
+import javax.annotation.Nullable;
+import javax.servlet.*;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
@@ -26,31 +45,6 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
-
-import javax.annotation.Nullable;
-import javax.servlet.ServletConfig;
-import javax.servlet.ServletException;
-import javax.servlet.ServletOutputStream;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
-import javax.servlet.annotation.WebServlet;
-import javax.servlet.http.HttpServlet;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-
-import com.google.common.base.Charsets;
-import com.google.common.base.Strings;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Maps;
-import com.google.common.io.CharStreams;
-import io.netty.buffer.ByteBuf;
-import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
-
-import org.glowroot.ui.ChunkSource;
-import org.glowroot.ui.ChunkSource.ChunkCopier;
-import org.glowroot.ui.CommonHandler;
-import org.glowroot.ui.CommonHandler.CommonRequest;
-import org.glowroot.ui.CommonHandler.CommonResponse;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -65,10 +59,10 @@ public class GlowrootServlet extends HttpServlet {
     public void init(ServletConfig config) throws ServletException {
         try {
             File centralDir = getCentralDir();
-            File propFile = new File(centralDir, "glowroot-central.properties");
+            File propFile = new File(centralDir, "bullfrog-central.properties");
             if (!propFile.exists()) {
                 Files.copy(config.getServletContext().getResourceAsStream(
-                        "/META-INF/glowroot-central.properties"), propFile.toPath());
+                        "/META-INF/bullfrog-central.properties"), propFile.toPath());
             }
             centralModule = CentralModule.createForServletContainer(centralDir);
             commonHandler = centralModule.getCommonHandler();

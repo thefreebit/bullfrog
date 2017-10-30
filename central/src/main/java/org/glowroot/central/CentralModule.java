@@ -15,33 +15,11 @@
  */
 package org.glowroot.central;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.Serializable;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.concurrent.ConcurrentMap;
-import java.util.regex.Pattern;
-
-import com.datastax.driver.core.Cluster;
-import com.datastax.driver.core.ConsistencyLevel;
-import com.datastax.driver.core.KeyspaceMetadata;
-import com.datastax.driver.core.PoolingOptions;
-import com.datastax.driver.core.QueryOptions;
-import com.datastax.driver.core.ResultSet;
-import com.datastax.driver.core.Row;
-import com.datastax.driver.core.TimestampGenerator;
+import com.datastax.driver.core.*;
 import com.datastax.driver.core.exceptions.NoHostAvailableException;
 import com.datastax.driver.core.policies.ConstantReconnectionPolicy;
 import com.datastax.driver.core.policies.Policies;
-import com.google.common.base.Joiner;
-import com.google.common.base.Splitter;
-import com.google.common.base.StandardSystemProperty;
-import com.google.common.base.Stopwatch;
-import com.google.common.base.Strings;
-import com.google.common.base.Ticker;
+import com.google.common.base.*;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
@@ -51,10 +29,6 @@ import com.google.common.util.concurrent.RateLimiter;
 import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.RequiresNonNull;
-import org.immutables.value.Value;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import org.glowroot.central.repo.CentralRepoModule;
 import org.glowroot.central.repo.ConfigRepositoryImpl.AgentConfigListener;
 import org.glowroot.central.repo.SchemaUpgrade;
@@ -73,6 +47,19 @@ import org.glowroot.ui.CommonHandler;
 import org.glowroot.ui.CreateUiModuleBuilder;
 import org.glowroot.ui.SessionMapFactory;
 import org.glowroot.ui.UiModule;
+import org.immutables.value.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.Serializable;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.concurrent.ConcurrentMap;
+import java.util.regex.Pattern;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -324,7 +311,7 @@ public class CentralModule {
         startupLogger.info("Glowroot version: {}", version);
         startupLogger.info("Java version: {}", StandardSystemProperty.JAVA_VERSION.value());
 
-        File propFile = new File(centralDir, "glowroot-central.properties");
+        File propFile = new File(centralDir, "bullfrog-central.properties");
         Properties props = PropertiesFiles.load(propFile);
         CentralConfiguration centralConfig = getCentralConfiguration(props);
 
@@ -379,7 +366,7 @@ public class CentralModule {
         startupLogger.info("Glowroot version: {}", version);
         startupLogger.info("Java version: {}", StandardSystemProperty.JAVA_VERSION.value());
 
-        File propFile = new File(centralDir, "glowroot-central.properties");
+        File propFile = new File(centralDir, "bullfrog-central.properties");
         Properties props = PropertiesFiles.load(propFile);
         CentralConfiguration centralConfig = getCentralConfiguration(props);
 
@@ -428,10 +415,10 @@ public class CentralModule {
 
     private static CentralConfiguration getCentralConfiguration(File centralDir)
             throws IOException {
-        File propFile = new File(centralDir, "glowroot-central.properties");
+        File propFile = new File(centralDir, "bullfrog-central.properties");
         if (!propFile.exists()) {
             // upgrade from 0.9.5 to 0.9.6
-            File oldPropFile = new File(centralDir, "glowroot-server.properties");
+            File oldPropFile = new File(centralDir, "bullfrog-server.properties");
             if (!oldPropFile.exists()) {
                 return ImmutableCentralConfiguration.builder().build();
             }
@@ -497,7 +484,7 @@ public class CentralModule {
                 props = PropertiesFiles.load(propFile);
                 if (!secretFile.delete()) {
                     throw new IOException("Could not delete secret file after moving symmetric"
-                            + " encryption key to glowroot-central.properties");
+                            + " encryption key to bullfrog-central.properties");
                 }
             }
         }
