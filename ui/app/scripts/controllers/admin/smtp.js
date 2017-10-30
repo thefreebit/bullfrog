@@ -63,7 +63,7 @@ glowroot.controller('AdminSmtpCtrl', [
       $http.post('backend/admin/smtp', $scope.config)
           .then(function (response) {
             if (response.data.symmetricEncryptionKeyMissing) {
-              deferred.reject('cassandra.symmetricEncryptionKey must be configured in the glowroot-central.properties'
+              deferred.reject('cassandra.symmetricEncryptionKey must be configured in the bullfrog-central.properties'
                   + ' file before SMTP password can be saved to cassandra' + encryptionKeyMessage.extra());
               return;
             }

@@ -105,7 +105,7 @@ glowroot.controller('ConfigSyntheticMonitorCtrl', [
       $http.post(url + '?agent-rollup-id=' + encodeURIComponent(agentRollupId), postData)
           .then(function (response) {
             if (response.data.symmetricEncryptionKeyMissing) {
-              deferred.reject('cassandra.symmetricEncryptionKey must be configured in the glowroot-central.properties'
+              deferred.reject('cassandra.symmetricEncryptionKey must be configured in the bullfrog-central.properties'
                   + ' file before string constants beginning with the text "ENCRYPT:" can be encrypted'
                   + encryptionKeyMessage.extra());
               return;

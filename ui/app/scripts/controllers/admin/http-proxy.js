@@ -55,7 +55,7 @@ glowroot.controller('AdminHttpProxyCtrl', [
       $http.post('backend/admin/http-proxy', $scope.config)
           .then(function (response) {
             if (response.data.symmetricEncryptionKeyMissing) {
-              deferred.reject('cassandra.symmetricEncryptionKey must be configured in the glowroot-central.properties'
+              deferred.reject('cassandra.symmetricEncryptionKey must be configured in the bullfrog-central.properties'
                   + ' file before HTTP proxy password can be saved to cassandra' + encryptionKeyMessage.extra());
               return;
             }

@@ -64,10 +64,10 @@ public class GlowrootServlet extends HttpServlet {
     public void init(ServletConfig config) throws ServletException {
         try {
             File centralDir = getCentralDir();
-            File propFile = new File(centralDir, "glowroot-central.properties");
+            File propFile = new File(centralDir, "bullfrog-central.properties");
             if (!propFile.exists()) {
                 Files.copy(config.getServletContext().getResourceAsStream(
-                        "/META-INF/glowroot-central.properties"), propFile.toPath());
+                        "/META-INF/bullfrog-central.properties"), propFile.toPath());
             }
             centralModule = CentralModule.createForServletContainer(centralDir);
             commonHandler = centralModule.getCommonHandler();

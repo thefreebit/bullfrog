@@ -2695,9 +2695,9 @@ public class SchemaUpgrade {
         if (contextPathNode != null && !contextPathNode.asText().equals("/")) {
             contextPathText = contextPathNode.asText();
         }
-        File propFile = new File("glowroot-central.properties");
+        File propFile = new File("bullfrog-central.properties");
         if (!propFile.exists()) {
-            startupLogger.warn("glowroot-central.properties file does not exist, so not populating"
+            startupLogger.warn("bullfrog-central.properties file does not exist, so not populating"
                     + " ui properties");
             return false;
         }
@@ -2746,12 +2746,12 @@ public class SchemaUpgrade {
             sb.append("\n");
         }
         if (sb.length() == 0) {
-            // glowroot-central.properties file has been updated
+            // bullfrog-central.properties file has been updated
             return false;
         }
         if (props.containsKey("jgroups.configurationFile")) {
             startupLogger.error("When running in a cluster, you must manually upgrade"
-                    + " the glowroot-central.properties files on each node to add the following"
+                    + " the bullfrog-central.properties files on each node to add the following"
                     + " properties:\n\n" + sb + "\n\n");
             throw new IllegalStateException(
                     "Glowroot central could not start, see error message above for instructions");

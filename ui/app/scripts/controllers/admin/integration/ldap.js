@@ -84,7 +84,7 @@ glowroot.controller('AdminLdapCtrl', [
       $http.post('backend/admin/ldap', $scope.config)
           .then(function (response) {
             if (response.data.symmetricEncryptionKeyMissing) {
-              deferred.reject('cassandra.symmetricEncryptionKey must be configured in the glowroot-central.properties'
+              deferred.reject('cassandra.symmetricEncryptionKey must be configured in the bullfrog-central.properties'
                   + ' file before LDAP password can be saved to cassandra' + encryptionKeyMessage.extra());
               return;
             }

@@ -259,7 +259,7 @@ public class WebDriverSetup {
 
     private static CentralModule createCentralModule(int uiPort, int grpcPort) throws Exception {
         File centralDir = new File("target");
-        File propsFile = new File(centralDir, "glowroot-central.properties");
+        File propsFile = new File(centralDir, "bullfrog-central.properties");
         PrintWriter props = new PrintWriter(propsFile);
         props.println("cassandra.keyspace=glowroot_unit_tests");
         byte[] bytes = new byte[16];

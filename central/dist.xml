@@ -24,7 +24,7 @@
     <fileSet>
       <directory>src/main/conf</directory>
       <includes>
-        <include>glowroot-central.properties</include>
+        <include>bullfrog-central.properties</include>
       </includes>
       <outputDirectory></outputDirectory>
     </fileSet>
