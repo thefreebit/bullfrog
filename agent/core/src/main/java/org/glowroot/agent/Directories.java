@@ -15,18 +15,16 @@
  */
 package org.glowroot.agent;
 
+import com.google.common.annotations.VisibleForTesting;
+import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.glowroot.common.util.OnlyUsedByTests;
+
+import javax.annotation.Nullable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
-
-import javax.annotation.Nullable;
-
-import com.google.common.annotations.VisibleForTesting;
-import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
-
-import org.glowroot.common.util.OnlyUsedByTests;
 
 // DO NOT USE ANY GUAVA CLASSES HERE because they trigger loading of jul
 // (and thus org.glowroot.agent.jul.Logger and thus glowroot's shaded slf4j)
@@ -51,8 +49,8 @@ class Directories {
     Directories(@Nullable File glowrootJarFile) throws IOException {
         glowrootDir = getGlowrootDir(glowrootJarFile);
 
-        // check for glowroot.properties file in glowrootDir
-        File propFile = new File(glowrootDir, "glowroot.properties");
+        // check for bullfrog.properties file in glowrootDir
+        File propFile = new File(glowrootDir, "bullfrog.properties");
         props = new Properties();
         if (propFile.exists()) {
             InputStream in = new FileInputStream(propFile);

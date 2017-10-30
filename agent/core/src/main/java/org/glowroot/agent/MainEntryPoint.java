@@ -15,24 +15,6 @@
  */
 package org.glowroot.agent;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.lang.instrument.ClassFileTransformer;
-import java.lang.instrument.Instrumentation;
-import java.lang.management.ManagementFactory;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.net.URLClassLoader;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Properties;
-import java.util.ServiceLoader;
-
-import javax.annotation.Nullable;
-
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Charsets;
 import com.google.common.base.Objects;
@@ -45,9 +27,6 @@ import com.google.common.io.Files;
 import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.RequiresNonNull;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import org.glowroot.agent.collector.Collector;
 import org.glowroot.agent.embedded.init.EmbeddedGlowrootAgentInit;
 import org.glowroot.agent.init.AgentDirsLocking.AgentDirsLockedException;
@@ -58,6 +37,21 @@ import org.glowroot.agent.util.JavaVersion;
 import org.glowroot.common.util.OnlyUsedByTests;
 import org.glowroot.common.util.PropertiesFiles;
 import org.glowroot.common.util.Version;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
+import java.io.File;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.lang.instrument.ClassFileTransformer;
+import java.lang.instrument.Instrumentation;
+import java.lang.management.ManagementFactory;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.util.*;
+import java.util.Map.Entry;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -213,7 +207,7 @@ public class MainEntryPoint {
 
     private static void addProperties(File dir, Map<String, String> properties)
             throws IOException {
-        File propFile = new File(dir, "glowroot.properties");
+        File propFile = new File(dir, "bullfrog.properties");
         if (!propFile.exists()) {
             return;
         }
