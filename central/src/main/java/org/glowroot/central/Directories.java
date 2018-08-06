@@ -29,7 +29,7 @@ class Directories {
     private final File logDir;
 
     Directories(File centralDir) throws IOException {
-        File propFile = new File(centralDir, "glowroot-central.properties");
+        File propFile = new File(centralDir, "bullfrog-central.properties");
         Properties props;
         if (propFile.exists()) {
             props = PropertiesFiles.load(propFile);

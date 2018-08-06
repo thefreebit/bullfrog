@@ -4,7 +4,7 @@ FROM centos/systemd
 
 RUN yum-config-manager --add-repo https://glowroot.org/yum/glowroot.repo \
     && yum -y install glowroot-central \
-    && sed -i 's/^cassandra.contactPoints=$/cassandra.contactPoints=cassandra/' /etc/glowroot-central/glowroot-central.properties \
+    && sed -i 's/^cassandra.contactPoints=$/cassandra.contactPoints=cassandra/' /etc/glowroot-central/bullfrog-central.properties \
     && systemctl enable glowroot-central.service
 
 EXPOSE 4000 8181

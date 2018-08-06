@@ -631,8 +631,8 @@
                   <ruleset>gc-default</ruleset>
                 </entry>
                 <entry>
-                  <name>/etc/glowroot-central/glowroot-central.properties</name>
-                  <file>src/main/conf/glowroot-central.properties</file>
+                  <name>/etc/glowroot-central/bullfrog-central.properties</name>
+                  <file>src/main/conf/bullfrog-central.properties</file>
                   <ruleset>gc-default</ruleset>
                 </entry>
                 <entry>
@@ -646,8 +646,8 @@
                   <ruleset>gc-default</ruleset>
                 </entry>
                 <entry>
-                  <name>/usr/lib/glowroot-central/glowroot-central.properties</name>
-                  <file>src/main/rpm/glowroot-central.properties</file>
+                  <name>/usr/lib/glowroot-central/bullfrog-central.properties</name>
+                  <file>src/main/rpm/bullfrog-central.properties</file>
                   <ruleset>gc-default</ruleset>
                 </entry>
                 <entry>

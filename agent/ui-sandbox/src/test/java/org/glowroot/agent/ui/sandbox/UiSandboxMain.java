@@ -15,18 +15,17 @@
  */
 package org.glowroot.agent.ui.sandbox;
 
-import java.io.File;
-import java.util.concurrent.Executors;
-
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Files;
-
 import org.glowroot.agent.it.harness.AppUnderTest;
 import org.glowroot.agent.it.harness.Container;
 import org.glowroot.agent.it.harness.impl.JavaagentContainer;
 import org.glowroot.agent.it.harness.impl.LocalContainer;
+
+import java.io.File;
+import java.util.concurrent.Executors;
 
 import static com.google.common.base.Charsets.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -44,6 +43,7 @@ public class UiSandboxMain {
         File testDir = new File("target");
         File configFile = new File(testDir, "config.json");
         if (!configFile.exists()) {
+            System.out.println(configFile.getAbsolutePath());
             Files.write(
                     "{\"transactions\":{\"profilingIntervalMillis\":100},"
                             + "\"ui\":{\"defaultTransactionType\":\"Sandbox\"}}",

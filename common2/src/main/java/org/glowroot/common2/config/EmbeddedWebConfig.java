@@ -32,7 +32,7 @@ public abstract class EmbeddedWebConfig implements WebConfig {
 
     @Value.Default
     public String bindAddress() {
-        return "127.0.0.1";
+        return "0.0.0.0";
     }
 
     @Value.Default

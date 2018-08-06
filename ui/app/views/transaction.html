@@ -13,10 +13,10 @@
   See the License for the specific language governing permissions and
   limitations under the License.
 -->
-<ul class="nav nav-tabs" ng-if="!layout.central || agentRollupId">
-<li ng-repeat="tt in layout.agentRollups[agentRollupId].transactionTypes"
+<ul class="nav nav-tabs">
+<li ng-repeat="tt in agentRollup.transactionTypes"
     ng-class="{active: tt === transactionType}" role="presentation">
-  <a ng-href="{{currentTabUrl()}}{{headerQueryString(layout.agentRollups[agentRollupId], tt)}}">
+  <a ng-href="{{currentTabUrl()}}{{headerQueryString(null, tt)}}">
     {{tt}}
   </a>
 </li>
