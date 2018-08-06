@@ -1,5 +1,5 @@
 <!--
-  Copyright 2017 the original author or authors.
+  Copyright 2017-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -13,15 +13,20 @@
   See the License for the specific language governing permissions and
   limitations under the License.
 -->
+<div class="gt-config-return-outer-div">
+  <a class="gt-config-return-link"
+     href="admin/integration-list">
+    Return to list
+  </a>
+</div>
 <div class="panel panel-default">
   <div class="panel-heading">
     <h2>
-      <a class="pull-right"
-         style="font-size: 16px; padding-top: 16px;"
-         href="admin/integration-list">
-        Return to integration list
-      </a>
-      PagerDuty
+      Integrations
+      <span class="gt-inline-block gt-separator">
+        |
+      </span>
+      <span style="font-size: 24px;">PagerDuty</span>
     </h2>
   </div>
   <div class="panel-body">
@@ -56,12 +61,14 @@
           </div>
         </div>
         <div class="form-group gt-form-buttons"
-             ng-if="layout.adminEdit">
+             ng-if="layout.adminEdit"
+             style="padding-top: 5px;">
           <div class="col-lg-offset-3 col-lg-9">
-            <button class="btn btn-default"
+            <button class="btn gt-btn-danger"
                     ng-click="removeIntegrationKey(integrationKey)"
-                    ng-if="layout.adminEdit">
-              Remove this role mapping
+                    ng-if="layout.adminEdit"
+                    style="float: right;">
+              Remove this integration key
             </button>
           </div>
         </div>
@@ -87,3 +94,5 @@
     </div>
   </div>
 </div>
+<!-- each page with confirmation dialog needs its own confirmation dom so that it is deleted on $destroy -->
+<div ng-include="'template/gt-confirmation.html'"></div>

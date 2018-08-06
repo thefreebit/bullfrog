@@ -1,5 +1,5 @@
 /**
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -89,6 +89,12 @@ public class HttpClient {
         updateLibVersion("apache.httpclient.version", "4.5.3");
         updateLibVersion("apache.httpcore.version", "4.4.6");
         run(test);
+        updateLibVersion("apache.httpclient.version", "4.5.4");
+        updateLibVersion("apache.httpcore.version", "4.4.7");
+        run(test);
+        updateLibVersion("apache.httpclient.version", "4.5.5");
+        updateLibVersion("apache.httpcore.version", "4.4.9");
+        run(test);
     }
 
     private static void apacheHttpAsyncClient() throws Exception {
@@ -134,18 +140,17 @@ public class HttpClient {
     }
 
     private static void asyncHttpClient() throws Exception {
-        final String test = "AsyncHttpClientPluginIT";
-        for (int i = 1; i <= 24; i++) {
-            updateLibVersion("asynchttpclient.version", "1.7." + i);
-            run(test, "async-http-client-1.x");
+        for (int i = 1; i <= 5; i++) {
+            runAsyncHttpClient1x("1.6." + i);
+        }
+        for (int i = 0; i <= 24; i++) {
+            runAsyncHttpClient1x("1.7." + i);
         }
         for (int i = 0; i <= 17; i++) {
-            updateLibVersion("asynchttpclient.version", "1.8." + i);
-            run(test, "async-http-client-1.x");
+            runAsyncHttpClient1x("1.8." + i);
         }
         for (int i = 0; i <= 40; i++) {
-            updateLibVersion("asynchttpclient.version", "1.9." + i);
-            runJava7(test, "async-http-client-1.x");
+            runAsyncHttpClient1x("1.9." + i);
         }
         runAsyncHttpClient2x("2.0.0", "4.0.36.Final");
         runAsyncHttpClient2x("2.0.1", "4.0.36.Final");
@@ -221,12 +226,14 @@ public class HttpClient {
             updateLibVersion("cxf.version", "3.0." + i);
             run(test);
         }
-        for (int i = 0; i <= 13; i++) {
+        for (int i = 0; i <= 15; i++) {
             updateLibVersion("cxf.version", "3.1." + i);
             runJava7(test);
         }
-        updateLibVersion("cxf.version", "3.2.0");
-        runJava8(test);
+        for (int i = 0; i <= 4; i++) {
+            updateLibVersion("cxf.version", "3.2." + i);
+            runJava8(test);
+        }
     }
 
     private static void httpUrlConnection() throws Exception {
@@ -283,11 +290,24 @@ public class HttpClient {
             updateLibVersion("spring.version", "4.2." + i + ".RELEASE");
             run(test);
         }
-        for (int i = 0; i <= 11; i++) {
+        for (int i = 0; i <= 16; i++) {
             updateLibVersion("spring.version", "4.3." + i + ".RELEASE");
             run(test);
         }
-        updateLibVersion("spring.version", "5.0.0.RELEASE");
+        for (int i = 0; i <= 5; i++) {
+            updateLibVersion("spring.version", "5.0." + i + ".RELEASE");
+            runJava8(test);
+        }
+    }
+
+    private static void runAsyncHttpClient1x(String asyncHttpClientVersion) throws Exception {
+        final String test = "AsyncHttpClientPluginIT";
+        updateLibVersion("asynchttpclient.version", asyncHttpClientVersion);
+        if (asyncHttpClientVersion.startsWith("1.9")) {
+            runJava7(test, "async-http-client-1.x");
+        } else {
+            run(test, "async-http-client-1.x");
+        }
     }
 
     private static void runAsyncHttpClient2x(String asyncHttpClientVersion, String nettyVersion)

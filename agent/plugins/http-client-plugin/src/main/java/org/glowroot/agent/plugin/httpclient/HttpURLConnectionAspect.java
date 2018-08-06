@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,17 +17,17 @@ package org.glowroot.agent.plugin.httpclient;
 
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.URL;
-
-import javax.annotation.Nullable;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.glowroot.agent.plugin.api.Agent;
+import org.glowroot.agent.plugin.api.Logger;
 import org.glowroot.agent.plugin.api.MessageSupplier;
 import org.glowroot.agent.plugin.api.ThreadContext;
 import org.glowroot.agent.plugin.api.Timer;
 import org.glowroot.agent.plugin.api.TimerName;
 import org.glowroot.agent.plugin.api.TraceEntry;
+import org.glowroot.agent.plugin.api.checker.Nullable;
 import org.glowroot.agent.plugin.api.weaving.BindReceiver;
 import org.glowroot.agent.plugin.api.weaving.BindReturn;
 import org.glowroot.agent.plugin.api.weaving.BindThrowable;
@@ -38,18 +38,30 @@ import org.glowroot.agent.plugin.api.weaving.OnBefore;
 import org.glowroot.agent.plugin.api.weaving.OnReturn;
 import org.glowroot.agent.plugin.api.weaving.OnThrow;
 import org.glowroot.agent.plugin.api.weaving.Pointcut;
+import org.glowroot.agent.plugin.api.weaving.Shim;
 
 public class HttpURLConnectionAspect {
 
+    private static final Logger logger = Logger.getLogger(HttpURLConnectionAspect.class);
+    private static final AtomicBoolean inputStreamIssueAlreadyLogged = new AtomicBoolean();
+    private static final AtomicBoolean outputStreamIssueAlreadyLogged = new AtomicBoolean();
+
+    @Shim("java.net.HttpURLConnection")
+    public interface HttpURLConnection {
+        String getRequestMethod();
+        URL getURL();
+    }
+
     // the field and method names are verbose since they will be mixed in to existing classes
-    @Mixin({"sun.net.www.protocol.http.HttpURLConnection",
-            "sun.net.www.protocol.https.HttpsURLConnectionImpl",
+    @Mixin({"java.net.HttpURLConnection",
             "sun.net.www.protocol.http.HttpURLConnection$HttpInputStream",
             "sun.net.www.protocol.http.HttpURLConnection$StreamingOutputStream",
-            "sun.net.www.http.PosterOutputStream"})
+            "sun.net.www.http.PosterOutputStream",
+            "weblogic.net.http.KeepAliveStream",
+            "weblogic.utils.io.UnsyncByteArrayOutputStream"})
     public static class HasTraceEntryImpl implements HasTraceEntry {
 
-        private @Nullable TraceEntry glowroot$traceEntry;
+        private transient @Nullable TraceEntry glowroot$traceEntry;
 
         @Override
         public @Nullable TraceEntry glowroot$getTraceEntry() {
@@ -78,42 +90,71 @@ public class HttpURLConnectionAspect {
         boolean glowroot$hasTraceEntry();
     }
 
+    private static class TraceEntryOrTimer {
+
+        private final @Nullable TraceEntry traceEntry;
+        private final @Nullable Timer timer;
+
+        private TraceEntryOrTimer(TraceEntry traceEntry) {
+            this.traceEntry = traceEntry;
+            timer = null;
+        }
+
+        private TraceEntryOrTimer(Timer timer) {
+            this.timer = timer;
+            traceEntry = null;
+        }
+
+        private void onReturn() {
+            if (traceEntry != null) {
+                traceEntry.end();
+            } else if (timer != null) {
+                timer.stop();
+            }
+        }
+
+        private void onThrow(Throwable t) {
+            if (traceEntry != null) {
+                traceEntry.endWithError(t);
+            } else if (timer != null) {
+                timer.stop();
+            }
+        }
+    }
+
     @Pointcut(className = "java.net.URLConnection",
             subTypeRestriction = "java.net.HttpURLConnection", methodName = "connect",
             methodParameterTypes = {}, nestingGroup = "http-client", timerName = "http client")
     public static class ConnectAdvice {
         private static final TimerName timerName = Agent.getTimerName(ConnectAdvice.class);
         @OnBefore
-        public static @Nullable Object onBefore(ThreadContext threadContext,
-                @BindReceiver HttpURLConnection httpURLConnection) {
+        public static @Nullable TraceEntryOrTimer onBefore(ThreadContext threadContext,
+                @BindReceiver Object httpURLConnection) {
             return onBefore(threadContext, httpURLConnection, false);
         }
         @OnReturn
-        public static void onReturn(@BindTraveler @Nullable Object entryOrTimer) {
-            if (entryOrTimer instanceof TraceEntry) {
-                ((TraceEntry) entryOrTimer).end();
-            } else if (entryOrTimer instanceof Timer) {
-                ((Timer) entryOrTimer).stop();
+        public static void onReturn(@BindTraveler @Nullable TraceEntryOrTimer entryOrTimer) {
+            if (entryOrTimer != null) {
+                entryOrTimer.onReturn();
             }
         }
         @OnThrow
         public static void onThrow(@BindThrowable Throwable t,
-                @BindTraveler @Nullable Object entryOrTimer) {
-            if (entryOrTimer instanceof TraceEntry) {
-                ((TraceEntry) entryOrTimer).endWithError(t);
-            } else if (entryOrTimer instanceof Timer) {
-                ((Timer) entryOrTimer).stop();
+                @BindTraveler @Nullable TraceEntryOrTimer entryOrTimer) {
+            if (entryOrTimer != null) {
+                entryOrTimer.onThrow(t);
             }
         }
-        private static @Nullable Object onBefore(ThreadContext threadContext,
-                HttpURLConnection httpURLConnection, boolean overrideGetWithPost) {
-            if (!(httpURLConnection instanceof HasTraceEntry)) {
+        private static @Nullable TraceEntryOrTimer onBefore(ThreadContext threadContext,
+                Object httpURLConnectionObj, boolean overrideGetWithPost) {
+            if (!(httpURLConnectionObj instanceof HasTraceEntry)) {
                 return null;
             }
-            TraceEntry traceEntry = ((HasTraceEntry) httpURLConnection).glowroot$getTraceEntry();
+            TraceEntry traceEntry = ((HasTraceEntry) httpURLConnectionObj).glowroot$getTraceEntry();
             if (traceEntry != null) {
-                return traceEntry.extend();
+                return new TraceEntryOrTimer(traceEntry.extend());
             }
+            HttpURLConnection httpURLConnection = (HttpURLConnection) httpURLConnectionObj;
             String method = httpURLConnection.getRequestMethod();
             if (method == null) {
                 method = "";
@@ -134,8 +175,8 @@ public class HttpURLConnectionAspect {
             traceEntry = threadContext.startServiceCallEntry("HTTP",
                     method + Uris.stripQueryString(url),
                     MessageSupplier.create("http client request: {}{}", method, url), timerName);
-            ((HasTraceEntry) httpURLConnection).glowroot$setTraceEntry(traceEntry);
-            return traceEntry;
+            ((HasTraceEntry) httpURLConnectionObj).glowroot$setTraceEntry(traceEntry);
+            return new TraceEntryOrTimer(traceEntry);
         }
     }
 
@@ -144,25 +185,30 @@ public class HttpURLConnectionAspect {
             methodParameterTypes = {}, nestingGroup = "http-client")
     public static class GetInputStreamAdvice {
         @OnBefore
-        public static @Nullable Object onBefore(ThreadContext threadContext,
-                @BindReceiver HttpURLConnection httpURLConnection) {
+        public static @Nullable TraceEntryOrTimer onBefore(ThreadContext threadContext,
+                @BindReceiver Object httpURLConnection) {
             return ConnectAdvice.onBefore(threadContext, httpURLConnection, false);
         }
         @OnReturn
         public static void onReturn(@BindReturn @Nullable Object returnValue,
-                @BindReceiver HttpURLConnection httpURLConnection,
-                @BindTraveler @Nullable Object entryOrTimer) {
-            if (httpURLConnection instanceof HasTraceEntry
-                    && returnValue instanceof HasTraceEntry) {
-                TraceEntry traceEntry =
-                        ((HasTraceEntry) httpURLConnection).glowroot$getTraceEntry();
-                ((HasTraceEntry) returnValue).glowroot$setTraceEntry(traceEntry);
+                @BindReceiver Object httpURLConnection,
+                @BindTraveler @Nullable TraceEntryOrTimer entryOrTimer) {
+            if (httpURLConnection instanceof HasTraceEntry) {
+                if (returnValue instanceof HasTraceEntry) {
+                    TraceEntry traceEntry =
+                            ((HasTraceEntry) httpURLConnection).glowroot$getTraceEntry();
+                    ((HasTraceEntry) returnValue).glowroot$setTraceEntry(traceEntry);
+                } else if (returnValue != null && !inputStreamIssueAlreadyLogged.getAndSet(true)) {
+                    logger.info("found non-instrumented http url connection input stream, please"
+                            + " report to the Glowroot project: {}",
+                            returnValue.getClass().getName());
+                }
             }
             ConnectAdvice.onReturn(entryOrTimer);
         }
         @OnThrow
         public static void onThrow(@BindThrowable Throwable t,
-                @BindTraveler @Nullable Object entryOrTimer) {
+                @BindTraveler @Nullable TraceEntryOrTimer entryOrTimer) {
             ConnectAdvice.onThrow(t, entryOrTimer);
         }
     }
@@ -172,32 +218,45 @@ public class HttpURLConnectionAspect {
             methodParameterTypes = {}, nestingGroup = "http-client")
     public static class GetOutputStreamAdvice {
         @OnBefore
-        public static @Nullable Object onBefore(ThreadContext threadContext,
-                @BindReceiver HttpURLConnection httpURLConnection) {
+        public static @Nullable TraceEntryOrTimer onBefore(ThreadContext threadContext,
+                @BindReceiver Object httpURLConnection) {
             return ConnectAdvice.onBefore(threadContext, httpURLConnection, true);
         }
         @OnReturn
         public static void onReturn(@BindReturn @Nullable Object returnValue,
-                @BindReceiver HttpURLConnection httpURLConnection,
-                @BindTraveler @Nullable Object entryOrTimer) {
-            GetInputStreamAdvice.onReturn(returnValue, httpURLConnection, entryOrTimer);
+                @BindReceiver Object httpURLConnection,
+                @BindTraveler @Nullable TraceEntryOrTimer entryOrTimer) {
+            if (httpURLConnection instanceof HasTraceEntry) {
+                if (returnValue instanceof HasTraceEntry) {
+                    TraceEntry traceEntry =
+                            ((HasTraceEntry) httpURLConnection).glowroot$getTraceEntry();
+                    ((HasTraceEntry) returnValue).glowroot$setTraceEntry(traceEntry);
+                } else if (returnValue != null && !outputStreamIssueAlreadyLogged.getAndSet(true)) {
+                    logger.info("found non-instrumented http url connection output stream, please"
+                            + " report to the Glowroot project: {}",
+                            returnValue.getClass().getName());
+                }
+            }
+            ConnectAdvice.onReturn(entryOrTimer);
         }
         @OnThrow
         public static void onThrow(@BindThrowable Throwable t,
-                @BindTraveler @Nullable Object entryOrTimer) {
+                @BindTraveler @Nullable TraceEntryOrTimer entryOrTimer) {
             ConnectAdvice.onThrow(t, entryOrTimer);
         }
     }
 
-    @Pointcut(className = "sun.net.www.protocol.http.HttpURLConnection$HttpInputStream",
+    @Pointcut(className = "java.io.InputStream",
+            subTypeRestriction = "sun.net.www.protocol.http.HttpURLConnection$HttpInputStream"
+                    + "|weblogic.net.http.KeepAliveStream",
             methodName = "*", methodParameterTypes = {".."})
     public static class HttpInputStreamAdvice {
         @OnBefore
-        public static @Nullable Timer onBefore(@BindReceiver InputStream httpInputStream) {
-            if (!(httpInputStream instanceof HasTraceEntry)) {
+        public static @Nullable Timer onBefore(@BindReceiver InputStream inputStream) {
+            if (!(inputStream instanceof HasTraceEntry)) {
                 return null;
             }
-            TraceEntry traceEntry = ((HasTraceEntry) httpInputStream).glowroot$getTraceEntry();
+            TraceEntry traceEntry = ((HasTraceEntry) inputStream).glowroot$getTraceEntry();
             if (traceEntry == null) {
                 return null;
             }
@@ -211,17 +270,19 @@ public class HttpURLConnectionAspect {
         }
     }
 
-    @Pointcut(className = "sun.net.www.protocol.http.HttpURLConnection$StreamingOutputStream"
-            + "|sun.net.www.http.PosterOutputStream", methodName = "*",
-            methodParameterTypes = {".."})
+    @Pointcut(className = "java.io.OutputStream",
+            subTypeRestriction = "sun.net.www.protocol.http.HttpURLConnection$StreamingOutputStream"
+                    + "|sun.net.www.http.PosterOutputStream"
+                    + "|weblogic.utils.io.UnsyncByteArrayOutputStream",
+            methodName = "*", methodParameterTypes = {".."})
     public static class StreamingOutputStreamAdvice {
         @OnBefore
-        public static @Nullable Timer onBefore(@BindReceiver OutputStream streamingOutputStream) {
-            if (!(streamingOutputStream instanceof HasTraceEntry)) {
+        public static @Nullable Timer onBefore(@BindReceiver OutputStream outputStream) {
+            if (!(outputStream instanceof HasTraceEntry)) {
                 return null;
             }
             TraceEntry traceEntry =
-                    ((HasTraceEntry) streamingOutputStream).glowroot$getTraceEntry();
+                    ((HasTraceEntry) outputStream).glowroot$getTraceEntry();
             if (traceEntry == null) {
                 return null;
             }

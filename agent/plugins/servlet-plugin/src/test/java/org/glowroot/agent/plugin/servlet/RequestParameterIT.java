@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ package org.glowroot.agent.plugin.servlet;
 
 import java.util.Collections;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -77,6 +78,26 @@ public class RequestParameterIT {
         @SuppressWarnings("unchecked")
         List<String> multi = (List<String>) requestParameters.get("multi");
         assertThat(multi).containsExactly("m1", "m2");
+        String queryString = ResponseHeaderIT.getDetailValue(trace, "Request query string");
+        assertThat(queryString).isEqualTo("xYz=aBc&jpassword1=****&multi=m1&multi=m2");
+    }
+
+    @Test
+    public void testRequestParametersWithoutMaskedQueryString() throws Exception {
+        // when
+        Trace trace = container.execute(GetParameterWithoutMaskedQueryString.class, "Web");
+
+        // then
+        Map<String, Object> requestParameters =
+                ResponseHeaderIT.getDetailMap(trace, "Request parameters");
+        assertThat(requestParameters).hasSize(3);
+        assertThat(requestParameters.get("xYz")).isEqualTo("aBc");
+        assertThat(requestParameters.get("jpassword1")).isEqualTo("****");
+        @SuppressWarnings("unchecked")
+        List<String> multi = (List<String>) requestParameters.get("multi");
+        assertThat(multi).containsExactly("m1", "m2");
+        String queryString = ResponseHeaderIT.getDetailValue(trace, "Request query string");
+        assertThat(queryString).isEqualTo("xYz=aBc&multi=m1&multi=m2");
     }
 
     @Test
@@ -86,9 +107,11 @@ public class RequestParameterIT {
         // when
         Trace trace = container.execute(GetParameter.class, "Web");
         // then
-        assertThat(trace.getHeader().getDetailEntryList()).hasSize(1);
+        assertThat(trace.getHeader().getDetailEntryList()).hasSize(2);
         assertThat(trace.getHeader().getDetailEntryList().get(0).getName())
                 .isEqualTo("Request http method");
+        assertThat(trace.getHeader().getDetailEntryList().get(1).getName())
+                .isEqualTo("Request query string");
     }
 
     @Test
@@ -114,6 +137,18 @@ public class RequestParameterIT {
     public void testExtraBadRequestParameterMap() throws Exception {
         // when
         Trace trace = container.execute(GetExtraBadParameterMap.class, "Web");
+
+        // then
+        Map<String, Object> requestParameters =
+                ResponseHeaderIT.getDetailMap(trace, "Request parameters");
+        assertThat(requestParameters).hasSize(1);
+        assertThat(requestParameters.get("n")).isEqualTo("x");
+    }
+
+    @Test
+    public void testAnotherBadRequestParameterMap() throws Exception {
+        // when
+        Trace trace = container.execute(GetAnotherBadParameterMap.class, "Web");
 
         // then
         Map<String, Object> requestParameters =
@@ -150,6 +185,23 @@ public class RequestParameterIT {
             ((MockHttpServletRequest) request).setParameter("xYz", "aBc");
             ((MockHttpServletRequest) request).setParameter("jpassword1", "mask me");
             ((MockHttpServletRequest) request).setParameter("multi", new String[] {"m1", "m2"});
+            ((MockHttpServletRequest) request)
+                    .setQueryString("xYz=aBc&jpassword1=mask%20me&multi=m1&multi=m2");
+        }
+        @Override
+        protected void doGet(HttpServletRequest request, HttpServletResponse response) {
+            request.getParameter("xYz");
+        }
+    }
+
+    @SuppressWarnings("serial")
+    public static class GetParameterWithoutMaskedQueryString extends TestServlet {
+        @Override
+        protected void before(HttpServletRequest request, HttpServletResponse response) {
+            ((MockHttpServletRequest) request).setParameter("xYz", "aBc");
+            ((MockHttpServletRequest) request).setParameter("jpassword1", "mask me");
+            ((MockHttpServletRequest) request).setParameter("multi", new String[] {"m1", "m2"});
+            ((MockHttpServletRequest) request).setQueryString("xYz=aBc&multi=m1&multi=m2");
         }
         @Override
         protected void doGet(HttpServletRequest request, HttpServletResponse response) {
@@ -189,6 +241,21 @@ public class RequestParameterIT {
         public void executeApp() throws Exception {
             MockHttpServletRequest request =
                     new ExtraBadMockHttpServletRequest("GET", "/testservlet");
+            MockHttpServletResponse response = new PatchedMockHttpServletResponse();
+            service((ServletRequest) request, (ServletResponse) response);
+        }
+        @Override
+        protected void doGet(HttpServletRequest request, HttpServletResponse response) {
+            request.getParameterValues("z");
+        }
+    }
+
+    @SuppressWarnings("serial")
+    public static class GetAnotherBadParameterMap extends TestServlet {
+        @Override
+        public void executeApp() throws Exception {
+            MockHttpServletRequest request =
+                    new AnotherBadMockHttpServletRequest("GET", "/testservlet");
             MockHttpServletResponse response = new PatchedMockHttpServletResponse();
             service((ServletRequest) request, (ServletResponse) response);
         }
@@ -264,6 +331,24 @@ public class RequestParameterIT {
                 return new String[] {null, "x"};
             }
             return new String[0];
+        }
+    }
+
+    public static class AnotherBadMockHttpServletRequest extends MockHttpServletRequest {
+
+        public AnotherBadMockHttpServletRequest(String method, String requestURI) {
+            super(method, requestURI);
+        }
+
+        @Override
+        public Map<String, String[]> getParameterMap() {
+            Map<Object, Object> parameterMap = new HashMap<Object, Object>();
+            parameterMap.put("m", new Object());
+            parameterMap.put("n", new String[] {"x"});
+            @SuppressWarnings("unchecked")
+            Map<String, String[]> badParameterMap =
+                    (Map<String, String[]>) ((Map<?, ?>) parameterMap);
+            return badParameterMap;
         }
     }
 }

@@ -1,5 +1,5 @@
 <!--
-  Copyright 2012-2017 the original author or authors.
+  Copyright 2012-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -16,15 +16,15 @@
 <div class="clearfix" style="position: relative;">
   <div ng-include src="'template/gt-http-error-overlay.html'"></div>
   <!-- z-index 800 is needed to keep the buttons in front of the chart spinner overlay -->
-  <div class="clearfix" style="position: relative; z-index: 800; margin-top: 25px;">
-    <div class="pull-right" style="margin-top: -20px; margin-bottom: -8px; font-size: 22px;">
+  <div class="clearfix" style="position: relative; z-index: 800; margin-top: 26px;">
+    <div class="pull-right" style="margin-top: -20px; margin-bottom: -8px; font-size: 20px;">
       <!-- using anchor instead of button due to nicer focus ring behavior in chrome -->
       <a role="button"
          class="gt-chart-button"
          href="#"
          ng-click="zoomOut()">
         <span title="Zoom out"
-              class="fa fa-search-minus"></span><!-- lack of space here is significant
+              class="fas fa-search-minus"></span><!-- lack of space here is significant
    --></a>
       <!-- using anchor instead of button due to nicer focus ring behavior in chrome -->
       <a role="button"
@@ -32,7 +32,7 @@
          href="#"
          ng-click="refresh()">
         <span title="Refresh"
-              class="fa fa-refresh"></span><!-- lack of space here is significant
+              class="fas fa-sync"></span><!-- lack of space here is significant
    --></a>
       <!-- using anchor instead of button due to nicer focus ring behavior in chrome -->
       <a role="button"
@@ -42,7 +42,7 @@
          popover-placement="left"
          popover-trigger="'outsideClick'">
         <span title="Help"
-              class="fa fa-question-circle"></span><!-- lack of space here is significant
+              class="fas fa-question-circle"></span><!-- lack of space here is significant
    --></a>
     </div>
   </div>
@@ -99,12 +99,54 @@
        gt-form-with-primary-button
        class="col-lg-9 col-lg-pull-3 form-horizontal trace-filters"
        style="margin: 20px auto 0 auto;">
+    <div class="form-group"
+         ng-class="{'has-error': formCtrl.filterDurationMillisLow.$invalid || formCtrl.filterDurationMillisHigh.$invalid}">
+      <label class="col-lg-4 control-label"
+             for="{{filterDurationComparator !== 'less' ? 'filterDurationMillisLow' : 'filterDurationMillisHigh'}}">
+        Response time
+      </label>
+      <div class="col-lg-8">
+        <!-- input-group needs to be in a sub-div so it doesn't try to fill the entire width,
+             which would push the addon "milliseconds" label flush right -->
+        <div class="input-group"
+             style="width: 100%;"
+             ng-style="{'max-width': filterDurationComparator === 'between' ? '30em' : '25em'}">
+          <div gt-input-group-dropdown
+               gt-model="filterDurationComparator"
+               gt-items="filterDurationComparatorOptions"
+               class="input-group-left">
+          </div>
+          <input type="text"
+                 ng-model="filter.durationMillisLow"
+                 ng-show="filterDurationComparator !== 'less'"
+                 ng-pattern="/^(0|[1-9][0-9]*)$/"
+                 class="form-control"
+                 id="filterDurationMillisLow"
+                 name="filterDurationMillisLow"
+                 data-lpignore="true">
+          <span ng-show="filterDurationComparator === 'between'"
+                class="input-group-addon"
+                style="border-left-width: 0; border-right-width: 0;">
+          and
+        </span>
+          <input type="text"
+                 ng-model="filter.durationMillisHigh"
+                 ng-show="filterDurationComparator !== 'greater'"
+                 ng-pattern="/^(0|[1-9][0-9]*)$/"
+                 class="form-control"
+                 id="filterDurationMillisHigh"
+                 name="filterDurationMillisHigh">
+          <span class="input-group-addon">
+          milliseconds
+        </span>
+        </div>
+      </div>
+    </div>
     <div class="form-group">
       <label class="col-lg-4 control-label"
              for="searchHeadline">
         Headline/URL
       </label>
-
       <div class="col-lg-8">
         <div class="input-group"
              style="width: 100%; max-width: 25em;">
@@ -127,7 +169,6 @@
              for="searchErrorMessage">
         Error
       </label>
-
       <div class="col-lg-8">
         <div class="input-group"
              style="width: 100%; max-width: 25em;">
@@ -149,7 +190,6 @@
              for="searchUser">
         User
       </label>
-
       <div class="col-lg-8">
         <div class="input-group"
              style="width: 100%; max-width: 25em;">
@@ -171,7 +211,6 @@
              for="searchAttributeName">
         Attribute name
       </label>
-
       <div class="col-lg-8">
         <select ng-model="filter.attributeName"
                 class="form-control"
@@ -190,7 +229,6 @@
              for="searchAttributeValue">
         Attribute value
       </label>
-
       <div class="col-lg-8">
         <div class="input-group"
              style="width: 100%; max-width: 25em;">
@@ -212,7 +250,6 @@
              for="searchLimit">
         Result limit
       </label>
-
       <div class="col-lg-8">
         <select ng-model="filter.limit"
                 ng-options="option.value as option.text for option in filterLimitOptions"
@@ -240,7 +277,10 @@
   <!-- escape key doesn't close modal in some situations without tabindex="-1"
        in particular, open trace modal, expand trace entries, then expand a concatenated span (one with ...)
        then hit escape key and modal doesn't close (at least not in chrome) -->
-  <div class="modal gt-full-screen-modal" id="traceModal" tabindex="-1">
+  <div class="modal gt-full-screen-modal"
+       role="dialog"
+       tabindex="-1"
+       id="traceModal">
     <button type="button"
             class="close"
             data-dismiss="modal">

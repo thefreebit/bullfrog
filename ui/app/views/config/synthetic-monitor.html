@@ -1,5 +1,5 @@
 <!--
-  Copyright 2017 the original author or authors.
+  Copyright 2017-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -15,19 +15,12 @@
 -->
 <div class="panel panel-default">
   <div class="panel-heading">
-    <h2>
-      <a class="pull-right"
-         style="font-size: 16px; padding-top: 16px;"
-         href="config/synthetic-monitor-list{{agentQueryString()}}">
-        Return to list
-      </a>
-      <span ng-class="{'gt-lighten-font': !loaded && !httpError}">
-        Synthetic monitors
-        <span class="gt-inline-block gt-separator">
-          |
-        </span>
-        <span style="font-size: 24px;">{{heading}}</span>
+    <h2 ng-class="{'gt-lighten-font': !loaded && !httpError}">
+      Synthetic monitors
+      <span class="gt-inline-block gt-separator">
+        |
       </span>
+      <span style="font-size: 24px;">{{heading}}</span>
     </h2>
   </div>
   <div class="panel-body">
@@ -47,7 +40,7 @@
             <label>
               <input type="radio"
                      ng-model="config.kind"
-                     ng-disabled="!agentPermissions.config.edit.syntheticMonitor"
+                     ng-disabled="!agentRollup.permissions.config.edit.syntheticMonitor"
                      value="ping">
               Ping
             </label>
@@ -56,21 +49,11 @@
             <label>
               <input type="radio"
                      ng-model="config.kind"
-                     ng-disabled="!agentPermissions.config.edit.syntheticMonitor"
+                     ng-disabled="!agentRollup.permissions.config.edit.syntheticMonitor"
                      value="java">
               Java
             </label>
           </div>
-        </div>
-      </div>
-      <div gt-form-group
-           gt-label="Display name"
-           gt-model="config.display"
-           gt-disabled="!agentPermissions.config.edit.syntheticMonitor"
-           gt-width="40em"
-           gt-required="loaded">
-        <div class="help-block">
-          Display name for this synthetic monitor.
         </div>
       </div>
       <div ng-if="config.kind === 'ping'">
@@ -80,22 +63,42 @@
              gt-model="config.pingUrl"
              gt-pattern="/^https?:\/\//"
              gt-required="loaded"
-             gt-disabled="!agentPermissions.config.edit.syntheticMonitor"
+             gt-disabled="!agentRollup.permissions.config.edit.syntheticMonitor"
              gt-rows="10"
              class="gt-alert-java-class">
           <div class="help-block">
             The HTTP or HTTPS URL to ping with a simple GET request.
           </div>
         </div>
+        <div gt-form-group
+             gt-label="Display name"
+             gt-model="config.display"
+             gt-disabled="!agentRollup.permissions.config.edit.syntheticMonitor"
+             gt-width="40em"
+             gt-placeholder="Ping {{config.pingUrl ? config.pingUrl : '<url>'}}">
+          <div class="help-block">
+            Display name for this synthetic monitor.
+          </div>
+        </div>
       </div>
       <div ng-if="config.kind === 'java'">
+        <div gt-form-group
+             gt-label="Display name"
+             gt-model="config.display"
+             gt-disabled="!agentRollup.permissions.config.edit.syntheticMonitor"
+             gt-width="40em"
+             gt-required="loaded">
+          <div class="help-block">
+            Display name for this synthetic monitor.
+          </div>
+        </div>
         <!-- the id below is needed for css style (see config.less) -->
         <div gt-form-group
              gt-type="codemirror"
              gt-label="Java source"
              gt-model="config.javaSource"
              gt-required="loaded"
-             gt-disabled="!agentPermissions.config.edit.syntheticMonitor"
+             gt-disabled="!agentRollup.permissions.config.edit.syntheticMonitor"
              id="gtSyntheticJavaSource"
              class="gt-synthetic-java-source"
              ng-class="{'has-error': !config.javaSource}">
@@ -123,7 +126,7 @@
         </div>
       </div>
       <div class="form-group gt-form-buttons"
-           ng-if="agentPermissions.config.edit.syntheticMonitor">
+           ng-if="agentRollup.permissions.config.edit.syntheticMonitor">
         <div class="col-lg-offset-3 col-lg-9">
           <div gt-button-group>
             <div gt-button
@@ -146,3 +149,5 @@
     </div>
   </div>
 </div>
+<!-- each page with confirmation dialog needs its own confirmation dom so that it is deleted on $destroy -->
+<div ng-include="'template/gt-confirmation.html'"></div>

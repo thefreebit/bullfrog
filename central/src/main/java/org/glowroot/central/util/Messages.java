@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,14 +19,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.List;
 
-import javax.annotation.Nullable;
-
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
 import com.google.protobuf.AbstractMessage;
 import com.google.protobuf.Parser;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.common.util.SizeLimitBypassingParser;
 
@@ -51,7 +50,7 @@ public class Messages {
         }
         SizeLimitBypassingParser<T> sizeLimitBypassingParser =
                 new SizeLimitBypassingParser<>(parser);
-        List<T> messages = Lists.newArrayList();
+        List<T> messages = new ArrayList<>();
         try (InputStream input = new ByteBufferInputStream(byteBuf)) {
             T message;
             while ((message = sizeLimitBypassingParser.parseDelimitedFrom(input)) != null) {

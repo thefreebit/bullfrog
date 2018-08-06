@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2016 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,7 +37,7 @@
 
 #queryModal .gt-clip {
   position: absolute;
-  right: 58px;
+  right: 61px;
   top: 64px;
   z-index: 100;
   color: #7f7f7f;
@@ -49,13 +49,13 @@
   // important: IE9 (haven't tried other IE versions) has strange behavior after hovering over and out of close button
   // this override is no longer applied and the button gets very light (default bootstrap opacity .2)
   // so bootstrap close.less is duplicated/modified to handle this
-  opacity: .4 !important;
+  opacity: .42 !important; // just enough opacity to meet accessibility contrast ratio
   font-size: 24px !important;
 }
 
 // override bootstrap styling for modal close icon
 .modal .close:hover, .modal .close:focus {
-  opacity: .6 !important;
+  opacity: .62 !important;
 }
 
 @media screen and (min-width: @screen-lg-min) {

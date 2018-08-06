@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,26 +18,25 @@ package org.glowroot.ui;
 import java.security.GeneralSecurityException;
 import java.util.List;
 
-import javax.annotation.Nullable;
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.glowroot.common.config.ImmutableUserConfig;
-import org.glowroot.common.config.RoleConfig;
-import org.glowroot.common.config.UserConfig;
-import org.glowroot.common.repo.ConfigRepository;
-import org.glowroot.common.repo.ConfigRepository.CannotDeleteLastUserException;
-import org.glowroot.common.repo.ConfigRepository.DuplicateUsernameException;
-import org.glowroot.common.repo.ConfigRepository.UserNotFoundException;
 import org.glowroot.common.util.ObjectMappers;
+import org.glowroot.common2.config.ImmutableUserConfig;
+import org.glowroot.common2.config.RoleConfig;
+import org.glowroot.common2.config.UserConfig;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.ConfigRepository.CannotDeleteLastUserException;
+import org.glowroot.common2.repo.ConfigRepository.DuplicateUsernameException;
+import org.glowroot.common2.repo.ConfigRepository.UserNotFoundException;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 import static io.netty.handler.codec.http.HttpResponseStatus.CONFLICT;

@@ -1,0 +1,43 @@
+/*
+ * Copyright 2018 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.glowroot.agent.api.internal;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+
+public class GlowrootServiceHolder {
+
+    private static volatile @Nullable GlowrootService service;
+    private static volatile @Nullable Exception retrievedTooEarlyLocation;
+
+    private GlowrootServiceHolder() {}
+
+    public static GlowrootService get() {
+        if (service == null) {
+            retrievedTooEarlyLocation = new Exception();
+            return NopGlowrootService.INSTANCE;
+        } else {
+            return service;
+        }
+    }
+
+    public static void set(GlowrootService service) {
+        GlowrootServiceHolder.service = service;
+    }
+
+    public static @Nullable Exception getRetrievedTooEarlyLocation() {
+        return retrievedTooEarlyLocation;
+    }
+}

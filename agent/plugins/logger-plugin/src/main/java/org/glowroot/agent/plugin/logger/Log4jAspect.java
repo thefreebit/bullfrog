@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,18 +17,16 @@ package org.glowroot.agent.plugin.logger;
 
 import java.util.Enumeration;
 
-import javax.annotation.Nullable;
-
 import org.glowroot.agent.plugin.api.Agent;
 import org.glowroot.agent.plugin.api.Message;
 import org.glowroot.agent.plugin.api.MessageSupplier;
 import org.glowroot.agent.plugin.api.ThreadContext;
 import org.glowroot.agent.plugin.api.TimerName;
 import org.glowroot.agent.plugin.api.TraceEntry;
+import org.glowroot.agent.plugin.api.checker.Nullable;
 import org.glowroot.agent.plugin.api.weaving.BindParameter;
 import org.glowroot.agent.plugin.api.weaving.BindReceiver;
 import org.glowroot.agent.plugin.api.weaving.BindTraveler;
-import org.glowroot.agent.plugin.api.weaving.IsEnabled;
 import org.glowroot.agent.plugin.api.weaving.OnAfter;
 import org.glowroot.agent.plugin.api.weaving.OnBefore;
 import org.glowroot.agent.plugin.api.weaving.Pointcut;
@@ -73,27 +71,6 @@ public class Log4jAspect {
     public static class ForcedLogAdvice {
 
         private static final TimerName timerName = Agent.getTimerName(ForcedLogAdvice.class);
-
-        @IsEnabled
-        @SuppressWarnings("unboxing.of.nullable")
-        public static boolean isEnabled(@BindReceiver Logger logger) {
-            // check to see if no appenders, then don't capture (this is just to avoid confusion)
-            // log4j itself will log a warning:
-            // "No appenders could be found for logger, Please initialize the log4j system properly"
-            // (see org.apache.log4j.Hierarchy.emitNoAppenderWarning())
-            Logger curr = logger;
-            while (true) {
-                Enumeration<?> e = curr.getAllAppenders();
-                if (e != null && e.hasMoreElements()) {
-                    // has at least one appender
-                    return true;
-                }
-                curr = curr.glowroot$getParent();
-                if (curr == null) {
-                    return false;
-                }
-            }
-        }
 
         @OnBefore
         @SuppressWarnings("unused")

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,12 @@ package org.glowroot.central;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
-import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -29,69 +30,65 @@ import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import javax.annotation.Nullable;
-
+import com.google.common.base.MoreObjects;
 import com.google.common.base.Stopwatch;
 import com.google.common.base.Ticker;
 import com.google.common.collect.Sets;
-import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
-import com.google.common.util.concurrent.SettableFuture;
 import com.machinepublishers.jbrowserdriver.JBrowserDriver;
+import com.machinepublishers.jbrowserdriver.ProxyConfig;
 import com.machinepublishers.jbrowserdriver.RequestHeaders;
 import com.machinepublishers.jbrowserdriver.Settings;
-import io.netty.bootstrap.Bootstrap;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelPipeline;
-import io.netty.channel.EventLoopGroup;
-import io.netty.channel.SimpleChannelInboundHandler;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.SocketChannel;
-import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.http.DefaultFullHttpRequest;
-import io.netty.handler.codec.http.HttpClientCodec;
-import io.netty.handler.codec.http.HttpContent;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpHeaderValues;
-import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http.HttpObject;
-import io.netty.handler.codec.http.HttpObjectAggregator;
-import io.netty.handler.codec.http.HttpRequest;
-import io.netty.handler.codec.http.HttpResponse;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http.HttpVersion;
-import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslContextBuilder;
-import io.netty.util.CharsetUtil;
-import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import com.machinepublishers.jbrowserdriver.UserAgent;
+import com.machinepublishers.jbrowserdriver.UserAgent.Family;
+import org.apache.http.HttpHost;
+import org.apache.http.HttpResponse;
+import org.apache.http.auth.AUTH;
+import org.apache.http.auth.AuthScope;
+import org.apache.http.auth.UsernamePasswordCredentials;
+import org.apache.http.client.CredentialsProvider;
+import org.apache.http.client.config.RequestConfig;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.protocol.HttpClientContext;
+import org.apache.http.concurrent.FutureCallback;
+import org.apache.http.impl.auth.BasicScheme;
+import org.apache.http.impl.client.BasicAuthCache;
+import org.apache.http.impl.client.BasicCredentialsProvider;
+import org.apache.http.impl.nio.client.CloseableHttpAsyncClient;
+import org.apache.http.impl.nio.client.HttpAsyncClients;
+import org.apache.http.message.BasicHeader;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 import org.openqa.selenium.WebDriver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.glowroot.agent.api.Glowroot;
 import org.glowroot.agent.api.Instrumentation;
+import org.glowroot.agent.api.Instrumentation.AlreadyInTransactionBehavior;
 import org.glowroot.central.RollupService.AgentRollupConsumer;
-import org.glowroot.central.repo.AgentRollupDao;
+import org.glowroot.central.repo.ActiveAgentDao;
 import org.glowroot.central.repo.ConfigRepositoryImpl;
 import org.glowroot.central.repo.IncidentDao;
 import org.glowroot.central.repo.SyntheticResultDao;
-import org.glowroot.common.repo.AgentRollupRepository.AgentRollup;
-import org.glowroot.common.repo.IncidentRepository.OpenIncident;
-import org.glowroot.common.repo.util.AlertingService;
-import org.glowroot.common.repo.util.Compilations;
-import org.glowroot.common.repo.util.Encryption;
+import org.glowroot.central.util.ClusterManager;
+import org.glowroot.central.util.MoreFutures;
 import org.glowroot.common.util.Clock;
 import org.glowroot.common.util.Styles;
+import org.glowroot.common.util.Version;
+import org.glowroot.common2.config.HttpProxyConfig;
+import org.glowroot.common2.config.MoreConfigDefaults;
+import org.glowroot.common2.repo.ActiveAgentRepository.AgentRollup;
+import org.glowroot.common2.repo.ConfigRepository.AgentConfigNotFoundException;
+import org.glowroot.common2.repo.IncidentRepository.OpenIncident;
+import org.glowroot.common2.repo.util.AlertingService;
+import org.glowroot.common2.repo.util.Compilations;
+import org.glowroot.common2.repo.util.Encryption;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig.AlertCondition;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig.AlertCondition.SyntheticMonitorCondition;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.SyntheticMonitorConfig;
+import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.SyntheticMonitorConfig.SyntheticMonitorKind;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -103,10 +100,13 @@ class SyntheticMonitorService implements Runnable {
 
     private static final Pattern encryptedPattern = Pattern.compile("\"ENCRYPTED:([^\"]*)\"");
 
+    private static final int PING_TIMEOUT_MILLIS = 60000;
+    private static final long PING_TIMEOUT_NANOS = MILLISECONDS.toNanos(PING_TIMEOUT_MILLIS);
+
     private static final RequestHeaders REQUEST_HEADERS;
 
     static {
-        // this list is from com.machinepublishers.jbrowserdriver.RequestHeaders,
+        // this list is from com.machinepublishers.jbrowserdriver.RequestHeaders.CHROME,
         // with added Glowroot-Transaction-Type header
         LinkedHashMap<String, String> headersTmp = new LinkedHashMap<>();
         headersTmp.put("Host", RequestHeaders.DYNAMIC_HEADER);
@@ -124,7 +124,7 @@ class SyntheticMonitorService implements Runnable {
         REQUEST_HEADERS = new RequestHeaders(headersTmp);
     }
 
-    private final AgentRollupDao agentRollupDao;
+    private final ActiveAgentDao activeAgentDao;
     private final ConfigRepositoryImpl configRepository;
     private final IncidentDao incidentDao;
     private final AlertingService alertingService;
@@ -132,6 +132,12 @@ class SyntheticMonitorService implements Runnable {
     private final SyntheticResultDao syntheticResponseDao;
     private final Ticker ticker;
     private final Clock clock;
+
+    private final ConcurrentMap<String, Boolean> executionRateLimiter;
+
+    private final CloseableHttpAsyncClient httpClient;
+
+    private final UserAgent userAgent;
 
     private final ExecutorService checkExecutor;
     private final ExecutorService mainLoopExecutor;
@@ -144,16 +150,43 @@ class SyntheticMonitorService implements Runnable {
 
     private volatile boolean closed;
 
-    SyntheticMonitorService(AgentRollupDao agentRollupDao, ConfigRepositoryImpl configRepository,
+    SyntheticMonitorService(ActiveAgentDao activeAgentDao, ConfigRepositoryImpl configRepository,
             IncidentDao incidentDao, AlertingService alertingService,
-            SyntheticResultDao syntheticResponseDao, Ticker ticker, Clock clock) {
-        this.agentRollupDao = agentRollupDao;
+            SyntheticResultDao syntheticResponseDao, ClusterManager clusterManager, Ticker ticker,
+            Clock clock, String version) {
+        this.activeAgentDao = activeAgentDao;
         this.configRepository = configRepository;
         this.incidentDao = incidentDao;
         this.alertingService = alertingService;
         this.syntheticResponseDao = syntheticResponseDao;
         this.ticker = ticker;
         this.clock = clock;
+        executionRateLimiter = clusterManager
+                .createReplicatedMap("syntheticMonitorExecutionRateLimiter", 30, SECONDS);
+        String shortVersion;
+        if (version.equals(Version.UNKNOWN_VERSION)) {
+            shortVersion = "";
+        } else {
+            int index = version.indexOf(", built ");
+            if (index == -1) {
+                shortVersion = "/" + version;
+            } else {
+                shortVersion = "/" + version.substring(0, index);
+            }
+        }
+        httpClient = HttpAsyncClients.custom()
+                .setUserAgent("GlowrootCentral" + shortVersion)
+                .setMaxConnPerRoute(10) // increasing from default 2
+                .setMaxConnTotal(1000) // increasing from default 20
+                .build();
+        httpClient.start();
+        // these parameters are from com.machinepublishers.jbrowserdriver.UserAgent.CHROME
+        // with added GlowrootCentral/<version> for identification purposes
+        userAgent = new UserAgent(Family.WEBKIT, "Google Inc.", "Win32", "Windows NT 6.1",
+                "5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
+                        + " Chrome/45.0.2454.85 Safari/537.36 GlowrootCentral" + shortVersion,
+                "Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
+                        + " Chrome/45.0.2454.85 Safari/537.36 GlowrootCentral" + shortVersion);
         checkExecutor = Executors.newCachedThreadPool();
         mainLoopExecutor = Executors.newSingleThreadExecutor();
         mainLoopExecutor.execute(castInitialized(this));
@@ -163,8 +196,10 @@ class SyntheticMonitorService implements Runnable {
     public void run() {
         while (!closed) {
             try {
-                // FIXME spread out agent checks over the minute
-                Thread.sleep(60000);
+                long currMillis = clock.currentTimeMillis();
+                long nextMillis = (long) Math.ceil(currMillis / 60000.0) * 60000;
+                // scheduling for 5 seconds after the minute (just to avoid exactly on the minute)
+                MILLISECONDS.sleep(nextMillis - currMillis + 5000);
                 runInternal();
             } catch (InterruptedException e) {
                 // probably shutdown requested (see close method below)
@@ -176,20 +211,27 @@ class SyntheticMonitorService implements Runnable {
         }
     }
 
-    void close() throws InterruptedException {
+    void close() throws Exception {
         closed = true;
-        // shutdownNow() is needed here to send interrupt to SyntheticMonitorService check threads
+        // shutdownNow() is needed to send interrupt to SyntheticMonitorService user test threads
+        syntheticUserTestExecutor.shutdownNow();
+        if (!syntheticUserTestExecutor.awaitTermination(10, SECONDS)) {
+            throw new IllegalStateException(
+                    "Timed out waiting for synthetic user test threads to terminate");
+        }
+        // shutdownNow() is needed to send interrupt to SyntheticMonitorService check threads
         checkExecutor.shutdownNow();
         if (!checkExecutor.awaitTermination(10, SECONDS)) {
             throw new IllegalStateException(
                     "Timed out waiting for synthetic monitor check threads to terminate");
         }
-        // shutdownNow() is needed here to send interrupt to SyntheticMonitorService main thread
+        // shutdownNow() is needed to send interrupt to SyntheticMonitorService main thread
         mainLoopExecutor.shutdownNow();
         if (!mainLoopExecutor.awaitTermination(10, SECONDS)) {
             throw new IllegalStateException(
                     "Timed out waiting for synthetic monitor loop thread to terminate");
         }
+        httpClient.close();
     }
 
     @Instrumentation.Transaction(transactionType = "Background",
@@ -197,18 +239,9 @@ class SyntheticMonitorService implements Runnable {
             traceHeadline = "Outer synthetic monitor loop",
             timer = "outer synthetic monitor loop")
     private void runInternal() throws Exception {
-        Glowroot.setTransactionOuter();
-        for (AgentRollup agentRollup : agentRollupDao.readAgentRollups()) {
+        for (AgentRollup agentRollup : activeAgentDao.readRecentlyActiveAgentRollups(7)) {
             consumeAgentRollups(agentRollup, this::runSyntheticMonitors);
         }
-    }
-
-    private void consumeAgentRollups(AgentRollup agentRollup,
-            AgentRollupConsumer agentRollupConsumer) throws Exception {
-        for (AgentRollup childAgentRollup : agentRollup.children()) {
-            consumeAgentRollups(childAgentRollup, agentRollupConsumer);
-        }
-        agentRollupConsumer.accept(agentRollup);
     }
 
     private void runSyntheticMonitors(AgentRollup agentRollup) throws InterruptedException {
@@ -216,7 +249,12 @@ class SyntheticMonitorService implements Runnable {
         try {
             syntheticMonitorConfigs = configRepository.getSyntheticMonitorConfigs(agentRollup.id());
         } catch (InterruptedException e) {
+            // probably shutdown requested
             throw e;
+        } catch (AgentConfigNotFoundException e) {
+            // be lenient if agent_config table is messed up
+            logger.debug(e.getMessage(), e);
+            return;
         } catch (Exception e) {
             logger.error("{} - {}", agentRollup.display(), e.getMessage(), e);
             return;
@@ -230,32 +268,39 @@ class SyntheticMonitorService implements Runnable {
                 alertConfigs = configRepository.getAlertConfigsForSyntheticMonitorId(
                         agentRollup.id(), syntheticMonitorConfig.getId());
             } catch (InterruptedException e) {
+                // probably shutdown requested
                 throw e;
+            } catch (AgentConfigNotFoundException e) {
+                // be lenient if agent_config table is messed up
+                logger.debug(e.getMessage(), e);
+                return;
             } catch (Exception e) {
                 logger.error(e.getMessage(), e);
                 continue;
             }
-            checkExecutor.execute(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        switch (syntheticMonitorConfig.getKind()) {
-                            case PING:
-                                runPing(agentRollup, syntheticMonitorConfig, alertConfigs);
-                                break;
-                            case JAVA:
-                                runJava(agentRollup, syntheticMonitorConfig, alertConfigs);
-                                break;
-                            default:
-                                throw new IllegalStateException("Unexpected synthetic kind: "
-                                        + syntheticMonitorConfig.getKind());
-                        }
-                    } catch (InterruptedException e) {
-                        // probably shutdown requested (see close method above)
-                        logger.debug(e.getMessage(), e);
-                    } catch (Exception e) {
-                        logger.error("{} - {}", agentRollup.display(), e.getMessage(), e);
+            String uniqueId = syntheticMonitorConfig.getId() + agentRollup.id();
+            if (executionRateLimiter.putIfAbsent(uniqueId, true) != null) {
+                // was run in the last 30 seconds (probably on a different cluster node)
+                continue;
+            }
+            checkExecutor.execute(() -> {
+                try {
+                    switch (syntheticMonitorConfig.getKind()) {
+                        case PING:
+                            runPing(agentRollup, syntheticMonitorConfig, alertConfigs);
+                            break;
+                        case JAVA:
+                            runJava(agentRollup, syntheticMonitorConfig, alertConfigs);
+                            break;
+                        default:
+                            throw new IllegalStateException("Unexpected synthetic kind: "
+                                    + syntheticMonitorConfig.getKind());
                     }
+                } catch (InterruptedException e) {
+                    // probably shutdown requested (see close method above)
+                    logger.debug(e.getMessage(), e);
+                } catch (Exception e) {
+                    logger.error("{} - {}", agentRollup.display(), e.getMessage(), e);
                 }
             });
         }
@@ -263,16 +308,12 @@ class SyntheticMonitorService implements Runnable {
 
     @Instrumentation.Transaction(transactionType = "Background",
             transactionName = "Synthetic monitor", traceHeadline = "Synthetic monitor: {{0.id}}",
-            timer = "synthetic monitor")
+            timer = "synthetic monitor",
+            alreadyInTransactionBehavior = AlreadyInTransactionBehavior.CAPTURE_NEW_TRANSACTION)
     private void runPing(AgentRollup agentRollup, SyntheticMonitorConfig syntheticMonitorConfig,
             List<AlertConfig> alertConfigs) throws Exception {
         runSyntheticMonitor(agentRollup, syntheticMonitorConfig, alertConfigs,
-                new Callable<ListenableFuture<?>>() {
-                    @Override
-                    public ListenableFuture<?> call() throws Exception {
-                        return runPing(syntheticMonitorConfig.getPingUrl());
-                    }
-                });
+                () -> runPing(syntheticMonitorConfig.getPingUrl()));
     }
 
     @Instrumentation.Transaction(transactionType = "Background",
@@ -290,85 +331,123 @@ class SyntheticMonitorService implements Runnable {
         }
         matcher.appendTail(sb);
         runSyntheticMonitor(agentRollup, syntheticMonitorConfig, alertConfigs,
-                new Callable<ListenableFuture<?>>() {
-                    @Override
-                    public ListenableFuture<?> call() throws Exception {
-                        return runJava(sb.toString());
-                    }
-                });
+                () -> runJava(sb.toString()));
+    }
+
+    private CompletableFuture<?> runJava(String javaSource) {
+        return MoreFutures.submitAsync(new Callable</*@Nullable*/ Void>() {
+            @Override
+            public @Nullable Void call() throws Exception {
+                Class<?> syntheticUserTestClass = Compilations.compile(javaSource);
+                // validation for default constructor and test method occurs on save
+                Constructor<?> defaultConstructor = syntheticUserTestClass.getConstructor();
+                Method method = syntheticUserTestClass.getMethod("test", WebDriver.class);
+                Settings.Builder settings = Settings.builder()
+                        .requestHeaders(REQUEST_HEADERS)
+                        .userAgent(userAgent);
+                HttpProxyConfig httpProxyConfig = configRepository.getHttpProxyConfig();
+                if (!httpProxyConfig.host().isEmpty()) {
+                    int proxyPort = MoreObjects.firstNonNull(httpProxyConfig.port(), 80);
+                    settings.proxy(new ProxyConfig(ProxyConfig.Type.HTTP, httpProxyConfig.host(),
+                            proxyPort, httpProxyConfig.username(), httpProxyConfig.password()));
+                }
+                JBrowserDriver driver = new JBrowserDriver(settings.build());
+                try {
+                    method.invoke(defaultConstructor.newInstance(), driver);
+                } finally {
+                    driver.quit();
+                }
+                return null;
+            }
+        }, syntheticUserTestExecutor);
+    }
+
+    private CompletableFuture<?> runPing(String url) {
+        CompletableFuture</*@Nullable*/ Void> future = new CompletableFuture<>();
+        syntheticUserTestExecutor.execute(() -> {
+            try {
+                HttpGet httpGet = new HttpGet(url);
+                httpGet.setHeader("Glowroot-Transaction-Type", "Synthetic");
+                RequestConfig.Builder config = RequestConfig.custom()
+                        // wait an extra second to make sure no edge case where
+                        // SocketTimeoutException occurs with elapsed time < PING_TIMEOUT_MILLIS
+                        .setSocketTimeout(PING_TIMEOUT_MILLIS + 1000);
+                HttpProxyConfig httpProxyConfig = configRepository.getHttpProxyConfig();
+                if (!httpProxyConfig.host().isEmpty()) {
+                    int proxyPort = MoreObjects.firstNonNull(httpProxyConfig.port(), 80);
+                    config.setProxy(new HttpHost(httpProxyConfig.host(), proxyPort));
+                }
+                httpGet.setConfig(config.build());
+                httpClient.execute(httpGet, getHttpClientContext(),
+                        new CompletingFutureCallback(future));
+            } catch (Throwable t) {
+                logger.debug(t.getMessage(), t);
+                future.completeExceptionally(t);
+            }
+        });
+        return future;
     }
 
     private void runSyntheticMonitor(AgentRollup agentRollup,
             SyntheticMonitorConfig syntheticMonitorConfig, List<AlertConfig> alertConfigs,
-            Callable<ListenableFuture<?>> callable) throws Exception {
-        final SyntheticMonitorUniqueKey uniqueKey =
-                ImmutableSyntheticMonitorUniqueKey.of(agentRollup.id(),
-                        syntheticMonitorConfig.getId());
+            Callable<CompletableFuture<?>> callable) throws Exception {
+        SyntheticMonitorUniqueKey uniqueKey = ImmutableSyntheticMonitorUniqueKey
+                .of(agentRollup.id(), syntheticMonitorConfig.getId());
         if (!activeSyntheticMonitors.add(uniqueKey)) {
             return;
         }
-        long startTime = ticker.read();
         Stopwatch stopwatch = Stopwatch.createStarted();
-        final ListenableFuture<?> future;
-        try {
-            future = callable.call();
-        } catch (InterruptedException e) {
-            activeSyntheticMonitors.remove(uniqueKey);
-            throw e;
-        } catch (Exception e) {
-            logger.debug(e.getMessage(), e);
+        long startTime = ticker.read();
+        CompletableFuture<?> future = callable.call();
+        future.whenComplete((@Nullable Object v, @Nullable Throwable t) -> {
             activeSyntheticMonitors.remove(uniqueKey);
             long durationNanos = ticker.read() - startTime;
             long captureTime = clock.currentTimeMillis();
-            syntheticResponseDao.store(agentRollup.id(), syntheticMonitorConfig.getId(),
-                    captureTime, durationNanos, true);
-            sendAlertOnErrorIfStatusChanged(agentRollup, syntheticMonitorConfig, alertConfigs,
-                    e.getMessage(), captureTime);
-            return;
-        }
-        future.addListener(new Runnable() {
-            @Override
-            public void run() {
-                // remove "lock" after completion, not just after possible timeout
-                activeSyntheticMonitors.remove(uniqueKey);
-                long durationNanos = ticker.read() - startTime;
-                long captureTime = clock.currentTimeMillis();
-                boolean error = false;
-                try {
-                    future.get();
-                } catch (InterruptedException e) {
-                    // probably shutdown requested (see close method above)
-                    logger.debug(e.getMessage(), e);
-                    return;
-                } catch (ExecutionException e) {
-                    logger.debug(e.getMessage(), e);
-                    if (e.getCause() instanceof InterruptedException) {
-                        // probably shutdown requested (see close method above)
-                        return;
-                    }
-                    error = true;
-                }
-                try {
-                    syntheticResponseDao.store(agentRollup.id(), syntheticMonitorConfig.getId(),
-                            captureTime, durationNanos, error);
-                } catch (InterruptedException e) {
-                    // probably shutdown requested (see close method above)
-                    logger.debug(e.getMessage(), e);
-                    return;
-                } catch (Exception e) {
-                    logger.error(e.getMessage(), e);
+            if (t instanceof InterruptedException) {
+                // probably shutdown requested (see close method above)
+                logger.debug(t.getMessage(), t);
+                return;
+            }
+            String errorMessage = null;
+            if (syntheticMonitorConfig.getKind() == SyntheticMonitorKind.PING
+                    && durationNanos >= PING_TIMEOUT_NANOS) {
+                durationNanos = PING_TIMEOUT_NANOS;
+                errorMessage = "Timeout";
+            } else if (t != null) {
+                logger.debug(t.getMessage(), t);
+                // using Throwable.toString() to include the exception class name
+                // because sometimes hard to know what message means without this context
+                // e.g. java.net.UnknownHostException: google.com
+                errorMessage = getRootCause(t).toString();
+                if (errorMessage == null) {
+                    errorMessage = t.getClass().getName();
                 }
             }
-        }, MoreExecutors.directExecutor());
-        int timeoutMillis = Integer.MAX_VALUE;
+            try {
+                syntheticResponseDao.store(agentRollup.id(), syntheticMonitorConfig.getId(),
+                        captureTime, durationNanos, errorMessage);
+            } catch (InterruptedException e) {
+                // probably shutdown requested (see close method above)
+                logger.debug(e.getMessage(), e);
+                return;
+            } catch (Exception e) {
+                logger.error(e.getMessage(), e);
+            }
+        });
+        if (alertConfigs.isEmpty()) {
+            return;
+        }
+        int maxAlertThresholdMillis = 0;
         for (AlertConfig alertConfig : alertConfigs) {
-            timeoutMillis = Math.max(timeoutMillis,
+            maxAlertThresholdMillis = Math.max(maxAlertThresholdMillis,
                     alertConfig.getCondition().getSyntheticMonitorCondition().getThresholdMillis());
         }
         boolean success;
         String errorMessage;
         try {
-            future.get(timeoutMillis, MILLISECONDS);
+            // wait an extra second to make sure no edge case where TimeoutException occurs with
+            // stopwatch.elapsed(MILLISECONDS) < maxAlertThresholdMillis
+            future.get(maxAlertThresholdMillis + 1000L, MILLISECONDS);
             success = true;
             errorMessage = null;
         } catch (TimeoutException e) {
@@ -386,7 +465,7 @@ class SyntheticMonitorService implements Runnable {
                 AlertCondition alertCondition = alertConfig.getCondition();
                 SyntheticMonitorCondition condition = alertCondition.getSyntheticMonitorCondition();
                 boolean currentlyTriggered =
-                        stopwatch.elapsed(MILLISECONDS) > condition.getThresholdMillis();
+                        stopwatch.elapsed(MILLISECONDS) >= condition.getThresholdMillis();
                 sendAlertIfStatusChanged(agentRollup, syntheticMonitorConfig, alertConfig,
                         condition, captureTime, currentlyTriggered, null);
             }
@@ -397,9 +476,8 @@ class SyntheticMonitorService implements Runnable {
     }
 
     private void sendAlertOnErrorIfStatusChanged(AgentRollup agentRollup,
-            SyntheticMonitorConfig syntheticMonitorConfig,
-            List<AlertConfig> alertConfigs, @Nullable String errorMessage, long captureTime)
-            throws Exception {
+            SyntheticMonitorConfig syntheticMonitorConfig, List<AlertConfig> alertConfigs,
+            @Nullable String errorMessage, long captureTime) throws Exception {
         for (AlertConfig alertConfig : alertConfigs) {
             AlertCondition alertCondition = alertConfig.getCondition();
             SyntheticMonitorCondition condition = alertCondition.getSyntheticMonitorCondition();
@@ -428,41 +506,16 @@ class SyntheticMonitorService implements Runnable {
         }
     }
 
-    private ListenableFuture<?> runJava(final String javaSource) {
-        return syntheticUserTestExecutor.submit(new Callable</*@Nullable*/ Void>() {
-            @Override
-            public @Nullable Void call() throws Exception {
-                Class<?> syntheticUserTestClass = Compilations.compile(javaSource);
-                // validation for default constructor and test method occurs on save
-                Constructor<?> defaultConstructor = syntheticUserTestClass.getConstructor();
-                Method method = syntheticUserTestClass.getMethod("test", WebDriver.class);
-                JBrowserDriver driver = new JBrowserDriver(Settings.builder()
-                        .requestHeaders(REQUEST_HEADERS)
-                        .build());
-                try {
-                    method.invoke(defaultConstructor.newInstance(), driver);
-                } finally {
-                    driver.quit();
-                }
-                return null;
-            }
-        });
-    }
-
     private void sendAlert(String agentRollupId, String agentRollupDisplay,
             SyntheticMonitorConfig syntheticMonitorConfig, AlertConfig alertConfig,
             SyntheticMonitorCondition condition, long endTime, boolean ok,
             @Nullable String errorMessage) throws Exception {
         // subject is the same between initial and ok messages so they will be threaded by gmail
-        String subject = "Glowroot alert";
-        if (!agentRollupDisplay.isEmpty()) {
-            subject += " - " + agentRollupDisplay;
-        }
-        subject += " - " + syntheticMonitorConfig.getDisplay();
+        String subject = MoreConfigDefaults.getDisplayOrDefault(syntheticMonitorConfig);
         StringBuilder sb = new StringBuilder();
-        sb.append(syntheticMonitorConfig.getDisplay());
+        sb.append(MoreConfigDefaults.getDisplayOrDefault(syntheticMonitorConfig));
         if (errorMessage == null) {
-            sb.append(" time ");
+            sb.append(" time");
             sb.append(AlertingService.getPreUpperBoundText(ok));
             sb.append(AlertingService.getWithUnit(condition.getThresholdMillis(), "millisecond"));
             sb.append(".");
@@ -470,8 +523,46 @@ class SyntheticMonitorService implements Runnable {
             sb.append(" resulted in error: ");
             sb.append(errorMessage);
         }
-        alertingService.sendNotification(agentRollupId, agentRollupDisplay, alertConfig, endTime,
-                subject, sb.toString(), ok);
+        alertingService.sendNotification(
+                configRepository.getCentralAdminGeneralConfig().centralDisplayName(), agentRollupId,
+                agentRollupDisplay, alertConfig, endTime, subject, sb.toString(), ok);
+    }
+
+    private HttpClientContext getHttpClientContext() throws Exception {
+        HttpProxyConfig httpProxyConfig = configRepository.getHttpProxyConfig();
+        if (httpProxyConfig.host().isEmpty() || httpProxyConfig.username().isEmpty()) {
+            return HttpClientContext.create();
+        }
+
+        // perform preemptive proxy authentication
+
+        int proxyPort = MoreObjects.firstNonNull(httpProxyConfig.port(), 80);
+        HttpHost proxyHost = new HttpHost(httpProxyConfig.host(), proxyPort);
+
+        BasicScheme basicScheme = new BasicScheme();
+        basicScheme.processChallenge(new BasicHeader(AUTH.PROXY_AUTH, "BASIC realm="));
+        BasicAuthCache authCache = new BasicAuthCache();
+        authCache.put(proxyHost, basicScheme);
+
+        String password = httpProxyConfig.password();
+        if (!password.isEmpty()) {
+            password = Encryption.decrypt(password, configRepository.getLazySecretKey());
+        }
+        CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
+        credentialsProvider.setCredentials(new AuthScope(proxyHost),
+                new UsernamePasswordCredentials(httpProxyConfig.username(), password));
+        HttpClientContext context = HttpClientContext.create();
+        context.setAuthCache(authCache);
+        context.setCredentialsProvider(credentialsProvider);
+        return context;
+    }
+
+    private static void consumeAgentRollups(AgentRollup agentRollup,
+            AgentRollupConsumer agentRollupConsumer) throws Exception {
+        for (AgentRollup childAgentRollup : agentRollup.children()) {
+            consumeAgentRollups(childAgentRollup, agentRollupConsumer);
+        }
+        agentRollupConsumer.accept(agentRollup);
     }
 
     private static Throwable getRootCause(Throwable t) {
@@ -488,77 +579,6 @@ class SyntheticMonitorService implements Runnable {
         return obj;
     }
 
-    private static ListenableFuture<HttpResponseStatus> runPing(String url) throws Exception {
-        URI uri = new URI(url);
-        String scheme = uri.getScheme();
-        if (scheme == null) {
-            throw new IllegalStateException("URI missing scheme");
-        }
-        final boolean ssl = uri.getScheme().equalsIgnoreCase("https");
-        final String host = uri.getHost();
-        if (host == null) {
-            throw new IllegalStateException("URI missing host");
-        }
-        final int port;
-        if (uri.getPort() == -1) {
-            port = ssl ? 443 : 80;
-        } else {
-            port = uri.getPort();
-        }
-        final EventLoopGroup group = new NioEventLoopGroup();
-        final HttpClientHandler httpClientHandler = new HttpClientHandler();
-        Bootstrap bootstrap = new Bootstrap();
-        bootstrap.group(group)
-                .channel(NioSocketChannel.class)
-                .handler(new ChannelInitializer<SocketChannel>() {
-                    @Override
-                    protected void initChannel(SocketChannel ch) throws Exception {
-                        ChannelPipeline p = ch.pipeline();
-                        if (ssl) {
-                            SslContext sslContext = SslContextBuilder.forClient().build();
-                            p.addLast(sslContext.newHandler(ch.alloc(), host, port));
-                        }
-                        p.addLast(new HttpClientCodec());
-                        p.addLast(new HttpObjectAggregator(1048576));
-                        p.addLast(httpClientHandler);
-                    }
-                });
-        final HttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET,
-                uri.getRawPath());
-        request.headers().set(HttpHeaderNames.HOST, host);
-        request.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
-        request.headers().set("Glowroot-Transaction-Type", "Synthetic");
-        ChannelFuture future = bootstrap.connect(host, port);
-        final SettableFuture<HttpResponseStatus> settableFuture = SettableFuture.create();
-        future.addListener(new ChannelFutureListener() {
-            @Override
-            public void operationComplete(ChannelFuture future) {
-                Channel ch = future.channel();
-                if (future.isSuccess()) {
-                    ch.writeAndFlush(request);
-                }
-                ch.closeFuture().addListener(new ChannelFutureListener() {
-                    @Override
-                    public void operationComplete(ChannelFuture future) {
-                        if (future.isSuccess()) {
-                            HttpResponseStatus responseStatus = httpClientHandler.responseStatus;
-                            if (HttpResponseStatus.OK.equals(responseStatus)) {
-                                settableFuture.set(responseStatus);
-                            } else {
-                                settableFuture.setException(new Exception(
-                                        "Unexpected http response status: " + responseStatus));
-                            }
-                        } else {
-                            settableFuture.setException(future.cause());
-                        }
-                        group.shutdownGracefully();
-                    }
-                });
-            }
-        });
-        return settableFuture;
-    }
-
     @Value.Immutable
     @Styles.AllParameters
     interface SyntheticMonitorUniqueKey {
@@ -566,30 +586,33 @@ class SyntheticMonitorService implements Runnable {
         String syntheticMonitorId();
     }
 
-    private static class HttpClientHandler extends SimpleChannelInboundHandler<HttpObject> {
+    private static class CompletingFutureCallback implements FutureCallback<HttpResponse> {
 
-        private volatile @MonotonicNonNull HttpResponseStatus responseStatus;
+        private final CompletableFuture</*@Nullable*/ Void> future;
+
+        private CompletingFutureCallback(CompletableFuture</*@Nullable*/ Void> future) {
+            this.future = future;
+        }
 
         @Override
-        public void channelRead0(ChannelHandlerContext ctx, HttpObject msg) {
-            if (msg instanceof HttpResponse && msg instanceof HttpContent) {
-                HttpResponse response = (HttpResponse) msg;
-                responseStatus = response.status();
-                if (!responseStatus.equals(HttpResponseStatus.OK) && logger.isDebugEnabled()) {
-                    HttpContent httpContent = (HttpContent) msg;
-                    String content = httpContent.content().toString(CharsetUtil.UTF_8);
-                    logger.debug("unexpected response status: {}, content: {}", responseStatus,
-                            content);
-                }
+        public void completed(HttpResponse response) {
+            int statusCode = response.getStatusLine().getStatusCode();
+            if (statusCode < 400) {
+                future.complete(null);
             } else {
-                logger.error("unexpected response: {}", msg);
+                future.completeExceptionally(
+                        new RuntimeException("Unexpected response status code: " + statusCode));
             }
         }
 
         @Override
-        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            logger.error(cause.getMessage(), cause);
-            ctx.close();
+        public void failed(Exception ex) {
+            future.completeExceptionally(ex);
+        }
+
+        @Override
+        public void cancelled() {
+            future.completeExceptionally(new RuntimeException("Unexpected cancellation"));
         }
     }
 }

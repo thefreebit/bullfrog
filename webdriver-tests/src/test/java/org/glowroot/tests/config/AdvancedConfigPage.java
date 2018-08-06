@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,21 +35,27 @@ public class AdvancedConfigPage {
         return withWait(xpath("//div[@gt-label='Immediate partial trace store threshold']//input"));
     }
 
-    public WebElement getMaxAggregateQueriesPerTypeTextField() {
-        return withWait(xpath("//div[@gt-label='Max aggregate queries per query type']//input"));
+    public WebElement getMaxTransactionAggregatesTextField() {
+        return withWait(
+                xpath("//div[@gt-label='Max transaction aggregates per transaction type']//input"));
     }
 
-    public WebElement getMaxAggregateServiceCallsPerTypeTextField() {
+    public WebElement getMaxQueryAggregatesTextField() {
+        return withWait(
+                xpath("//div[@gt-label='Max query aggregates per transaction aggregate']//input"));
+    }
+
+    public WebElement getMaxServiceCallAggregatesTextField() {
         return withWait(xpath(
-                "//div[@gt-label='Max aggregate service calls per service call type']//input"));
+                "//div[@gt-label='Max service call aggregates per transaction aggregate']//input"));
     }
 
     public WebElement getMaxTraceEntriesPerTransactionTextField() {
         return withWait(xpath("//div[@gt-label='Max trace entries per transaction']//input"));
     }
 
-    public WebElement getMaxStackTraceSamplesPerTransactionTextField() {
-        return withWait(xpath("//div[@gt-label='Max stack trace samples per transaction']//input"));
+    public WebElement getMaxProfileSamplesPerTransactionTextField() {
+        return withWait(xpath("//div[@gt-label='Max profile samples per transaction']//input"));
     }
 
     public void clickSaveButton() {

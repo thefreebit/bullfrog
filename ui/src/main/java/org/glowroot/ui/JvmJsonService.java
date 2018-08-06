@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,10 +23,8 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
 
-import javax.annotation.Nullable;
 import javax.management.ObjectName;
 
 import com.fasterxml.jackson.core.JsonGenerator;
@@ -35,6 +33,7 @@ import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.LinkedListMultimap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -43,6 +42,7 @@ import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
 import com.google.common.io.CharStreams;
 import com.google.common.primitives.Longs;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,10 +53,13 @@ import org.glowroot.common.live.LiveJvmService.AgentUnsupportedOperationExceptio
 import org.glowroot.common.live.LiveJvmService.DirectoryDoesNotExistException;
 import org.glowroot.common.live.LiveJvmService.UnavailableDueToRunningInIbmJvmException;
 import org.glowroot.common.live.LiveJvmService.UnavailableDueToRunningInJreException;
-import org.glowroot.common.repo.EnvironmentRepository;
 import org.glowroot.common.util.NotAvailableAware;
 import org.glowroot.common.util.ObjectMappers;
-import org.glowroot.common.util.UsedByJsonSerialization;
+import org.glowroot.common.util.SystemProperties;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.ConfigRepository.AgentConfigNotFoundException;
+import org.glowroot.common2.repo.EnvironmentRepository;
+import org.glowroot.common2.repo.util.UsedByJsonSerialization;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.Environment;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.HostInfo;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.JavaInfo;
@@ -87,11 +90,13 @@ class JvmJsonService {
     }
 
     private final EnvironmentRepository environmentRepository;
+    private final ConfigRepository configRepository;
     private final @Nullable LiveJvmService liveJvmService;
 
-    JvmJsonService(EnvironmentRepository environmentRepository,
+    JvmJsonService(EnvironmentRepository environmentRepository, ConfigRepository configRepository,
             @Nullable LiveJvmService liveJvmService) {
         this.environmentRepository = environmentRepository;
+        this.configRepository = configRepository;
         this.liveJvmService = liveJvmService;
     }
 
@@ -132,7 +137,11 @@ class JvmJsonService {
             jg.writeStringField("version", javaInfo.getVersion());
             jg.writeStringField("vm", javaInfo.getVm());
             jg.writeArrayFieldStart("args");
-            for (String arg : javaInfo.getArgList()) {
+            // mask JVM args here in case maskSystemProperties was modified after the environment
+            // data was captured JVM startup
+            // (this also provides support in central for agent prior to 0.10.0)
+            for (String arg : SystemProperties.maskJvmArgs(javaInfo.getArgList(),
+                    getJvmMaskSystemProperties(agentId))) {
                 jg.writeString(arg);
             }
             jg.writeEndArray();
@@ -183,7 +192,7 @@ class JvmJsonService {
                 allThreads.add(thread);
             }
             jg.writeArrayFieldStart("unmatchedThreadsByStackTrace");
-            for (Entry<ThreadDump.Thread, Collection<ThreadDump.Thread>> entry : unmatchedThreadsGroupedByStackTrace
+            for (Map.Entry<ThreadDump.Thread, Collection<ThreadDump.Thread>> entry : unmatchedThreadsGroupedByStackTrace
                     .asMap().entrySet()) {
                 jg.writeStartArray();
                 for (ThreadDump.Thread thread : entry.getValue()) {
@@ -344,16 +353,22 @@ class JvmJsonService {
         return sw.toString();
     }
 
-    @POST(path = "/backend/jvm/gc", permission = "agent:jvm:gc")
-    void performGC(@BindAgentId String agentId) throws Exception {
+    @GET(path = "/backend/jvm/explicit-gc-disabled", permission = "agent:jvm:forceGC")
+    String explicitGcDisabled(@BindAgentId String agentId) throws Exception {
         checkNotNull(liveJvmService);
-        liveJvmService.gc(agentId);
+        try {
+            boolean explicitGcDisabled = liveJvmService.isExplicitGcDisabled(agentId);
+            return "{\"explicitGcDisabled\":" + explicitGcDisabled + "}";
+        } catch (AgentNotConnectedException e) {
+            logger.debug(e.getMessage(), e);
+            return "{\"agentNotConnected\":true}";
+        }
     }
 
-    @GET(path = "/backend/jvm/gc-check-agent-connected", permission = "agent:jvm:gc")
-    String checkAgentConnected(@BindAgentId String agentId) throws Exception {
+    @POST(path = "/backend/jvm/force-gc", permission = "agent:jvm:forceGC")
+    void performGC(@BindAgentId String agentId) throws Exception {
         checkNotNull(liveJvmService);
-        return Boolean.toString(liveJvmService.isAvailable(agentId));
+        liveJvmService.forceGC(agentId);
     }
 
     @GET(path = "/backend/jvm/mbean-tree", permission = "agent:jvm:mbeanTree")
@@ -382,7 +397,7 @@ class JvmJsonService {
                 node = node.getOrCreateNode(propertyValues.get(i));
             }
             String name = objectName.toString();
-            String value = propertyValues.get(propertyValues.size() - 1);
+            String value = Iterables.getLast(propertyValues);
             if (request.expanded().contains(name)) {
                 node.addLeafNode(new MBeanTreeLeafNode(value, name, true,
                         getSortedAttributeMap(mbeanInfo.getAttributeList())));
@@ -426,12 +441,17 @@ class JvmJsonService {
             logger.debug(e.getMessage(), e);
             return getAgentUnsupportedOperationResponse(agentId);
         }
+        // mask here to provide support in central for agents prior to 0.10.0
+        List<String> maskSystemProperties = getJvmMaskSystemProperties(agentId);
+        properties = SystemProperties.maskSystemProperties(properties, maskSystemProperties);
+
         StringBuilder sb = new StringBuilder();
         JsonGenerator jg = mapper.getFactory().createGenerator(CharStreams.asWriter(sb));
         try {
             jg.writeStartObject();
             jg.writeArrayFieldStart("properties");
-            for (Entry<String, String> entry : ImmutableSortedMap.copyOf(properties).entrySet()) {
+            for (Map.Entry<String, String> entry : ImmutableSortedMap.copyOf(properties)
+                    .entrySet()) {
                 jg.writeStartObject();
                 String propertyName = entry.getKey();
                 jg.writeStringField("name", propertyName);
@@ -479,12 +499,12 @@ class JvmJsonService {
         return sw.toString();
     }
 
-    private void writeAvailability(String fieldName, Availability availability, JsonGenerator jg)
-            throws IOException {
-        jg.writeObjectFieldStart(fieldName);
-        jg.writeBooleanField("available", availability.getAvailable());
-        jg.writeStringField("reason", availability.getReason());
-        jg.writeEndObject();
+    private List<String> getJvmMaskSystemProperties(String agentId) throws Exception {
+        try {
+            return configRepository.getJvmConfig(agentId).getMaskSystemPropertyList();
+        } catch (AgentConfigNotFoundException e) {
+            return ImmutableList.of();
+        }
     }
 
     private String getAgentUnsupportedOperationResponse(String agentId) throws Exception {
@@ -506,6 +526,15 @@ class JvmJsonService {
             return "unknown";
         }
         return environment.getJavaInfo().getGlowrootAgentVersion();
+    }
+
+    private static void writeAvailability(String fieldName, Availability availability,
+            JsonGenerator jg)
+            throws IOException {
+        jg.writeObjectFieldStart(fieldName);
+        jg.writeBooleanField("available", availability.getAvailable());
+        jg.writeStringField("reason", availability.getReason());
+        jg.writeEndObject();
     }
 
     private static void writeTransactionThread(ThreadDump.Transaction transaction, JsonGenerator jg)
@@ -613,7 +642,7 @@ class JvmJsonService {
         Map<Long, ThreadDump.Thread> remainingBlockedThreads = Maps.newHashMap(blockedThreads);
         List<ThreadDump.Thread> cycleRoots = Lists.newArrayList();
         while (!remainingBlockedThreads.isEmpty()) {
-            Iterator<Entry<Long, ThreadDump.Thread>> i =
+            Iterator<Map.Entry<Long, ThreadDump.Thread>> i =
                     remainingBlockedThreads.entrySet().iterator();
             Map.Entry<Long, ThreadDump.Thread> entry = i.next();
             long currThreadId = entry.getKey();

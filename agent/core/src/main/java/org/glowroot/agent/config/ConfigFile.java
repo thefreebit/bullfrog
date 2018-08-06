@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,20 +17,14 @@ package org.glowroot.agent.config;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 
-import javax.annotation.Nullable;
-
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.google.common.base.Charsets;
-import com.google.common.io.CharStreams;
-import com.google.common.io.Files;
+import com.google.common.collect.ImmutableList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,58 +38,43 @@ class ConfigFile {
     private static final Logger logger = LoggerFactory.getLogger(ConfigFile.class);
     private static final ObjectMapper mapper = ObjectMappers.create();
 
+    private static final List<String> keyOrder =
+            ImmutableList.of("transactions", "jvm", "ui", "userRecording", "advanced", "gauges",
+                    "syntheticMonitors", "alerts", "plugins", "instrumentation");
+
     private final File file;
-    private final ObjectNode configRootObjectNode;
+    private final ObjectNode rootObjectNode;
 
     ConfigFile(File file) {
         this.file = file;
         if (file.exists()) {
-            configRootObjectNode = getRootObjectNode(file);
-            upgradeAlertsIfNeeded(configRootObjectNode);
+            rootObjectNode = ConfigFileUtil.getRootObjectNode(file);
+            upgradeAlertsIfNeeded(rootObjectNode);
+            upgradeUiIfNeeded(rootObjectNode);
+            upgradeAdvancedIfNeeded(rootObjectNode);
         } else {
-            configRootObjectNode = mapper.createObjectNode();
+            rootObjectNode = mapper.createObjectNode();
         }
     }
 
-    @Nullable
-    <T> T getConfigNode(String key, Class<T> clazz, ObjectMapper mapper) {
-        JsonNode node = configRootObjectNode.get(key);
-        if (node == null) {
-            return null;
-        }
-        try {
-            return mapper.treeToValue(node, clazz);
-        } catch (JsonProcessingException e) {
-            logger.error("error parsing config json node '{}': ", key, e);
-            return null;
-        }
+    <T> /*@Nullable*/ T getConfig(String key, Class<T> clazz) {
+        return ConfigFileUtil.getConfig(rootObjectNode, key, clazz);
     }
 
-    <T extends /*@NonNull*/ Object> /*@Nullable*/ T getConfigNode(String key,
-            TypeReference<T> typeReference, ObjectMapper mapper) {
-        JsonNode node = configRootObjectNode.get(key);
-        if (node == null) {
-            return null;
-        }
-        try {
-            return mapper.readValue(mapper.treeAsTokens(node), typeReference);
-        } catch (IOException e) {
-            logger.error("error parsing config json node '{}': ", key, e);
-            writeBackupFile(file);
-            return null;
-        }
+    <T> /*@Nullable*/ T getConfig(String key, TypeReference<T> typeReference) {
+        return ConfigFileUtil.getConfig(rootObjectNode, key, typeReference);
     }
 
-    void writeConfig(String key, Object config, ObjectMapper mapper) throws IOException {
-        configRootObjectNode.replace(key, mapper.valueToTree(config));
-        writeToFileIfNeeded(file, configRootObjectNode);
+    void writeConfig(String key, Object config) throws IOException {
+        rootObjectNode.replace(key, mapper.valueToTree(config));
+        ConfigFileUtil.writeToFileIfNeeded(file, rootObjectNode, keyOrder);
     }
 
-    void writeConfig(Map<String, Object> config, ObjectMapper mapper) throws IOException {
-        for (Entry<String, Object> entry : config.entrySet()) {
-            configRootObjectNode.replace(entry.getKey(), mapper.valueToTree(entry.getValue()));
+    void writeConfigs(Map<String, Object> configs) throws IOException {
+        for (Map.Entry<String, Object> entry : configs.entrySet()) {
+            rootObjectNode.replace(entry.getKey(), mapper.valueToTree(entry.getValue()));
         }
-        writeToFileIfNeeded(file, configRootObjectNode);
+        ConfigFileUtil.writeToFileIfNeeded(file, rootObjectNode, keyOrder);
     }
 
     @OnlyUsedByTests
@@ -161,64 +140,49 @@ class ConfigFile {
         }
     }
 
-    static ObjectNode getRootObjectNode(File file) {
-        String content;
-        try {
-            content = Files.toString(file, Charsets.UTF_8);
-        } catch (IOException e) {
-            logger.error(e.getMessage(), e);
-            return mapper.createObjectNode();
+    private static void upgradeUiIfNeeded(ObjectNode configRootObjectNode) {
+        JsonNode uiNode = configRootObjectNode.get("ui");
+        if (uiNode == null || !uiNode.isObject()) {
+            return;
         }
-        ObjectNode rootObjectNode = null;
-        try {
-            JsonNode rootNode = mapper.readTree(content);
-            if (rootNode instanceof ObjectNode) {
-                rootObjectNode = (ObjectNode) rootNode;
-            }
-        } catch (IOException e) {
-            logger.warn("error processing config file: {}", file.getAbsolutePath(), e);
-            writeBackupFile(file);
+        ObjectNode uiObjectNode = (ObjectNode) uiNode;
+        if (uiObjectNode.has("defaultDisplayedTransactionType")) {
+            // upgrade from 0.9.28 to 0.10.0
+            uiObjectNode.set("defaultTransactionType",
+                    uiObjectNode.remove("defaultDisplayedTransactionType"));
         }
-        return rootObjectNode == null ? mapper.createObjectNode() : rootObjectNode;
+        if (uiObjectNode.has("defaultDisplayedPercentiles")) {
+            // upgrade from 0.9.28 to 0.10.0
+            uiObjectNode.set("defaultPercentiles",
+                    uiObjectNode.remove("defaultDisplayedPercentiles"));
+        }
     }
 
-    static void writeToFileIfNeeded(File file, ObjectNode rootObjectNode) throws IOException {
-        String content = writeConfigAsString(rootObjectNode);
-        if (file.exists()) {
-            String existingContent = Files.toString(file, Charsets.UTF_8);
-            if (content.equals(existingContent)) {
-                // it's nice to preserve the correct modification stamp on the file to track when it
-                // was last really changed
-                return;
-            }
+    private static void upgradeAdvancedIfNeeded(ObjectNode configRootObjectNode) {
+        JsonNode advancedNode = configRootObjectNode.get("advanced");
+        if (advancedNode == null || !advancedNode.isObject()) {
+            return;
         }
-        Files.write(content, file, Charsets.UTF_8);
-    }
-
-    private static String writeConfigAsString(ObjectNode rootObjectNode) throws IOException {
-        ObjectNode rootObjectNodeCopy = rootObjectNode.deepCopy();
-        ObjectMappers.stripEmptyContainerNodes(rootObjectNodeCopy);
-        StringBuilder sb = new StringBuilder();
-        JsonGenerator jg = mapper.getFactory().createGenerator(CharStreams.asWriter(sb));
-        try {
-            jg.setPrettyPrinter(ObjectMappers.getPrettyPrinter());
-            jg.writeTree(rootObjectNodeCopy);
-        } finally {
-            jg.close();
+        ObjectNode advancedObjectNode = (ObjectNode) advancedNode;
+        if (advancedObjectNode.has("maxAggregateTransactionsPerType")) {
+            // upgrade from 0.10.5 to 0.10.6
+            advancedObjectNode.set("maxTransactionAggregates",
+                    advancedObjectNode.remove("maxAggregateTransactionsPerType"));
         }
-        // newline is not required, just a personal preference
-        return sb.toString() + ObjectMappers.NEWLINE;
-    }
-
-    private static void writeBackupFile(File file) {
-        File backupFile = new File(file.getParentFile(), file.getName() + ".invalid-orig");
-        try {
-            Files.copy(file, backupFile);
-            logger.warn("due to an error in the config file, it has been backed up to extension"
-                    + " '.invalid-orig' and will be overwritten with the default config");
-        } catch (IOException f) {
-            logger.warn("error making a copy of the invalid config file before overwriting it",
-                    f);
+        if (advancedObjectNode.has("maxAggregateQueriesPerType")) {
+            // upgrade from 0.10.5 to 0.10.6
+            advancedObjectNode.set("maxQueryAggregates",
+                    advancedObjectNode.remove("maxAggregateQueriesPerType"));
+        }
+        if (advancedObjectNode.has("maxAggregateServiceCallsPerType")) {
+            // upgrade from 0.10.5 to 0.10.6
+            advancedObjectNode.set("maxServiceCallAggregates",
+                    advancedObjectNode.remove("maxAggregateServiceCallsPerType"));
+        }
+        if (advancedObjectNode.has("maxStackTraceSamplesPerTransaction")) {
+            // upgrade from 0.10.5 to 0.10.6
+            advancedObjectNode.set("maxProfileSamplesPerTransaction",
+                    advancedObjectNode.remove("maxStackTraceSamplesPerTransaction"));
         }
     }
 }

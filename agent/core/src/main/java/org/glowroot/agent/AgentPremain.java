@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,30 +28,35 @@ import java.util.jar.JarFile;
 // the rest of glowroot will live in the bootstrap class loader
 public class AgentPremain {
 
+    private static final boolean PRE_CHECK_LOADED_CLASSES =
+            Boolean.getBoolean("glowroot.debug.preCheckLoadedClasses");
+
     private AgentPremain() {}
 
     // javaagent entry point
     public static void premain(@SuppressWarnings("unused") String agentArgs,
             Instrumentation instrumentation) {
         try {
+            Class<?>[] allPriorLoadedClasses;
+            if (PRE_CHECK_LOADED_CLASSES) {
+                allPriorLoadedClasses = instrumentation.getAllLoadedClasses();
+            } else {
+                allPriorLoadedClasses = new Class<?>[0];
+            }
             CodeSource codeSource = AgentPremain.class.getProtectionDomain().getCodeSource();
             // suppress warnings is used instead of annotating this method with @Nullable
             // just to avoid dependencies on other classes (in this case the @Nullable annotation)
             @SuppressWarnings("argument.type.incompatible")
             File glowrootJarFile = getGlowrootJarFile(codeSource);
             Class<?> mainEntryPointClass;
-            if (glowrootJarFile == null) {
-                // this is ok, running integration test in IDE
-                mainEntryPointClass = Class.forName("org.glowroot.agent.MainEntryPoint", true,
-                        AgentPremain.class.getClassLoader());
-            } else {
+            if (glowrootJarFile != null) {
                 instrumentation.appendToBootstrapClassLoaderSearch(new JarFile(glowrootJarFile));
-                mainEntryPointClass =
-                        Class.forName("org.glowroot.agent.MainEntryPoint", true, null);
             }
-            Method premainMethod =
-                    mainEntryPointClass.getMethod("premain", Instrumentation.class, File.class);
-            premainMethod.invoke(null, instrumentation, glowrootJarFile);
+            mainEntryPointClass = Class.forName("org.glowroot.agent.MainEntryPoint", true,
+                    AgentPremain.class.getClassLoader());
+            Method premainMethod = mainEntryPointClass.getMethod("premain", Instrumentation.class,
+                    Class[].class, File.class);
+            premainMethod.invoke(null, instrumentation, allPriorLoadedClasses, glowrootJarFile);
         } catch (Throwable t) {
             // log error but don't re-throw which would prevent monitored app from starting
             System.err.println("Glowroot not started: " + t.getMessage());

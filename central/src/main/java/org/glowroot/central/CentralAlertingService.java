@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,23 +15,22 @@
  */
 package org.glowroot.central;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import com.google.common.base.Stopwatch;
-import com.google.common.collect.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.glowroot.agent.api.Instrumentation;
+import org.glowroot.agent.api.Instrumentation.AlreadyInTransactionBehavior;
 import org.glowroot.central.repo.ConfigRepositoryImpl;
-import org.glowroot.central.repo.HeartbeatDao;
-import org.glowroot.common.repo.util.AlertingService;
+import org.glowroot.common2.repo.ConfigRepository.AgentConfigNotFoundException;
+import org.glowroot.common2.repo.util.AlertingService;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig.AlertCondition;
-import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig.AlertCondition.HeartbeatCondition;
-import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig.AlertCondition.MetricCondition;
 
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -41,8 +40,8 @@ class CentralAlertingService {
     private static final Logger logger = LoggerFactory.getLogger(CentralAlertingService.class);
 
     private final ConfigRepositoryImpl configRepository;
-    private final HeartbeatDao heartbeatDao;
     private final AlertingService alertingService;
+    private final HeartbeatAlertingService heartbeatAlertingService;
 
     private final ExecutorService alertCheckingExecutor;
 
@@ -50,11 +49,11 @@ class CentralAlertingService {
 
     private volatile boolean closed;
 
-    CentralAlertingService(ConfigRepositoryImpl configRepository, HeartbeatDao heartbeatDao,
-            AlertingService alertingService) {
+    CentralAlertingService(ConfigRepositoryImpl configRepository, AlertingService alertingService,
+            HeartbeatAlertingService heartbeatAlertingService) {
         this.configRepository = configRepository;
-        this.heartbeatDao = heartbeatDao;
         this.alertingService = alertingService;
+        this.heartbeatAlertingService = heartbeatAlertingService;
         alertCheckingExecutor = Executors.newSingleThreadExecutor();
     }
 
@@ -68,23 +67,46 @@ class CentralAlertingService {
         }
     }
 
-    void checkForDeletedAlerts(String agentRollupId, String agentRollupDisplay) {
+    void checkForDeletedAlerts(String agentRollupId, String agentRollupDisplay)
+            throws InterruptedException {
         try {
             alertingService.checkForDeletedAlerts(agentRollupId);
+        } catch (InterruptedException e) {
+            // probably shutdown requested
+            throw e;
         } catch (Exception e) {
             logger.error("{} - {}", agentRollupDisplay, e.getMessage(), e);
         }
     }
 
-    void checkAggregateAlertsAsync(String agentId, String agentDisplay, long endTime) {
+    void checkForAllDeletedAlerts() throws InterruptedException {
+        try {
+            alertingService.checkForAllDeletedAlerts();
+        } catch (InterruptedException e) {
+            // probably shutdown requested
+            throw e;
+        } catch (Exception e) {
+            logger.error("{}", e.getMessage(), e);
+        }
+    }
+
+    void checkAggregateAlertsAsync(String agentId, String agentDisplay, long endTime)
+            throws InterruptedException {
         List<AlertConfig> alertConfigs;
         try {
             alertConfigs = configRepository.getAlertConfigs(agentId);
+        } catch (InterruptedException e) {
+            // probably shutdown requested
+            throw e;
+        } catch (AgentConfigNotFoundException e) {
+            // be lenient if agent_config table is messed up
+            logger.debug(e.getMessage(), e);
+            return;
         } catch (Exception e) {
             logger.error("{} - {}", agentDisplay, e.getMessage(), e);
             return;
         }
-        List<AlertConfig> aggregateAlertConfigs = Lists.newArrayList();
+        List<AlertConfig> aggregateAlertConfigs = new ArrayList<>();
         for (AlertConfig alertConfig : alertConfigs) {
             AlertCondition condition = alertConfig.getCondition();
             if (isAggregateMetricCondition(condition)) {
@@ -94,15 +116,23 @@ class CentralAlertingService {
         checkAlertsAsync(agentId, agentDisplay, endTime, aggregateAlertConfigs);
     }
 
-    void checkGaugeAndHeartbeatAlertsAsync(String agentId, String agentDisplay, long endTime) {
+    void checkGaugeAndHeartbeatAlertsAsync(String agentId, String agentDisplay, long endTime)
+            throws InterruptedException {
         List<AlertConfig> alertConfigs;
         try {
             alertConfigs = configRepository.getAlertConfigs(agentId);
+        } catch (InterruptedException e) {
+            // probably shutdown requested
+            throw e;
+        } catch (AgentConfigNotFoundException e) {
+            // be lenient if agent_config table is messed up
+            logger.debug(e.getMessage(), e);
+            return;
         } catch (Exception e) {
             logger.error("{} - {}", agentDisplay, e.getMessage(), e);
             return;
         }
-        List<AlertConfig> gaugeAndHeartbeatAlertConfigs = Lists.newArrayList();
+        List<AlertConfig> gaugeAndHeartbeatAlertConfigs = new ArrayList<>();
         for (AlertConfig alertConfig : alertConfigs) {
             AlertCondition condition = alertConfig.getCondition();
             if (isGaugeMetricCondition(condition)
@@ -113,16 +143,26 @@ class CentralAlertingService {
         checkAlertsAsync(agentId, agentDisplay, endTime, gaugeAndHeartbeatAlertConfigs);
     }
 
+    @Instrumentation.Transaction(transactionType = "Background", transactionName = "Check alert",
+            traceHeadline = "Check alerts: {{0}}", timer = "check alerts",
+            alreadyInTransactionBehavior = AlreadyInTransactionBehavior.CAPTURE_NEW_TRANSACTION)
     void checkAggregateAndGaugeAndHeartbeatAlertsAsync(String agentRollupId,
-            String agentRollupDisplay, long endTime) {
+            String agentRollupDisplay, long endTime) throws InterruptedException {
         List<AlertConfig> alertConfigs;
         try {
             alertConfigs = configRepository.getAlertConfigs(agentRollupId);
+        } catch (InterruptedException e) {
+            // probably shutdown requested
+            throw e;
+        } catch (AgentConfigNotFoundException e) {
+            // be lenient if agent_config table is messed up
+            logger.debug(e.getMessage(), e);
+            return;
         } catch (Exception e) {
             logger.error("{} - {}", agentRollupDisplay, e.getMessage(), e);
             return;
         }
-        List<AlertConfig> aggregateAndGaugeAndHeartbeatAlertConfigs = Lists.newArrayList();
+        List<AlertConfig> aggregateAndGaugeAndHeartbeatAlertConfigs = new ArrayList<>();
         for (AlertConfig alertConfig : alertConfigs) {
             AlertCondition condition = alertConfig.getCondition();
             if (condition.getValCase() == AlertCondition.ValCase.METRIC_CONDITION
@@ -139,19 +179,16 @@ class CentralAlertingService {
         if (closed) {
             return;
         }
-        alertCheckingExecutor.execute(new Runnable() {
-            @Override
-            public void run() {
-                for (AlertConfig alertConfig : alertConfigs) {
-                    try {
-                        checkAlert(agentRollupId, agentRollupDisplay, endTime, alertConfig);
-                    } catch (InterruptedException e) {
-                        // probably shutdown requested (see close method above)
-                        logger.debug(e.getMessage(), e);
-                        return;
-                    } catch (Throwable t) {
-                        logger.error("{} - {}", agentRollupDisplay, t.getMessage(), t);
-                    }
+        alertCheckingExecutor.execute(() -> {
+            for (AlertConfig alertConfig : alertConfigs) {
+                try {
+                    checkAlert(agentRollupId, agentRollupDisplay, endTime, alertConfig);
+                } catch (InterruptedException e) {
+                    // probably shutdown requested (see close method above)
+                    logger.debug(e.getMessage(), e);
+                    return;
+                } catch (Throwable t) {
+                    logger.error("{} - {}", agentRollupDisplay, t.getMessage(), t);
                 }
             }
         });
@@ -162,7 +199,9 @@ class CentralAlertingService {
         AlertCondition alertCondition = alertConfig.getCondition();
         switch (alertCondition.getValCase()) {
             case METRIC_CONDITION:
-                checkMetricAlert(agentRollupId, agentDisplay, alertConfig,
+                alertingService.checkMetricAlert(
+                        configRepository.getCentralAdminGeneralConfig().centralDisplayName(),
+                        agentRollupId, agentDisplay, alertConfig,
                         alertCondition.getMetricCondition(), endTime);
                 break;
             case HEARTBEAT_CONDITION:
@@ -171,36 +210,14 @@ class CentralAlertingService {
                     // at least enough time for grpc max reconnect backoff which is 2 minutes
                     // +/- 20% jitter (see io.grpc.internal.ExponentialBackoffPolicy) but better to
                     // give a bit extra (4 minutes above) to avoid false heartbeat alert
-                    checkHeartbeatAlert(agentRollupId, agentDisplay, alertConfig,
-                            alertCondition.getHeartbeatCondition(), endTime);
+                    heartbeatAlertingService.checkHeartbeatAlert(agentRollupId, agentDisplay,
+                            alertConfig, alertCondition.getHeartbeatCondition(), endTime);
                 }
                 break;
             default:
                 throw new IllegalStateException(
                         "Unexpected alert condition: " + alertCondition.getValCase().name());
         }
-    }
-
-    @Instrumentation.Transaction(transactionType = "Background",
-            transactionName = "Check metric alert", traceHeadline = "Check metric alert: {{0}}",
-            timer = "check metric alert")
-    private void checkMetricAlert(String agentRollupId, String agentDisplay,
-            AlertConfig alertConfig, MetricCondition metricCondition, long endTime)
-            throws Exception {
-        alertingService.checkMetricAlert(agentRollupId, agentDisplay, alertConfig, metricCondition,
-                endTime);
-    }
-
-    @Instrumentation.Transaction(transactionType = "Background",
-            transactionName = "Check heartbeat alert",
-            traceHeadline = "Check heartbeat alert: {{0}}", timer = "check heartbeat alert")
-    private void checkHeartbeatAlert(String agentRollupId, String agentDisplay,
-            AlertConfig alertConfig, HeartbeatCondition heartbeatCondition, long endTime)
-            throws Exception {
-        long startTime = endTime - SECONDS.toMillis(heartbeatCondition.getTimePeriodSeconds());
-        boolean currentlyTriggered = !heartbeatDao.exists(agentRollupId, startTime, endTime);
-        alertingService.sendHeartbeatAlertIfNeeded(agentRollupId, agentDisplay, alertConfig,
-                heartbeatCondition, endTime, currentlyTriggered);
     }
 
     private static boolean isAggregateMetricCondition(AlertCondition alertCondition) {

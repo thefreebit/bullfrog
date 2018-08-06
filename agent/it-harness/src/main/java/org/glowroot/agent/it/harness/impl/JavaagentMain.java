@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,29 +19,25 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import javax.annotation.Nullable;
-
+import com.google.common.reflect.Reflection;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.grpc.Server;
 import io.grpc.netty.NettyServerBuilder;
 import io.netty.channel.EventLoopGroup;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
+import org.glowroot.agent.it.harness.Container;
+
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 class JavaagentMain {
 
     public static void main(String[] args) throws Exception {
 
-        try {
-            Class.forName("org.slf4j.bridge.SLF4JBridgeHandler")
-                    .getMethod("removeHandlersForRootLogger").invoke(null);
-            Class.forName("org.slf4j.bridge.SLF4JBridgeHandler")
-                    .getMethod("install").invoke(null);
-        } catch (ClassNotFoundException e) {
-            // this is needed when running logger plugin tests against old logback versions
-        } catch (NoSuchMethodException e) {
-            // this is needed when running logger plugin tests against old logback versions
-        }
+        // this is needed on Java 9+ now that sun.boot.class.path no longer exists, so that
+        // instrumentation config auto complete can find this class in InstrumentationConfigIT
+        Reflection.initialize(Container.class);
 
         int port = Integer.parseInt(args[0]);
         final SocketHeartbeat socketHeartbeat = new SocketHeartbeat(port);
@@ -49,15 +45,16 @@ class JavaagentMain {
 
         int javaagentServicePort = Integer.parseInt(args[1]);
         JavaagentServiceImpl javaagentService = new JavaagentServiceImpl();
-        final EventLoopGroup bossEventLoopGroup = EventLoopGroups.create("Glowroot-GRPC-Boss-ELG");
+        final EventLoopGroup bossEventLoopGroup =
+                EventLoopGroups.create("Glowroot-IT-Harness*-GRPC-Boss-ELG");
         final EventLoopGroup workerEventLoopGroup =
-                EventLoopGroups.create("Glowroot-GRPC-Worker-ELG");
+                EventLoopGroups.create("Glowroot-IT-Harness*-GRPC-Worker-ELG");
         // need at least 2 threads, one for executeApp(), and another for handling interruptApp() at
         // the same time
         final ExecutorService executor = Executors.newCachedThreadPool(
                 new ThreadFactoryBuilder()
                         .setDaemon(true)
-                        .setNameFormat("Glowroot-GRPC-Executor-%d")
+                        .setNameFormat("Glowroot-IT-Harness*-GRPC-Executor-%d")
                         .build());
         final Server server = NettyServerBuilder.forPort(javaagentServicePort)
                 .bossEventLoopGroup(bossEventLoopGroup)
@@ -94,17 +91,17 @@ class JavaagentMain {
         for (int i = 0; i < 1000; i++) {
             timerMarkerOne();
             timerMarkerTwo();
-            Thread.sleep(1);
+            MILLISECONDS.sleep(1);
         }
         // non-daemon threads started above keep jvm alive after main returns
-        Thread.sleep(Long.MAX_VALUE);
+        MILLISECONDS.sleep(Long.MAX_VALUE);
     }
 
     private static void timerMarkerOne() throws InterruptedException {
-        Thread.sleep(1);
+        MILLISECONDS.sleep(1);
     }
 
     private static void timerMarkerTwo() throws InterruptedException {
-        Thread.sleep(1);
+        MILLISECONDS.sleep(1);
     }
 }

@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
     <groupId>org.glowroot</groupId>
     <artifactId>glowroot-parent</artifactId>
-    <version>0.9.25</version>
+    <version>0.10.12</version>
   </parent>
 
   <artifactId>glowroot-common</artifactId>
@@ -23,6 +24,13 @@
     <dependency>
       <groupId>org.immutables</groupId>
       <artifactId>value</artifactId>
+      <!-- immutables is only needed at compile time -->
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <!-- the presence of this dependency triggers generation of Java 6 compatible classes -->
+      <groupId>org.immutables</groupId>
+      <artifactId>android-stub</artifactId>
       <!-- immutables is only needed at compile time -->
       <scope>provided</scope>
     </dependency>
@@ -54,56 +62,6 @@
       <groupId>org.hdrhistogram</groupId>
       <artifactId>HdrHistogram</artifactId>
       <version>2.1.10</version>
-    </dependency>
-    <dependency>
-      <groupId>com.sun.mail</groupId>
-      <artifactId>mailapi</artifactId>
-      <version>1.6.0</version>
-      <exclusions>
-        <exclusion>
-          <!-- JAF included in Java SE 6+ -->
-          <groupId>javax.activation</groupId>
-          <artifactId>activation</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency>
-    <dependency>
-      <groupId>com.sun.mail</groupId>
-      <artifactId>smtp</artifactId>
-      <version>1.6.0</version>
-      <exclusions>
-        <exclusion>
-          <!-- JAF included in Java SE 6+ -->
-          <groupId>javax.activation</groupId>
-          <artifactId>activation</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency>
-    <dependency>
-      <groupId>io.netty</groupId>
-      <artifactId>netty-buffer</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.netty</groupId>
-      <artifactId>netty-transport</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.netty</groupId>
-      <artifactId>netty-codec-http</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.netty</groupId>
-      <artifactId>netty-handler</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.netty</groupId>
-      <artifactId>netty-handler-proxy</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>com.google.code.findbugs</groupId>
-      <artifactId>jsr305</artifactId>
-      <!-- don't need this dependency at runtime since only annotations -->
-      <optional>true</optional>
     </dependency>
     <dependency>
       <groupId>junit</groupId>

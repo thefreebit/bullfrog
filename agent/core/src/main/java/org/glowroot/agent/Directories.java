@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,20 +15,20 @@
  */
 package org.glowroot.agent;
 
-import com.google.common.annotations.VisibleForTesting;
-import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
-import org.glowroot.common.util.OnlyUsedByTests;
-
-import javax.annotation.Nullable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
 
-// DO NOT USE ANY GUAVA CLASSES HERE because they trigger loading of jul
-// (and thus org.glowroot.agent.jul.Logger and thus glowroot's shaded slf4j)
-class Directories {
+import com.google.common.annotations.VisibleForTesting;
+import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
+
+import org.glowroot.common.util.OnlyUsedByTests;
+
+// LIMIT DEPENDENCY USAGE IN THIS CLASS SO IT DOESN'T TRIGGER ANY CLASS LOADING ON ITS OWN
+public class Directories {
 
     // windows filename reserved characters
     // cannot use guava CharMatcher as that triggers loading of jul (org.glowroot.agent.jul.Logger)
@@ -40,13 +40,14 @@ class Directories {
     private final @Nullable File sharedConfDir;
     private final File logDir;
     private final File tmpDir;
+    private final @Nullable File glowrootJarFile;
 
     // these are needed for getDataDir()
     private final Properties props;
     private final @Nullable String agentId;
     private final LazyDefaultBaseDir lazyDefaultBaseDir;
 
-    Directories(@Nullable File glowrootJarFile) throws IOException {
+    public Directories(@Nullable File glowrootJarFile) throws IOException {
         glowrootDir = getGlowrootDir(glowrootJarFile);
 
         // check for bullfrog.properties file in glowrootDir
@@ -76,7 +77,7 @@ class Directories {
         }
         File logDir = getAgentDir("log", props, agentId);
         if (logDir == null) {
-            logDir = lazyDefaultBaseDir.get();
+            logDir = lazyDefaultBaseDir.getSubDir("logs");
         }
         File tmpDir = getAgentDir("tmp", props, agentId);
         if (tmpDir == null) {
@@ -86,6 +87,7 @@ class Directories {
         this.confDir = confDir;
         this.logDir = logDir;
         this.tmpDir = tmpDir;
+        this.glowrootJarFile = glowrootJarFile;
 
         sharedConfDir = confDir.equals(glowrootDir) ? null : glowrootDir;
     }
@@ -101,6 +103,8 @@ class Directories {
         sharedConfDir = null;
         logDir = testDir;
         tmpDir = lazyDefaultBaseDir.getSubDir("tmp");
+        mkdirs(tmpDir);
+        glowrootJarFile = null;
     }
 
     File getGlowrootDir() {
@@ -113,15 +117,15 @@ class Directories {
     }
 
     @Nullable
-    File getSharedConfDir() {
+    public File getSharedConfDir() {
         return sharedConfDir;
     }
 
-    File getConfDir() {
+    public File getConfDir() {
         return confDir;
     }
 
-    File getLogDir() {
+    public File getLogDir() {
         return logDir;
     }
 
@@ -129,14 +133,55 @@ class Directories {
         return tmpDir;
     }
 
+    @Nullable
+    File getGlowrootJarFile() {
+        return glowrootJarFile;
+    }
+
+    @Nullable
+    File getEmbeddedCollectorJarFile() {
+        if (glowrootJarFile == null) {
+            return null;
+        }
+        File libDir = new File(glowrootJarFile.getParentFile(), "lib");
+        if (!libDir.exists() || !libDir.isDirectory()) {
+            return null;
+        }
+        File jarFile = new File(libDir, "glowroot-embedded-collector.jar");
+        return jarFile.exists() ? jarFile : null;
+    }
+
+    @Nullable
+    File getCentralCollectorHttpsJarFile(String normalizedOsName) {
+        if (glowrootJarFile == null) {
+            return null;
+        }
+        File libDir = new File(glowrootJarFile.getParentFile(), "lib");
+        if (!libDir.exists() || !libDir.isDirectory()) {
+            return null;
+        }
+        File jarFile =
+                new File(libDir, "glowroot-central-collector-https-" + normalizedOsName + ".jar");
+        return jarFile.exists() ? jarFile : null;
+    }
+
     // only used by embedded agent
-    File getDataDir() throws IOException {
+    public File getDataDir() throws IOException {
         File dataDir = getAgentDir("data", props, agentId);
         if (dataDir == null) {
-            return lazyDefaultBaseDir.getSubDir("data");
-        } else {
-            return dataDir;
+            dataDir = lazyDefaultBaseDir.getSubDir("data");
         }
+        mkdirs(dataDir);
+        return dataDir;
+    }
+
+    // only used by offline viewer
+    public boolean hasDataDir() throws IOException {
+        File dataDir = getAgentDir("data", props, agentId);
+        if (dataDir == null) {
+            dataDir = lazyDefaultBaseDir.getSubDir("data");
+        }
+        return dataDir.exists();
     }
 
     private static File getGlowrootDir(@Nullable File glowrootJarFile) {
@@ -166,19 +211,10 @@ class Directories {
             }
         }
         File dir = new File(dirPath);
-        dir.mkdirs();
-        if (!dir.isDirectory()) {
-            throw new IOException("Could not create directory: " + dir.getAbsolutePath());
-        }
         if (agentId == null || agentId.isEmpty()) {
-            return dir;
+            return mkdirs(dir);
         }
-        File subDir = new File(dir, makeSafeDirName(agentId));
-        subDir.mkdir();
-        if (!subDir.isDirectory()) {
-            throw new IOException("Could not create directory: " + subDir.getAbsolutePath());
-        }
-        return subDir;
+        return mkdirs(new File(dir, makeSafeDirName(agentId)));
     }
 
     @VisibleForTesting
@@ -203,6 +239,14 @@ class Directories {
         return safeName.toString();
     }
 
+    private static File mkdirs(File dir) throws IOException {
+        dir.mkdirs();
+        if (!dir.isDirectory()) {
+            throw new IOException("Could not create directory: " + dir.getAbsolutePath());
+        }
+        return dir;
+    }
+
     private static class LazyDefaultBaseDir {
 
         private final File glowrootDir;
@@ -223,12 +267,7 @@ class Directories {
         }
 
         private File getSubDir(String name) throws IOException {
-            File subDir = new File(get(), name);
-            subDir.mkdir();
-            if (!subDir.isDirectory()) {
-                throw new IOException("Could not create directory: " + subDir.getAbsolutePath());
-            }
-            return subDir;
+            return mkdirs(new File(get(), name));
         }
 
         private static File getBaseDir(File glowrootDir, @Nullable String agentId)
@@ -238,12 +277,7 @@ class Directories {
             }
             // "agent-" prefix is needed to ensure uniqueness
             // (and to be visibly different from tmp and plugins directories)
-            File baseDir = new File(glowrootDir, "agent-" + makeSafeDirName(agentId));
-            baseDir.mkdir();
-            if (!baseDir.isDirectory()) {
-                throw new IOException("Could not create directory: " + baseDir.getAbsolutePath());
-            }
-            return baseDir;
+            return mkdirs(new File(glowrootDir, "agent-" + makeSafeDirName(agentId)));
         }
     }
 }

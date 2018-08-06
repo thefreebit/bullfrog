@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,52 +14,76 @@
  * limitations under the License.
  */
 
-/* global glowroot */
+/* global glowroot, angular */
 
 glowroot.config([
   '$provide',
   '$stateProvider',
   '$urlRouterProvider',
   function ($provide, $stateProvider, $urlRouterProvider) {
-    var waitForLayout = function (needsTransactionType) {
-      return ['$q', '$rootScope', '$location', function ($q, $rootScope, $location) {
-        if (window.layout) {
-          if ($location.path() === '/login') {
-            // no need to add transaction-type to url
-            return function () {
-            };
-          }
-          var hasAgent = !$rootScope.layout.central || $location.search()['agent-id']
-              || $location.search()['agent-rollup-id'];
-          if (hasAgent && needsTransactionType && !$location.search()['transaction-type']) {
-            $location.search('transaction-type', $rootScope.defaultTransactionType());
-            $location.replace();
-          }
-          return function () {
-          };
-        } else {
-          var deferred = $q.defer();
-          var unregisterWatch = $rootScope.$watch('layout', function (value) {
-            if (!value) {
-              return;
-            }
-            if ($location.path() === '/login') {
-              // no need to add transaction-type to url
-              deferred.resolve();
-              unregisterWatch();
-              return;
-            }
-            var hasAgent = !$rootScope.layout.central || $location.search()['agent-id']
-                || $location.search()['agent-rollup-id'];
-            if (hasAgent && needsTransactionType && !$location.search()['transaction-type']) {
+    function waitForLayout($q, $rootScope) {
+      var deferred = $q.defer();
+      var unregisterWatch = $rootScope.$watch('layout', function (value) {
+        if (value) {
+          deferred.resolve();
+          unregisterWatch();
+        }
+      });
+      return deferred.promise;
+    }
+    var waitForLayoutOnly = function () {
+      return ['$q', '$rootScope', function ($q, $rootScope) {
+        return waitForLayout($q, $rootScope);
+      }];
+    };
+    var onTransitionWithAgentRollup = function (needsTransactionType) {
+      return ['$q', '$rootScope', '$location', '$http', function ($q, $rootScope, $location, $http) {
+
+        return waitForLayout($q, $rootScope).then(function () {
+
+          function addTransactionType() {
+            if (needsTransactionType && !$location.search()['transaction-type']) {
               $location.search('transaction-type', $rootScope.defaultTransactionType());
               $location.replace();
             }
-            deferred.resolve();
-            unregisterWatch();
-          });
-          return deferred.promise;
-        }
+          }
+
+          if (!$rootScope.layout.central) {
+            addTransactionType();
+            return;
+          }
+
+          var agentId = $location.search()['agent-id'] || '';
+          var agentRollupId = $location.search()['agent-rollup-id'] || agentId;
+          if (!agentRollupId || angular.isArray(agentRollupId)) {
+            delete $rootScope.agentId;
+            delete $rootScope.agentRollupId;
+            delete $rootScope.agentRollup;
+            return;
+          }
+
+          if ($rootScope.agentRollup && $rootScope.agentRollup.id === agentRollupId) {
+            addTransactionType();
+            return;
+          }
+
+          return $http.get('backend/agent-rollup?id=' + encodeURIComponent(agentRollupId))
+              .then(function (response) {
+                $rootScope.agentId = agentId;
+                $rootScope.agentRollupId = agentRollupId;
+                $rootScope.agentRollup = response.data;
+                addTransactionType();
+              }, function (response) {
+                $rootScope.navbarErrorMessage = 'An error occurred getting agent rollup: ' + agentRollupId;
+                if (response.data.message) {
+                  $rootScope.navbarErrorMessage += ': ' + response.data.message;
+                }
+                var unregisterListener = $rootScope.$on('gtStateChangeSuccess', function () {
+                  $rootScope.navbarErrorMessage = '';
+                  unregisterListener();
+                });
+              });
+        });
       }];
     };
     $urlRouterProvider.otherwise(function ($injector) {
@@ -75,7 +99,7 @@ glowroot.config([
         return 'error/messages';
       } else if ($rootScope.layout.showNavbarJvm) {
         if (!$rootScope.layout.central) {
-          var jvmPermissions = $rootScope.layout.agentRollups[''].permissions.jvm;
+          var jvmPermissions = $rootScope.agentRollup.permissions.jvm;
           if (jvmPermissions.gauges) {
             return 'jvm/gauges';
           } else if (jvmPermissions.threadDump) {
@@ -98,9 +122,9 @@ glowroot.config([
           return 'jvm/gauges';
         }
       } else if ($rootScope.layout.showNavbarConfig) {
-        return 'config/transaction';
+        return $rootScope.layout.central ? 'config/general' : 'config/transaction';
       } else if ($rootScope.layout.adminView) {
-        return 'admin/agent-list';
+        return $rootScope.layout.central ? 'admin/user-list' : 'admin/general';
       } else if ($rootScope.layout.loggedIn && !$rootScope.layout.ldap) {
         return 'profile/change-password';
       } else {
@@ -123,7 +147,7 @@ glowroot.config([
         defaultSummarySortOrder: function () {
           return 'total-time';
         },
-        waitForLayout: waitForLayout(true)
+        waitForAgentRollup: onTransitionWithAgentRollup(true)
       }
     });
     $stateProvider.state('transaction.detail', {
@@ -167,7 +191,7 @@ glowroot.config([
       }
     });
     $stateProvider.state('transaction.detail.average', {
-      url: '/average?agent-id&transaction-type&transaction-name',
+      url: '/average?transaction-type&transaction-name',
       views: {
         'main@transaction': {
           templateUrl: 'views/transaction/average.html',
@@ -176,7 +200,7 @@ glowroot.config([
       }
     });
     $stateProvider.state('transaction.detail.percentiles', {
-      url: '/percentiles?agent-id&transaction-type&transaction-name',
+      url: '/percentiles?transaction-type&transaction-name',
       views: {
         'main@transaction': {
           templateUrl: 'views/transaction/percentiles.html',
@@ -185,7 +209,7 @@ glowroot.config([
       }
     });
     $stateProvider.state('transaction.detail.throughput', {
-      url: '/throughput?agent-id&transaction-type&transaction-name',
+      url: '/throughput?transaction-type&transaction-name',
       views: {
         'main@transaction': {
           templateUrl: 'views/transaction/throughput.html',
@@ -194,7 +218,7 @@ glowroot.config([
       }
     });
     $stateProvider.state('transaction.detail.traces', {
-      url: '/traces?agent-id&transaction-type&transaction-name',
+      url: '/traces?transaction-type&transaction-name',
       views: {
         'main@transaction': {
           templateUrl: 'views/transaction/traces.html',
@@ -208,7 +232,7 @@ glowroot.config([
       }
     });
     $stateProvider.state('transaction.detail.queries', {
-      url: '/queries?agent-id&transaction-type&transaction-name',
+      url: '/queries?transaction-type&transaction-name',
       views: {
         'main@transaction': {
           templateUrl: 'views/transaction/queries.html',
@@ -217,16 +241,16 @@ glowroot.config([
       }
     });
     $stateProvider.state('transaction.detail.services', {
-      url: '/services?agent-id&transaction-type&transaction-name',
+      url: '/services?transaction-type&transaction-name',
       views: {
         'main@transaction': {
-          templateUrl: 'views/transaction/services.html',
-          controller: 'TransactionServicesCtrl'
+          templateUrl: 'views/transaction/service-calls.html',
+          controller: 'TransactionServiceCallsCtrl'
         }
       }
     });
     $stateProvider.state('transaction.detail.threadProfile', {
-      url: '/thread-profile?agent-id&transaction-type&transaction-name',
+      url: '/thread-profile?transaction-type&transaction-name',
       views: {
         'main@transaction': {
           templateUrl: 'views/transaction/profile.html',
@@ -254,7 +278,7 @@ glowroot.config([
       controller: 'TransactionFlameGraphCtrl',
       resolve: {
         waitForD3: waitForD3,
-        waitForLayout: waitForLayout(true)
+        waitForAgentRollup: onTransitionWithAgentRollup(true)
       }
     });
     $stateProvider.state('error', {
@@ -272,7 +296,7 @@ glowroot.config([
         defaultSummarySortOrder: function () {
           return 'error-count';
         },
-        waitForLayout: waitForLayout(true)
+        waitForAgentRollup: onTransitionWithAgentRollup(true)
       }
     });
     $stateProvider.state('error.detail', {
@@ -310,7 +334,7 @@ glowroot.config([
       }
     });
     $stateProvider.state('error.detail.messages', {
-      url: '/messages?agent-id&transaction-type&transaction-name',
+      url: '/messages?transaction-type&transaction-name',
       views: {
         'main@error': {
           templateUrl: 'views/transaction/error-messages.html',
@@ -319,7 +343,7 @@ glowroot.config([
       }
     });
     $stateProvider.state('error.detail.traces', {
-      url: '/traces?agent-id&transaction-type&transaction-name',
+      url: '/traces?transaction-type&transaction-name',
       views: {
         'main@error': {
           templateUrl: 'views/transaction/traces.html',
@@ -337,7 +361,7 @@ glowroot.config([
       templateUrl: 'views/jvm.html',
       controller: 'JvmCtrl',
       resolve: {
-        waitForLayout: waitForLayout(false)
+        waitForAgentRollup: onTransitionWithAgentRollup(false)
       }
     });
     $stateProvider.state('jvm.gauges', {
@@ -365,10 +389,10 @@ glowroot.config([
       templateUrl: 'views/jvm/heap-histogram.html',
       controller: 'JvmHeapHistogramCtrl'
     });
-    $stateProvider.state('jvm.gc', {
-      url: '/gc',
-      templateUrl: 'views/jvm/gc.html',
-      controller: 'JvmGcCtrl'
+    $stateProvider.state('jvm.forceGC', {
+      url: '/force-gc',
+      templateUrl: 'views/jvm/force-gc.html',
+      controller: 'JvmForceGcCtrl'
     });
     $stateProvider.state('jvm.mbeanTree', {
       url: '/mbean-tree',
@@ -395,7 +419,7 @@ glowroot.config([
       templateUrl: 'views/synthetic-monitors.html',
       controller: 'SyntheticMonitorsCtrl',
       resolve: {
-        waitForLayout: waitForLayout(false)
+        waitForAgentRollup: onTransitionWithAgentRollup(false)
       }
     });
     $stateProvider.state('incidents', {
@@ -403,7 +427,7 @@ glowroot.config([
       templateUrl: 'views/incidents.html',
       controller: 'IncidentsCtrl',
       resolve: {
-        waitForLayout: waitForLayout(false)
+        waitForAgentRollup: waitForLayoutOnly()
       }
     });
     $stateProvider.state('report', {
@@ -411,7 +435,7 @@ glowroot.config([
       templateUrl: 'views/report.html',
       controller: 'ReportCtrl',
       resolve: {
-        waitForLayout: waitForLayout(false)
+        waitForAgentRollup: waitForLayoutOnly()
       }
     });
     $stateProvider.state('report.adhoc', {
@@ -424,8 +448,13 @@ glowroot.config([
       templateUrl: 'views/config.html',
       controller: 'ConfigCtrl',
       resolve: {
-        waitForLayout: waitForLayout(false)
+        waitForAgentRollup: onTransitionWithAgentRollup(false)
       }
+    });
+    $stateProvider.state('config.general', {
+      url: '/general',
+      templateUrl: 'views/config/general.html',
+      controller: 'ConfigGeneralCtrl'
     });
     $stateProvider.state('config.transaction', {
       url: '/transaction',
@@ -441,6 +470,11 @@ glowroot.config([
       url: '/gauge?v',
       templateUrl: 'views/config/gauge.html',
       controller: 'ConfigGaugeCtrl'
+    });
+    $stateProvider.state('config.jvm', {
+      url: '/jvm',
+      templateUrl: 'views/config/jvm.html',
+      controller: 'ConfigJvmCtrl'
     });
     $stateProvider.state('config.syntheticMonitorList', {
       url: '/synthetic-monitor-list',
@@ -502,18 +536,13 @@ glowroot.config([
       templateUrl: 'views/admin.html',
       controller: 'AdminCtrl',
       resolve: {
-        waitForLayout: waitForLayout(false)
+        waitForLayout: waitForLayoutOnly()
       }
     });
-    $stateProvider.state('admin.agentList', {
-      url: '/agent-list',
-      templateUrl: 'views/admin/agent-list.html',
-      controller: 'AdminAgentListCtrl'
-    });
-    $stateProvider.state('admin.agent', {
-      url: '/agent',
-      templateUrl: 'views/admin/agent.html',
-      controller: 'AdminAgentCtrl'
+    $stateProvider.state('admin.general', {
+      url: '/general',
+      templateUrl: 'views/admin/general.html',
+      controller: 'AdminGeneralCtrl'
     });
     $stateProvider.state('admin.userList', {
       url: '/user-list',
@@ -579,7 +608,7 @@ glowroot.config([
       templateUrl: 'views/profile.html',
       controller: 'ProfileCtrl',
       resolve: {
-        waitForLayout: waitForLayout(false)
+        waitForLayout: waitForLayoutOnly()
       }
     });
     $stateProvider.state('profile.changePassword', {
@@ -592,7 +621,7 @@ glowroot.config([
       templateUrl: 'views/login.html',
       controller: 'LoginCtrl',
       resolve: {
-        waitForLayout: waitForLayout(false)
+        waitForLayout: waitForLayoutOnly()
       }
     });
   }

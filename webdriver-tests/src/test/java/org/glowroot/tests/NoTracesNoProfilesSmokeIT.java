@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2016 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,6 @@ package org.glowroot.tests;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ning.http.client.AsyncHttpClient;
-import com.ning.http.client.Request;
-import com.ning.http.client.Response;
 import org.junit.Assume;
 import org.junit.Test;
 import org.openqa.selenium.By;
@@ -27,6 +24,8 @@ import org.openqa.selenium.By;
 import org.glowroot.tests.admin.StorageConfigPage;
 import org.glowroot.tests.config.ConfigSidebar;
 import org.glowroot.tests.util.Utils;
+
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class NoTracesNoProfilesSmokeIT extends WebDriverIT {
 
@@ -47,37 +46,29 @@ public class NoTracesNoProfilesSmokeIT extends WebDriverIT {
         globalNavbar.getAdminConfigLink().click();
         configSidebar.getStorageLink().click();
         storageConfigPage.clickDeleteAllButton();
+        // TODO implement better wait for delete to complete
+        SECONDS.sleep(1);
 
-        AsyncHttpClient asyncHttpClient = new AsyncHttpClient();
-        Request request = asyncHttpClient
-                .prepareGet("http://localhost:" + getUiPort()
-                        + "/backend/config/transaction?agent-id=" + agentId)
-                .build();
-        Response response = asyncHttpClient.executeRequest(request).get();
-        JsonNode responseNode = new ObjectMapper().readTree(response.getResponseBody());
-        String version = responseNode.get("version").asText();
-        request = asyncHttpClient
-                .preparePost("http://localhost:" + getUiPort()
-                        + "/backend/config/transaction?agent-id=" + agentId)
-                .setBody("{\"slowThresholdMillis\":" + Integer.MAX_VALUE
+        String content = httpGet("http://localhost:" + getUiPort()
+                + "/backend/config/transaction?agent-id=" + agentId);
+        JsonNode responseNode = new ObjectMapper().readTree(content);
+        String version = responseNode.get("config").get("version").asText();
+        httpPost(
+                "http://localhost:" + getUiPort() + "/backend/config/transaction?agent-id="
+                        + agentId,
+                "{\"slowThresholdMillis\":" + Integer.MAX_VALUE
                         + ",\"profilingIntervalMillis\":0,\"captureThreadStats\":false,"
-                        + "\"version\":\"" + version + "\"}")
-                .build();
-        int statusCode = asyncHttpClient.executeRequest(request).get().getStatusCode();
-        asyncHttpClient.close();
-        if (statusCode != 200) {
-            throw new AssertionError("Unexpected status code: " + statusCode);
-        }
+                        + "\"version\":\"" + version + "\"}");
         container.executeNoExpectedTrace(JdbcServlet.class);
         // give time for aggregates to be collected
-        Thread.sleep(5000);
+        SECONDS.sleep(5);
 
         // when
         app.open();
         Utils.withWait(driver, By.linkText("Slow traces (0)"));
         Utils.withWait(driver, By.partialLinkText("/jdbcservlet")).click();
         // give time for page to load and tab bar to refresh
-        Thread.sleep(1000);
+        SECONDS.sleep(1);
         globalNavbar.getErrorsLink().click();
         Utils.withWait(driver, By.xpath("//a[normalize-space()='Error traces (0)']"));
         globalNavbar.getJvmLink().click();

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,59 +15,50 @@
  */
 package org.glowroot.tests;
 
+import java.io.File;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.Sets;
 import com.machinepublishers.jbrowserdriver.JBrowserDriver;
-import com.ning.http.client.AsyncHttpClient;
-import com.ning.http.client.Request;
-import com.ning.http.client.Response;
 import io.netty.handler.codec.http.QueryStringDecoder;
 import org.glowroot.tests.jvm.JvmSidebar;
 import org.glowroot.tests.util.Utils;
 import org.junit.AfterClass;
+import org.junit.Assume;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.openqa.selenium.*;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
 
-import java.io.File;
-import java.io.IOException;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.Executors;
+import org.glowroot.tests.reporting.AdhocPage;
 
 import static java.util.concurrent.TimeUnit.HOURS;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.openqa.selenium.By.xpath;
 
 public class BasicSmokeIT extends WebDriverIT {
 
     @BeforeClass
     public static void setUp() throws Exception {
-        AsyncHttpClient asyncHttpClient = new AsyncHttpClient();
-        Request request = asyncHttpClient
-                .prepareGet("http://localhost:" + getUiPort()
-                        + "/backend/config/transaction?agent-id=" + agentId)
-                .build();
-        Response response = asyncHttpClient.executeRequest(request).get();
-        JsonNode responseNode = new ObjectMapper().readTree(response.getResponseBody());
-        String version = responseNode.get("version").asText();
-        request = asyncHttpClient
-                .preparePost("http://localhost:" + getUiPort()
-                        + "/backend/config/transaction?agent-id=" + agentId)
-                .setBody("{\"slowThresholdMillis\":0,\"profilingIntervalMillis\":10,"
-                        + "\"captureThreadStats\":false,\"version\":\"" + version + "\"}")
-                .build();
-        int statusCode = asyncHttpClient.executeRequest(request).get().getStatusCode();
-        if (statusCode != 200) {
-            asyncHttpClient.close();
-            throw new AssertionError("Unexpected status code: " + statusCode);
-        }
+        String content = httpGet("http://localhost:" + getUiPort()
+                + "/backend/config/transaction?agent-id=" + agentId);
+        JsonNode responseNode = new ObjectMapper().readTree(content);
+        String version = responseNode.get("config").get("version").asText();
+        httpPost("http://localhost:" + getUiPort()
+                + "/backend/config/transaction?agent-id=" + agentId,
+                "{\"slowThresholdMillis\":0,\"profilingIntervalMillis\":10,"
+                        + "\"captureThreadStats\":false,\"version\":\"" + version + "\"}");
         for (int i = 0; i < 3; i++) {
             container.executeNoExpectedTrace(JdbcServlet.class);
             container.executeNoExpectedTrace(ErrorServlet.class);
@@ -78,14 +69,11 @@ public class BasicSmokeIT extends WebDriverIT {
         while (stopwatch.elapsed(SECONDS) < 30) {
             long from = System.currentTimeMillis() - HOURS.toMillis(2);
             long to = from + HOURS.toMillis(4);
-            request = asyncHttpClient
-                    .prepareGet("http://localhost:" + getUiPort()
-                            + "/backend/transaction/summaries?agent-rollup-id=" + agentId
-                            + "&transaction-type=Web&from=" + from + "&to=" + to
-                            + "&sort-order=total-time&limit=10")
-                    .build();
-            response = asyncHttpClient.executeRequest(request).get();
-            responseNode = new ObjectMapper().readTree(response.getResponseBody());
+            content = httpGet("http://localhost:" + getUiPort()
+                    + "/backend/transaction/summaries?agent-rollup-id=" + agentId
+                    + "&transaction-type=Web&from=" + from + "&to=" + to
+                    + "&sort-order=total-time&limit=10");
+            responseNode = new ObjectMapper().readTree(content);
             for (JsonNode transactionNode : responseNode.get("transactions")) {
                 transactionNames.add(transactionNode.get("transactionName").asText());
             }
@@ -93,9 +81,8 @@ public class BasicSmokeIT extends WebDriverIT {
                     && transactionNames.contains("/errorservlet")) {
                 break;
             }
-            Thread.sleep(10);
+            MILLISECONDS.sleep(10);
         }
-        asyncHttpClient.close();
         if (!transactionNames.contains("/jdbcservlet")
                 || !transactionNames.contains("/errorservlet")) {
             throw new AssertionError("Timed out waiting for /jdbcservlet and /errorservlet to both"
@@ -152,7 +139,7 @@ public class BasicSmokeIT extends WebDriverIT {
 
         Utils.withWait(driver, By.linkText("View flame graph (experimental)")).click();
         // give flame graph a chance to render (only for visual when running locally)
-        Thread.sleep(1000);
+        SECONDS.sleep(1);
         globalNavbar.getTransactionsLink().click();
         Utils.withWait(driver, By.partialLinkText("/jdbcservlet")).click();
         Utils.withWait(driver, By.partialLinkText("percentiles")).click();
@@ -174,6 +161,7 @@ public class BasicSmokeIT extends WebDriverIT {
                 + "?transaction-type=Web"
                 + "&from=0"
                 + "&to=" + Long.MAX_VALUE
+                + "&duration-millis-low=0"
                 + "&headline-comparator=begins"
                 + "&headline="
                 + "&error-message-comparator=begins"
@@ -186,12 +174,8 @@ public class BasicSmokeIT extends WebDriverIT {
                 + "&limit=500"
                 + "&agent-rollup-id=" + agentId;
 
-        AsyncHttpClient asyncHttpClient = new AsyncHttpClient();
-        Request request = asyncHttpClient
-                .prepareGet(url)
-                .build();
-        Response response = asyncHttpClient.executeRequest(request).get();
-        JsonNode responseNode = new ObjectMapper().readTree(response.getResponseBody());
+        String content = httpGet(url);
+        JsonNode responseNode = new ObjectMapper().readTree(content);
         ArrayNode pointsNode = (ArrayNode) responseNode.get("normalPoints");
         String traceId = ((ArrayNode) pointsNode.get(0)).get(3).asText();
         if (WebDriverSetup.useCentral) {
@@ -202,7 +186,6 @@ public class BasicSmokeIT extends WebDriverIT {
             driver.get(app.getBaseUrl() + "/transaction/traces?transaction-type=Web&modal-trace-id="
                     + traceId);
         }
-        asyncHttpClient.close();
         clickAroundInTraceModal(traceId, false);
     }
 
@@ -266,7 +249,7 @@ public class BasicSmokeIT extends WebDriverIT {
         globalNavbar.getJvmLink().click();
         // sleep for a second to give time for jvm gauges page to make 2 requests
         // (first to get gauge list and then to get gauge points for default selected gauges)
-        Thread.sleep(1000);
+        SECONDS.sleep(1);
 
         jvmSidebar.getEnvironmentLink().click();
 
@@ -297,6 +280,9 @@ public class BasicSmokeIT extends WebDriverIT {
 
         jvmSidebar.getHeapHistogramLink().click();
 
+        jvmSidebar.getForceGcLink().click();
+        Utils.withWait(driver, By.xpath("//button[normalize-space()='Force GC']")).click();
+
         jvmSidebar.getMBeanTreeLink().click();
         Utils.withWait(driver, By.xpath("//button[@gt-label='Expand']")).click();
         List<WebElement> elements = new WebDriverWait(driver, 30).until(ExpectedConditions
@@ -317,24 +303,174 @@ public class BasicSmokeIT extends WebDriverIT {
     }
 
     @Test
+    public void shouldRunReportTransactionAverage() throws Exception {
+        // given
+        App app = app();
+        GlobalNavbar globalNavbar = globalNavbar();
+        AdhocPage adhocPage = new AdhocPage(driver);
+
+        app.open();
+        globalNavbar.getReportingLink().click();
+        if (WebDriverSetup.useCentral) {
+            adhocPage.getAgentTextField().click();
+            adhocPage.getAgentTextField().sendKeys(InetAddress.getLocalHost().getHostName());
+            adhocPage.getAgentTextField().sendKeys(Keys.ENTER);
+        }
+        adhocPage.getMetricSelect().selectByValue("string:transaction:average");
+        adhocPage.getTransactionTypeSelect().selectByValue("string:Web");
+
+        // when
+        adhocPage.clickRunReportButton();
+
+        // then
+        Utils.withWait(driver, xpath("//div[@ng-show='showChart']"));
+    }
+
+    @Test
+    public void shouldRunReportTransactionPercentile() throws Exception {
+        // given
+        App app = app();
+        GlobalNavbar globalNavbar = globalNavbar();
+        AdhocPage adhocPage = new AdhocPage(driver);
+
+        app.open();
+        globalNavbar.getReportingLink().click();
+        if (WebDriverSetup.useCentral) {
+            adhocPage.getAgentTextField().click();
+            adhocPage.getAgentTextField().sendKeys(InetAddress.getLocalHost().getHostName());
+            adhocPage.getAgentTextField().sendKeys(Keys.ENTER);
+        }
+        adhocPage.getMetricSelect().selectByValue("string:transaction:x-percentile");
+        adhocPage.getTransactionTypeSelect().selectByValue("string:Web");
+        adhocPage.getTransactionPercentileTextField().sendKeys("95");
+
+        // when
+        adhocPage.clickRunReportButton();
+
+        // then
+        Utils.withWait(driver, xpath("//div[@ng-show='showChart']"));
+    }
+
+    @Test
+    public void shouldRunReportTransactionCount() throws Exception {
+        // given
+        App app = app();
+        GlobalNavbar globalNavbar = globalNavbar();
+        AdhocPage adhocPage = new AdhocPage(driver);
+
+        app.open();
+        globalNavbar.getReportingLink().click();
+        if (WebDriverSetup.useCentral) {
+            adhocPage.getAgentTextField().click();
+            adhocPage.getAgentTextField().sendKeys(InetAddress.getLocalHost().getHostName());
+            adhocPage.getAgentTextField().sendKeys(Keys.ENTER);
+        }
+        adhocPage.getMetricSelect().selectByValue("string:transaction:count");
+        adhocPage.getTransactionTypeSelect().selectByValue("string:Web");
+
+        // when
+        adhocPage.clickRunReportButton();
+
+        // then
+        Utils.withWait(driver, xpath("//div[@ng-show='showChart']"));
+    }
+
+    @Test
+    public void shouldRunReportErrorRate() throws Exception {
+        // given
+        App app = app();
+        GlobalNavbar globalNavbar = globalNavbar();
+        AdhocPage adhocPage = new AdhocPage(driver);
+
+        app.open();
+        globalNavbar.getReportingLink().click();
+        if (WebDriverSetup.useCentral) {
+            adhocPage.getAgentTextField().click();
+            adhocPage.getAgentTextField().sendKeys(InetAddress.getLocalHost().getHostName());
+            adhocPage.getAgentTextField().sendKeys(Keys.ENTER);
+        }
+        adhocPage.getMetricSelect().selectByValue("string:transaction:count");
+        adhocPage.getTransactionTypeSelect().selectByValue("string:Web");
+
+        // when
+        adhocPage.clickRunReportButton();
+
+        // then
+        Utils.withWait(driver, xpath("//div[@ng-show='showChart']"));
+    }
+
+    @Test
+    public void shouldRunReportErrorCount() throws Exception {
+        // given
+        App app = app();
+        GlobalNavbar globalNavbar = globalNavbar();
+        AdhocPage adhocPage = new AdhocPage(driver);
+
+        app.open();
+        globalNavbar.getReportingLink().click();
+        if (WebDriverSetup.useCentral) {
+            adhocPage.getAgentTextField().click();
+            adhocPage.getAgentTextField().sendKeys(InetAddress.getLocalHost().getHostName());
+            adhocPage.getAgentTextField().sendKeys(Keys.ENTER);
+        }
+        adhocPage.getMetricSelect().selectByValue("string:transaction:count");
+        adhocPage.getTransactionTypeSelect().selectByValue("string:Web");
+
+        // when
+        adhocPage.clickRunReportButton();
+
+        // then
+        Utils.withWait(driver, xpath("//div[@ng-show='showChart']"));
+    }
+
+    @Test
+    public void shouldRunReportGauge() throws Exception {
+        // given
+        App app = app();
+        GlobalNavbar globalNavbar = globalNavbar();
+        AdhocPage adhocPage = new AdhocPage(driver);
+
+        app.open();
+        globalNavbar.getReportingLink().click();
+        if (WebDriverSetup.useCentral) {
+            adhocPage.getAgentTextField().click();
+            adhocPage.getAgentTextField().sendKeys(InetAddress.getLocalHost().getHostName());
+            adhocPage.getAgentTextField().sendKeys(Keys.ENTER);
+        }
+        adhocPage.getMetricSelect()
+                .selectByValue("string:gauge:java.lang:type=Memory:HeapMemoryUsage.used");
+
+        // when
+        adhocPage.clickRunReportButton();
+
+        // then
+        Utils.withWait(driver, xpath("//div[@ng-show='showChart']"));
+    }
+
+    @Test
     public void shouldCheckLogPage() throws Exception {
-        AsyncHttpClient asyncHttpClient = new AsyncHttpClient();
-        Request request = asyncHttpClient
-                .prepareGet("http://localhost:" + getUiPort() + "/log")
-                .setFollowRedirects(true)
-                .build();
-        Response response = asyncHttpClient.executeRequest(request).get();
-        assertThat(response.getStatusCode()).isEqualTo(200);
-        asyncHttpClient.close();
+        httpGet("http://localhost:" + getUiPort() + "/log");
+    }
+
+    @Test
+    public void shouldCheckHealthCheckPage() throws Exception {
+        httpGet("http://localhost:" + getUiPort() + "/health");
+    }
+
+    @Test
+    public void shouldCheckCassandraWriteTotals() throws Exception {
+        Assume.assumeTrue(WebDriverSetup.useCentral);
+        httpGet("http://localhost:" + getUiPort()
+                + "/backend/admin/cassandra-write-totals?limit=10");
     }
 
     private void clickAroundInTraceModal(String traceId, boolean active) throws Exception {
         Utils.withWait(driver, By.className("gt-entries-toggle")).click();
         Utils.withWait(driver,
-                By.xpath("//div[starts-with(normalize-space(.),'jdbc execution:')]"));
+                By.xpath("//div[starts-with(normalize-space(.),'jdbc execute:')]"));
         Utils.withWait(driver, By.className("gt-main-thread-profile-toggle")).click();
         // wait for profile to open
-        Thread.sleep(1000);
+        SECONDS.sleep(1);
 
         // "click download", verify no error
         String download;
@@ -346,12 +482,6 @@ public class BasicSmokeIT extends WebDriverIT {
             download = "http://localhost:" + getUiPort() + "/export/trace?trace-id=" + traceId
                     + urlSuffix;
         }
-        AsyncHttpClient asyncHttpClient = new AsyncHttpClient();
-        Request request = asyncHttpClient
-                .prepareGet(download)
-                .build();
-        Response response = asyncHttpClient.executeRequest(request).get();
-        assertThat(response.getStatusCode()).isEqualTo(200);
-        asyncHttpClient.close();
+        httpGet(download);
     }
 }

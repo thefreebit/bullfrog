@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,25 +17,27 @@ package org.glowroot.ui;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
+import java.util.Set;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Ordering;
+import com.google.common.collect.Sets;
 import com.google.common.io.CharStreams;
 import org.immutables.value.Value;
 
-import org.glowroot.common.repo.AgentRollupRepository;
-import org.glowroot.common.repo.ConfigRepository;
-import org.glowroot.common.repo.GaugeValueRepository;
-import org.glowroot.common.repo.GaugeValueRepository.Gauge;
-import org.glowroot.common.repo.Utils;
-import org.glowroot.common.repo.util.RollupLevelService;
+import org.glowroot.common.util.CaptureTimes;
 import org.glowroot.common.util.ObjectMappers;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.GaugeValueRepository;
+import org.glowroot.common2.repo.GaugeValueRepository.Gauge;
+import org.glowroot.common2.repo.ImmutableGauge;
+import org.glowroot.common2.repo.util.RollupLevelService;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.GaugeValue;
 
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -47,56 +49,57 @@ class GaugeValueJsonService {
 
     private final GaugeValueRepository gaugeValueRepository;
     private final RollupLevelService rollupLevelService;
-    private final AgentRollupRepository agentRollupRepository;
     private final ConfigRepository configRepository;
 
     GaugeValueJsonService(GaugeValueRepository gaugeValueRepository,
-            RollupLevelService rollupLevelService, AgentRollupRepository agentRollupRepository,
-            ConfigRepository configRepository) {
+            RollupLevelService rollupLevelService, ConfigRepository configRepository) {
         this.gaugeValueRepository = gaugeValueRepository;
         this.rollupLevelService = rollupLevelService;
-        this.agentRollupRepository = agentRollupRepository;
         this.configRepository = configRepository;
     }
 
     @GET(path = "/backend/jvm/gauges", permission = "agent:jvm:gauges")
     String getGaugeValues(@BindAgentRollupId String agentRollupId,
             @BindRequest GaugeValueRequest request) throws Exception {
-        int rollupLevel =
-                rollupLevelService.getGaugeRollupLevelForView(request.from(), request.to());
-        if (rollupLevel == 0 && !agentRollupRepository.isAgent(agentRollupId)) {
-            // agent rollups from children do not have level-0 data
-            rollupLevel = 1;
-        }
-        long intervalMillis;
+        int rollupLevel = rollupLevelService.getGaugeRollupLevelForView(request.from(),
+                request.to(), agentRollupId.endsWith("::"));
+        long dataPointIntervalMillis;
         if (rollupLevel == 0) {
-            intervalMillis = configRepository.getGaugeCollectionIntervalMillis();
+            dataPointIntervalMillis = configRepository.getGaugeCollectionIntervalMillis();
         } else {
-            intervalMillis =
+            dataPointIntervalMillis =
                     configRepository.getRollupConfigs().get(rollupLevel - 1).intervalMillis();
         }
-        double gapMillis = intervalMillis * 1.5;
-        long revisedFrom = request.from() - intervalMillis;
-        long revisedTo = request.to() + intervalMillis;
-
-        Map<String, List<GaugeValue>> map = Maps.newLinkedHashMap();
-        for (String gaugeName : request.gaugeName()) {
-            map.put(gaugeName,
-                    getGaugeValues(agentRollupId, revisedFrom, revisedTo, gaugeName, rollupLevel));
+        Map<String, List<GaugeValue>> gaugeValues =
+                getGaugeValues(agentRollupId, request, rollupLevel, dataPointIntervalMillis);
+        if (isEmpty(gaugeValues)) {
+            // fall back to largest aggregates in case expiration settings have recently changed
+            rollupLevel = getLargestRollupLevel();
+            dataPointIntervalMillis =
+                    configRepository.getRollupConfigs().get(rollupLevel - 1).intervalMillis();
+            gaugeValues =
+                    getGaugeValues(agentRollupId, request, rollupLevel, dataPointIntervalMillis);
         }
         if (rollupLevel != 0) {
-            syncManualRollupCaptureTimes(map, rollupLevel);
+            syncManualRollupCaptureTimes(gaugeValues, rollupLevel);
         }
+        double gapMillis = dataPointIntervalMillis * 1.5;
         List<DataSeries> dataSeriesList = Lists.newArrayList();
-        for (Entry<String, List<GaugeValue>> entry : map.entrySet()) {
+        for (Map.Entry<String, List<GaugeValue>> entry : gaugeValues.entrySet()) {
             dataSeriesList
                     .add(convertToDataSeriesWithGaps(entry.getKey(), entry.getValue(), gapMillis));
         }
+        List<Gauge> gauges =
+                gaugeValueRepository.getGauges(agentRollupId, request.from(), request.to());
+        List<Gauge> sortedGauges = new GaugeOrdering().immutableSortedCopy(gauges);
+        sortedGauges = addCounterSuffixesIfAndWhereNeeded(sortedGauges);
         StringBuilder sb = new StringBuilder();
         JsonGenerator jg = mapper.getFactory().createGenerator(CharStreams.asWriter(sb));
         try {
             jg.writeStartObject();
             jg.writeObjectField("dataSeries", dataSeriesList);
+            jg.writeNumberField("dataPointIntervalMillis", dataPointIntervalMillis);
+            jg.writeObjectField("allGauges", sortedGauges);
             jg.writeEndObject();
         } finally {
             jg.close();
@@ -104,16 +107,18 @@ class GaugeValueJsonService {
         return sb.toString();
     }
 
-    @GET(path = "/backend/jvm/all-gauges", permission = "agent:jvm:gauges")
-    String getAllGaugeNames(@BindAgentRollupId String agentRollupId) throws Exception {
-        List<Gauge> gauges = gaugeValueRepository.getGauges(agentRollupId);
-        List<Gauge> sortedGauges = new GaugeOrdering().immutableSortedCopy(gauges);
-        List<String> defaultGaugeNames =
-                configRepository.getUiConfig(agentRollupId).getDefaultGaugeNameList();
-        return mapper.writeValueAsString(ImmutableAllGaugeResponse.builder()
-                .addAllAllGauges(sortedGauges)
-                .addAllDefaultGaugeNames(defaultGaugeNames)
-                .build());
+    private Map<String, List<GaugeValue>> getGaugeValues(String agentRollupId,
+            GaugeValueRequest request,
+            int rollupLevel, long dataPointIntervalMillis) throws Exception {
+        long revisedFrom = request.from() - dataPointIntervalMillis;
+        long revisedTo = request.to() + dataPointIntervalMillis;
+        Map<String, List<GaugeValue>> map = Maps.newLinkedHashMap();
+        for (String gaugeName : request.gaugeName()) {
+            List<GaugeValue> gaugeValues =
+                    getGaugeValues(agentRollupId, revisedFrom, revisedTo, gaugeName, rollupLevel);
+            map.put(gaugeName, gaugeValues);
+        }
+        return map;
     }
 
     private List<GaugeValue> getGaugeValues(String agentRollupId, long from, long to,
@@ -125,12 +130,13 @@ class GaugeValueJsonService {
         }
         long nonRolledUpFrom = from;
         if (!gaugeValues.isEmpty()) {
-            long lastRolledUpTime = gaugeValues.get(gaugeValues.size() - 1).getCaptureTime();
+            long lastRolledUpTime = Iterables.getLast(gaugeValues).getCaptureTime();
             nonRolledUpFrom = Math.max(nonRolledUpFrom, lastRolledUpTime + 1);
         }
         List<GaugeValue> orderedNonRolledUpGaugeValues = Lists.newArrayList();
+        int lowestLevel = agentRollupId.endsWith("::") ? 1 : 0;
         orderedNonRolledUpGaugeValues.addAll(gaugeValueRepository.readGaugeValues(agentRollupId,
-                gaugeName, nonRolledUpFrom, to, 0));
+                gaugeName, nonRolledUpFrom, to, lowestLevel));
         gaugeValues = Lists.newArrayList(gaugeValues);
         long fixedIntervalMillis =
                 configRepository.getRollupConfigs().get(rollupLevel - 1).intervalMillis();
@@ -144,13 +150,12 @@ class GaugeValueJsonService {
                 configRepository.getRollupConfigs().get(rollupLevel - 1).intervalMillis();
         Map<K, Long> manualRollupCaptureTimes = Maps.newHashMap();
         long maxCaptureTime = Long.MIN_VALUE;
-        for (Entry<K, List<GaugeValue>> entry : map.entrySet()) {
+        for (Map.Entry<K, List<GaugeValue>> entry : map.entrySet()) {
             List<GaugeValue> gaugeValues = entry.getValue();
             if (gaugeValues.isEmpty()) {
                 continue;
             }
-            GaugeValue lastGaugeValue = gaugeValues.get(gaugeValues.size() - 1);
-            long lastCaptureTime = lastGaugeValue.getCaptureTime();
+            long lastCaptureTime = Iterables.getLast(gaugeValues).getCaptureTime();
             maxCaptureTime = Math.max(maxCaptureTime, lastCaptureTime);
             if (lastCaptureTime % fixedIntervalMillis != 0) {
                 manualRollupCaptureTimes.put(entry.getKey(), lastCaptureTime);
@@ -160,11 +165,11 @@ class GaugeValueJsonService {
             // nothing to sync
             return;
         }
-        long maxRollupCaptureTime = Utils.getRollupCaptureTime(maxCaptureTime, fixedIntervalMillis);
+        long maxRollupCaptureTime = CaptureTimes.getRollup(maxCaptureTime, fixedIntervalMillis);
         long maxDiffToSync = Math.min(fixedIntervalMillis / 5, 60000);
-        for (Entry<K, Long> entry : manualRollupCaptureTimes.entrySet()) {
+        for (Map.Entry<K, Long> entry : manualRollupCaptureTimes.entrySet()) {
             Long captureTime = entry.getValue();
-            if (Utils.getRollupCaptureTime(captureTime,
+            if (CaptureTimes.getRollup(captureTime,
                     fixedIntervalMillis) != maxRollupCaptureTime) {
                 continue;
             }
@@ -176,12 +181,16 @@ class GaugeValueJsonService {
             List<GaugeValue> gaugeValues = checkNotNull(map.get(key));
             // make copy in case ImmutableList
             gaugeValues = Lists.newArrayList(gaugeValues);
-            GaugeValue lastGaugeValue = gaugeValues.get(gaugeValues.size() - 1);
+            GaugeValue lastGaugeValue = Iterables.getLast(gaugeValues);
             gaugeValues.set(gaugeValues.size() - 1, lastGaugeValue.toBuilder()
                     .setCaptureTime(maxCaptureTime)
                     .build());
             map.put(key, gaugeValues);
         }
+    }
+
+    private int getLargestRollupLevel() {
+        return configRepository.getRollupConfigs().size();
     }
 
     static List<GaugeValue> rollUpGaugeValues(List<GaugeValue> orderedNonRolledUpGaugeValues,
@@ -209,8 +218,8 @@ class GaugeValueJsonService {
         }
         if (currWeight > 0) {
             // roll up final one
-            long lastCaptureTime = orderedNonRolledUpGaugeValues
-                    .get(orderedNonRolledUpGaugeValues.size() - 1).getCaptureTime();
+            long lastCaptureTime =
+                    Iterables.getLast(orderedNonRolledUpGaugeValues).getCaptureTime();
             rolledUpGaugeValues.add(GaugeValue.newBuilder()
                     .setGaugeName(gaugeName)
                     .setCaptureTime(lastCaptureTime)
@@ -219,6 +228,15 @@ class GaugeValueJsonService {
                     .build());
         }
         return rolledUpGaugeValues;
+    }
+
+    private static boolean isEmpty(Map<String, List<GaugeValue>> map) {
+        for (List<GaugeValue> values : map.values()) {
+            if (!values.isEmpty()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static DataSeries convertToDataSeriesWithGaps(String dataSeriesName,
@@ -234,6 +252,32 @@ class GaugeValueJsonService {
             lastGaugeValue = gaugeValue;
         }
         return dataSeries;
+    }
+
+    private static List<Gauge> addCounterSuffixesIfAndWhereNeeded(List<Gauge> gauges) {
+        Set<String> nonCounterGaugeNames = Sets.newHashSet();
+        for (Gauge gauge : gauges) {
+            if (!gauge.counter()) {
+                nonCounterGaugeNames.add(gauge.name());
+            }
+        }
+        List<Gauge> updatedGauges = Lists.newArrayList();
+        for (Gauge gauge : gauges) {
+            if (gauge.counter() && nonCounterGaugeNames.contains(
+                    gauge.name().substring(0, gauge.name().length() - "[counter]".length()))) {
+                List<String> displayParts = Lists.newArrayList(gauge.displayParts());
+                displayParts.set(displayParts.size() - 1,
+                        displayParts.get(displayParts.size() - 1) + " (Counter)");
+                updatedGauges.add(ImmutableGauge.builder()
+                        .copyFrom(gauge)
+                        .display(gauge.display() + " (Counter)")
+                        .displayParts(displayParts)
+                        .build());
+            } else {
+                updatedGauges.add(gauge);
+            }
+        }
+        return updatedGauges;
     }
 
     @Value.Immutable
@@ -267,7 +311,7 @@ class GaugeValueJsonService {
 
         @Override
         public Long apply(Long captureTime) {
-            return Utils.getRollupCaptureTime(captureTime, fixedIntervalMillis);
+            return CaptureTimes.getRollup(captureTime, fixedIntervalMillis);
         }
     }
 }

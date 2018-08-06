@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,16 +18,13 @@ package org.glowroot.agent.impl;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.util.Collection;
-import java.util.Iterator;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -38,6 +35,7 @@ import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableSetMultimap;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -45,36 +43,39 @@ import com.google.common.collect.SetMultimap;
 import com.google.common.collect.Sets;
 import com.google.common.collect.TreeMultimap;
 import com.google.common.io.BaseEncoding;
+import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.glowroot.agent.bytecode.api.ThreadContextThreadLocal;
 import org.glowroot.agent.collector.Collector.EntryVisitor;
 import org.glowroot.agent.config.AdvancedConfig;
 import org.glowroot.agent.config.ConfigService;
+import org.glowroot.agent.model.AsyncQueryData;
 import org.glowroot.agent.model.AsyncTimerImpl;
 import org.glowroot.agent.model.CommonTimerImpl;
 import org.glowroot.agent.model.ErrorMessage;
-import org.glowroot.agent.model.ImmutableTimerImplSnapshot;
-import org.glowroot.agent.model.MutableAggregateTimer;
-import org.glowroot.agent.model.MutableTraceTimer;
 import org.glowroot.agent.model.QueryCollector;
+import org.glowroot.agent.model.ServiceCallCollector;
+import org.glowroot.agent.model.SharedQueryTextCollection;
 import org.glowroot.agent.model.ThreadProfile;
 import org.glowroot.agent.model.ThreadStats;
-import org.glowroot.agent.model.TimerNameImpl;
 import org.glowroot.agent.plugin.api.Message;
 import org.glowroot.agent.plugin.api.MessageSupplier;
 import org.glowroot.agent.plugin.api.ThreadContext.ServletRequestInfo;
 import org.glowroot.agent.plugin.api.TimerName;
 import org.glowroot.agent.plugin.api.internal.ReadableMessage;
-import org.glowroot.agent.plugin.api.util.FastThreadLocal.Holder;
 import org.glowroot.agent.util.IterableWithSelfRemovableEntries.SelfRemovableEntry;
 import org.glowroot.agent.util.ThreadAllocatedBytes;
-import org.glowroot.common.model.ServiceCallCollector;
 import org.glowroot.common.util.Cancellable;
 import org.glowroot.common.util.NotAvailableAware;
 import org.glowroot.common.util.Traverser;
+import org.glowroot.wire.api.model.AggregateOuterClass.Aggregate;
+import org.glowroot.wire.api.model.ProfileOuterClass.Profile;
+import org.glowroot.wire.api.model.TraceOuterClass.Trace;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 import static org.glowroot.agent.util.Checkers.castInitialized;
@@ -99,7 +100,7 @@ public class Transaction {
 
     // this is only to limit memory
     private static final int TRANSACTION_AUX_THREAD_CONTEXT_LIMIT =
-            Integer.getInteger("glowroot.transaction.aux.thread.context.limit", 10000);
+            Integer.getInteger("glowroot.transaction.aux.thread.context.limit", 1000);
 
     private static final Random random = new Random();
 
@@ -120,19 +121,21 @@ public class Transaction {
     private volatile @Nullable String user;
     private volatile int userPriority = Integer.MIN_VALUE;
 
+    private final Object attributesLock = new Object();
     // lazy loaded to reduce memory when custom attributes are not used
-    @GuardedBy("attributes")
-    private volatile @MonotonicNonNull SetMultimap<String, String> attributes;
+    @GuardedBy("attributesLock")
+    private @MonotonicNonNull SetMultimap<String, String> attributes;
 
     // trace-level error
     private volatile @Nullable ErrorMessage errorMessage;
 
-    private final int maxTraceEntriesPerTransaction;
-    private final int maxAggregateQueriesPerType;
-    private final int maxAggregateServiceCallsPerType;
+    private final int maxTraceEntries;
+    private final int maxQueryAggregates;
+    private final int maxServiceCallAggregates;
+    private final int maxProfileSamples;
 
     private final TransactionRegistry transactionRegistry;
-    private final TransactionServiceImpl transactionService;
+    private final TransactionService transactionService;
     private final ConfigService configService;
 
     // stack trace data constructed from profiling
@@ -168,8 +171,6 @@ public class Transaction {
     // it's ok if race condition in limit check
     private volatile int entryLimitCounter;
     private volatile int extraErrorEntryLimitCounter;
-    private volatile int aggregateQueryLimitCounter;
-    private volatile int aggregateServiceCallLimitCounter;
 
     private volatile @Nullable AtomicInteger throwableFrameLimitCounter;
 
@@ -178,15 +179,16 @@ public class Transaction {
     @GuardedBy("mainThreadContext")
     private @MonotonicNonNull List<ThreadContextImpl> auxThreadContexts;
     @GuardedBy("mainThreadContext")
+    private @MonotonicNonNull List<ThreadContextImpl> unmergeableAuxThreadContexts;
+    @GuardedBy("mainThreadContext")
     private @MonotonicNonNull Set<ThreadContextImpl> unmergedLimitExceededAuxThreadContexts;
 
-    // async root timers are the root timers which do not have corresponding thread context
-    // (those corresponding to async trace entries)
-    private final Object asyncTimerLock = new Object();
-    @GuardedBy("asyncTimerLock")
-    private @MonotonicNonNull List<AsyncTimerImpl> asyncTimers;
-    @GuardedBy("asyncTimerLock")
-    private @MonotonicNonNull Map<String, AggregateAsyncTimer> aggregateAsyncTimers;
+    private final Object asyncComponentsInitLock = new Object();
+    private volatile @MonotonicNonNull AsyncComponents asyncComponents;
+
+    private final Object sharedQueryTextCollectionLock = new Object();
+    @GuardedBy("sharedQueryTextCollectionLock")
+    private @MonotonicNonNull SharedQueryTextCollectionImpl sharedQueryTextCollection;
 
     private volatile boolean completed;
     private volatile long endTick;
@@ -202,24 +204,28 @@ public class Transaction {
     @GuardedBy("mainThreadContext")
     private @MonotonicNonNull ThreadStatsCollectorImpl alreadyMergedAuxThreadStats;
     @GuardedBy("mainThreadContext")
+    private @MonotonicNonNull QueryCollector alreadyMergedAuxQueries;
+    @GuardedBy("mainThreadContext")
+    private @MonotonicNonNull ServiceCallCollector alreadyMergedAuxServiceCalls;
+    @GuardedBy("mainThreadContext")
     private boolean stopMergingAuxThreadContexts;
 
     Transaction(long startTime, long startTick, String transactionType, String transactionName,
             MessageSupplier messageSupplier, TimerName timerName, boolean captureThreadStats,
-            int maxTraceEntriesPerTransaction, int maxAggregateQueriesPerType,
-            int maxAggregateServiceCallsPerType,
-            @Nullable ThreadAllocatedBytes threadAllocatedBytes,
+            int maxTraceEntries, int maxQueryAggregates, int maxServiceCallAggregates,
+            int maxProfileSamples, @Nullable ThreadAllocatedBytes threadAllocatedBytes,
             CompletionCallback completionCallback, Ticker ticker,
-            TransactionRegistry transactionRegistry, TransactionServiceImpl transactionService,
+            TransactionRegistry transactionRegistry, TransactionService transactionService,
             ConfigService configService, UserProfileScheduler userProfileScheduler,
-            Holder</*@Nullable*/ ThreadContextImpl> threadContextHolder) {
+            ThreadContextThreadLocal.Holder threadContextHolder) {
         this.startTime = startTime;
         this.startTick = startTick;
         this.transactionType = transactionType;
         this.transactionName = transactionName;
-        this.maxTraceEntriesPerTransaction = maxTraceEntriesPerTransaction;
-        this.maxAggregateQueriesPerType = maxAggregateQueriesPerType;
-        this.maxAggregateServiceCallsPerType = maxAggregateServiceCallsPerType;
+        this.maxTraceEntries = maxTraceEntries;
+        this.maxQueryAggregates = maxQueryAggregates;
+        this.maxServiceCallAggregates = maxServiceCallAggregates;
+        this.maxProfileSamples = maxProfileSamples;
         this.completionCallback = completionCallback;
         this.ticker = ticker;
         this.userProfileScheduler = userProfileScheduler;
@@ -227,8 +233,9 @@ public class Transaction {
         this.transactionService = transactionService;
         this.configService = configService;
         mainThreadContext = new ThreadContextImpl(castInitialized(this), null, null,
-                messageSupplier, timerName, startTick, captureThreadStats, threadAllocatedBytes,
-                false, ticker, threadContextHolder, null);
+                messageSupplier, timerName, startTick, captureThreadStats, maxQueryAggregates,
+                maxServiceCallAggregates, threadAllocatedBytes, false, ticker, threadContextHolder,
+                null);
     }
 
     long getStartTime() {
@@ -286,15 +293,15 @@ public class Transaction {
         return Strings.nullToEmpty(user);
     }
 
-    public ImmutableSetMultimap<String, String> getAttributes() {
-        if (attributes == null) {
-            return ImmutableSetMultimap.of();
-        }
-        SetMultimap<String, String> orderedAttributes = TreeMultimap.create();
-        synchronized (attributes) {
+    public SetMultimap<String, String> getAttributes() {
+        synchronized (attributesLock) {
+            if (attributes == null) {
+                return ImmutableSetMultimap.of();
+            }
+            SetMultimap<String, String> orderedAttributes = TreeMultimap.create();
             orderedAttributes.putAll(attributes);
+            return orderedAttributes;
         }
-        return ImmutableSetMultimap.copyOf(orderedAttributes);
     }
 
     Map<String, ?> getDetail() {
@@ -332,39 +339,20 @@ public class Transaction {
             if (auxThreadContexts == null) {
                 return;
             }
-            for (ThreadContextImpl auxThreadContext : auxThreadContexts) {
-                rootTimers.mergeRootTimer(auxThreadContext.getRootTimer());
-            }
             if (alreadyMergedAuxThreadTimers != null) {
                 for (CommonTimerImpl rootTimer : alreadyMergedAuxThreadTimers.getRootTimers()) {
                     rootTimers.mergeRootTimer(rootTimer);
                 }
             }
-            if (unmergedLimitExceededAuxThreadContexts != null) {
-                for (ThreadContextImpl auxThreadContext : unmergedLimitExceededAuxThreadContexts) {
-                    rootTimers.mergeRootTimer(auxThreadContext.getRootTimer());
-                }
+            for (ThreadContextImpl auxThreadContext : getUnmergedAuxThreadContext()) {
+                rootTimers.mergeRootTimer(auxThreadContext.getRootTimer());
             }
         }
     }
 
     void mergeAsyncTimersInto(RootTimerCollector rootTimers) {
-        memoryBarrierRead();
-        synchronized (asyncTimerLock) {
-            if (asyncTimers == null) {
-                return;
-            }
-            for (AsyncTimerImpl asyncTimer : asyncTimers) {
-                rootTimers.mergeRootTimer(asyncTimer);
-            }
-            if (aggregateAsyncTimers == null) {
-                return;
-            }
-            for (Entry<String, AggregateAsyncTimer> entry : aggregateAsyncTimers.entrySet()) {
-                AggregateAsyncTimer value = entry.getValue();
-                rootTimers.mergeRootTimer(
-                        new SimpleTimerImpl(entry.getKey(), value.totalNanos, value.count));
-            }
+        if (asyncComponents != null) {
+            asyncComponents.mergeAsyncTimersInto(rootTimers);
         }
     }
 
@@ -379,7 +367,11 @@ public class Transaction {
             if (auxThreadContexts == null) {
                 return totalCpuNanos;
             }
-            for (ThreadContextImpl auxThreadContext : auxThreadContexts) {
+            if (alreadyMergedAuxThreadStats != null) {
+                totalCpuNanos = NotAvailableAware.add(totalCpuNanos,
+                        alreadyMergedAuxThreadStats.getTotalCpuNanos());
+            }
+            for (ThreadContextImpl auxThreadContext : getUnmergedAuxThreadContext()) {
                 totalCpuNanos =
                         NotAvailableAware.add(totalCpuNanos, auxThreadContext.getTotalCpuNanos());
             }
@@ -387,77 +379,115 @@ public class Transaction {
         }
     }
 
-    void mergeAuxThreadStatsInto(ThreadStatsCollector threadStats) {
+    void mergeAuxThreadStatsInto(ThreadStatsCollector collector) {
         synchronized (mainThreadContext) {
             if (auxThreadContexts == null) {
                 return;
             }
-            for (ThreadContextImpl auxThreadContext : auxThreadContexts) {
-                threadStats.mergeThreadStats(auxThreadContext.getThreadStats());
-            }
             if (alreadyMergedAuxThreadStats != null) {
-                threadStats.mergeThreadStats(alreadyMergedAuxThreadStats.getMergedThreadStats());
+                collector.mergeThreadStats(alreadyMergedAuxThreadStats.getMergedThreadStats());
             }
-            if (unmergedLimitExceededAuxThreadContexts != null) {
-                for (ThreadContextImpl auxThreadContext : unmergedLimitExceededAuxThreadContexts) {
-                    threadStats.mergeThreadStats(auxThreadContext.getThreadStats());
-                }
+            for (ThreadContextImpl auxThreadContext : getUnmergedAuxThreadContext()) {
+                collector.mergeThreadStats(auxThreadContext.getThreadStats());
             }
         }
     }
 
-    void mergeQueriesInto(QueryCollector queries) {
+    void mergeQueriesInto(QueryCollector collector) {
         memoryBarrierRead();
-        mainThreadContext.mergeQueriesInto(queries);
+        mainThreadContext.mergeQueriesInto(collector);
         synchronized (mainThreadContext) {
             if (auxThreadContexts != null) {
-                for (ThreadContextImpl auxThreadContext : auxThreadContexts) {
-                    auxThreadContext.mergeQueriesInto(queries);
+                if (alreadyMergedAuxQueries != null) {
+                    alreadyMergedAuxQueries.mergeQueriesInto(collector);
+                }
+                for (ThreadContextImpl auxThreadContext : getUnmergedAuxThreadContext()) {
+                    auxThreadContext.mergeQueriesInto(collector);
                 }
             }
         }
+        if (asyncComponents != null) {
+            asyncComponents.mergeQueriesInto(collector);
+        }
     }
 
-    void mergeServiceCallsInto(ServiceCallCollector serviceCalls) {
+    public List<Aggregate.Query> getQueries() {
+        synchronized (sharedQueryTextCollectionLock) {
+            if (sharedQueryTextCollection == null) {
+                sharedQueryTextCollection = new SharedQueryTextCollectionImpl();
+            }
+            return getQueriesInternal(sharedQueryTextCollection);
+        }
+    }
+
+    int getQueryCount() {
+        return getQueriesInternal(new NopSharedQueryTextCollection()).size();
+    }
+
+    private List<Aggregate.Query> getQueriesInternal(
+            SharedQueryTextCollection sharedQueryTextCollection) {
+        QueryCollector collector = new QueryCollector(maxQueryAggregates,
+                AdvancedConfig.OVERALL_AGGREGATE_QUERIES_HARD_LIMIT_MULTIPLIER);
+        mergeQueriesInto(collector);
+        return collector.toAggregateProto(sharedQueryTextCollection, true);
+    }
+
+    public List<String> getSharedQueryTexts() {
+        synchronized (sharedQueryTextCollectionLock) {
+            if (sharedQueryTextCollection == null) {
+                sharedQueryTextCollection = new SharedQueryTextCollectionImpl();
+            }
+            return ImmutableList.copyOf(sharedQueryTextCollection.sharedQueryTexts);
+        }
+    }
+
+    void mergeServiceCallsInto(ServiceCallCollector collector) {
         memoryBarrierRead();
-        mainThreadContext.mergeServiceCallsInto(serviceCalls);
+        mainThreadContext.mergeServiceCallsInto(collector);
         synchronized (mainThreadContext) {
             if (auxThreadContexts != null) {
-                for (ThreadContextImpl auxThreadContext : auxThreadContexts) {
-                    auxThreadContext.mergeServiceCallsInto(serviceCalls);
+                if (alreadyMergedAuxServiceCalls != null) {
+                    alreadyMergedAuxServiceCalls.mergeServiceCallsInto(collector);
+                }
+                for (ThreadContextImpl auxThreadContext : getUnmergedAuxThreadContext()) {
+                    auxThreadContext.mergeServiceCallsInto(collector);
                 }
             }
+        }
+        if (asyncComponents != null) {
+            asyncComponents.mergeServiceCallsInto(collector);
         }
     }
 
     // this method has side effect of incrementing counter
     boolean allowAnotherEntry() {
-        return entryLimitCounter++ < maxTraceEntriesPerTransaction;
+        return entryLimitCounter++ < maxTraceEntries;
     }
 
     // this method has side effect of incrementing counter
     boolean allowAnotherErrorEntry() {
         // use higher entry limit when adding errors, but still need some kind of cap
-        return entryLimitCounter++ < maxTraceEntriesPerTransaction
-                || extraErrorEntryLimitCounter++ < maxTraceEntriesPerTransaction;
+        return entryLimitCounter++ < maxTraceEntries
+                || extraErrorEntryLimitCounter++ < maxTraceEntries;
     }
 
-    // this method has side effect of incrementing counter
-    boolean allowAnotherAggregateQuery(boolean bypassLimit) {
-        if (aggregateQueryLimitCounter++ < maxAggregateQueriesPerType
-                * AdvancedConfig.OVERALL_AGGREGATE_QUERIES_HARD_LIMIT_MULTIPLIER) {
-            return true;
+    public void visitEntries(long captureTick, EntryVisitor entryVisitor) throws Exception {
+        synchronized (sharedQueryTextCollectionLock) {
+            if (sharedQueryTextCollection == null) {
+                sharedQueryTextCollection = new SharedQueryTextCollectionImpl();
+            }
+            visitEntriesInternal(captureTick, entryVisitor, sharedQueryTextCollection);
         }
-        return bypassLimit;
     }
 
-    // this method has side effect of incrementing counter
-    boolean allowAnotherAggregateServiceCall() {
-        return aggregateServiceCallLimitCounter++ < maxAggregateServiceCallsPerType
-                * AdvancedConfig.OVERALL_AGGREGATE_SERVICE_CALLS_HARD_LIMIT_MULTIPLIER;
+    int getEntryCount(long captureTick) throws Exception {
+        CountingEntryVisitor entryVisitor = new CountingEntryVisitor();
+        visitEntriesInternal(captureTick, entryVisitor, new NopSharedQueryTextCollection());
+        return entryVisitor.count;
     }
 
-    public void accept(long captureTick, EntryVisitor entryVisitor) throws Exception {
+    private void visitEntriesInternal(long captureTick, EntryVisitor entryVisitor,
+            SharedQueryTextCollection sharedQueryTextCollection) throws Exception {
         memoryBarrierRead();
         ListMultimap<TraceEntryImpl, ThreadContextImpl> priorEntryChildThreadContextMap =
                 buildPriorEntryChildThreadContextMap();
@@ -466,7 +496,7 @@ public class Transaction {
                 priorEntryChildThreadContextMap);
         synchronized (mainThreadContext) {
             if (auxThreadContexts != null) {
-                for (ThreadContextImpl auxThreadContext : auxThreadContexts) {
+                for (ThreadContextImpl auxThreadContext : getUnmergedAuxThreadContext()) {
                     auxThreadContext.populateParentChildMap(parentChildMap, captureTick,
                             priorEntryChildThreadContextMap);
                 }
@@ -475,7 +505,7 @@ public class Transaction {
         new ParentChildMapTrimmer(mainThreadContext.getRootEntry(), parentChildMap, captureTick)
                 .traverse();
         addProtobufChildEntries(mainThreadContext.getRootEntry(), parentChildMap, startTick,
-                captureTick, 0, entryVisitor, async);
+                captureTick, 0, entryVisitor, sharedQueryTextCollection, async);
     }
 
     long getMainThreadProfileSampleCount() {
@@ -491,16 +521,16 @@ public class Transaction {
         return mainThreadProfile;
     }
 
-    public @Nullable org.glowroot.wire.api.model.ProfileOuterClass.Profile getMainThreadProfileProtobuf() {
+    public @Nullable Profile getMainThreadProfileProtobuf() {
         if (mainThreadProfile == null) {
             return null;
         }
         return mainThreadProfile.toProto();
     }
 
-    boolean isMainThreadProfileSampleLimitExceeded() {
-        // TODO implement profile limit
-        return false;
+    boolean isMainThreadProfileSampleLimitExceeded(long profileSampleCount) {
+        return profileSampleCount >= maxProfileSamples && mainThreadProfile != null
+                && mainThreadProfile.isSampleLimitExceeded();
     }
 
     long getAuxThreadProfileSampleCount() {
@@ -516,16 +546,16 @@ public class Transaction {
         return auxThreadProfile;
     }
 
-    public @Nullable org.glowroot.wire.api.model.ProfileOuterClass.Profile getAuxThreadProfileProtobuf() {
+    public @Nullable Profile getAuxThreadProfileProtobuf() {
         if (auxThreadProfile == null) {
             return null;
         }
         return auxThreadProfile.toProto();
     }
 
-    boolean isAuxThreadProfileSampleLimitExceeded() {
-        // TODO implement profile limit
-        return false;
+    boolean isAuxThreadProfileSampleLimitExceeded(long profileSampleCount) {
+        return profileSampleCount >= maxProfileSamples && auxThreadProfile != null
+                && auxThreadProfile.isSampleLimitExceeded();
     }
 
     int getSlowThresholdMillisOverride() {
@@ -550,7 +580,7 @@ public class Transaction {
                 return ImmutableList.of();
             }
             List<ThreadContextImpl> activeAuxThreadContexts = Lists.newArrayList();
-            for (ThreadContextImpl auxThreadContext : auxThreadContexts) {
+            for (ThreadContextImpl auxThreadContext : getUnmergedAuxThreadContext()) {
                 if (auxThreadContext.isActive()) {
                     activeAuxThreadContexts.add(auxThreadContext);
                 }
@@ -592,12 +622,12 @@ public class Transaction {
     }
 
     void addAttribute(String name, @Nullable String value) {
-        if (attributes == null) {
-            // no race condition here since only transaction thread calls addAttribute()
-            attributes = HashMultimap.create(ATTRIBUTE_KEYS_INITIAL_CAPACITY, 1);
-        }
-        String val = Strings.nullToEmpty(value);
-        synchronized (attributes) {
+        synchronized (attributesLock) {
+            if (attributes == null) {
+                // no race condition here since only transaction thread calls addAttribute()
+                attributes = HashMultimap.create(ATTRIBUTE_KEYS_INITIAL_CAPACITY, 1);
+            }
+            String val = Strings.nullToEmpty(value);
             Collection<String> values = attributes.get(name);
             if (values.size() < ATTRIBUTE_VALUES_PER_KEY_LIMIT) {
                 values.add(val);
@@ -651,7 +681,7 @@ public class Transaction {
     @Nullable
     ThreadContextImpl startAuxThreadContext(@Nullable TraceEntryImpl parentTraceEntry,
             @Nullable TraceEntryImpl parentThreadContextPriorEntry, TimerName auxTimerName,
-            long startTick, Holder</*@Nullable*/ ThreadContextImpl> threadContextHolder,
+            long startTick, ThreadContextThreadLocal.Holder threadContextHolder,
             @Nullable ServletRequestInfo servletRequestInfo,
             @Nullable ThreadAllocatedBytes threadAllocatedBytes) {
         ThreadContextImpl auxThreadContext;
@@ -668,20 +698,20 @@ public class Transaction {
             // conditions below for parentTraceEntry and parentThreadContextPriorEntry are redundant
             // since they will not be null until after allowAnotherAuxThreadContextWithHierarchy()
             // starts returning false
-            if (allowAnotherAuxThreadContextWithHierarchy() && parentTraceEntry != null
+            if (allowAnotherAuxThreadContextWithTraceEntries() && parentTraceEntry != null
                     && parentThreadContextPriorEntry != null) {
                 auxThreadContext = new ThreadContextImpl(this, parentTraceEntry,
                         parentThreadContextPriorEntry, AuxThreadRootMessageSupplier.INSTANCE,
                         auxTimerName, startTick, mainThreadContext.getCaptureThreadStats(),
-                        threadAllocatedBytes, false, ticker, threadContextHolder,
-                        servletRequestInfo);
+                        maxQueryAggregates, maxServiceCallAggregates, threadAllocatedBytes, false,
+                        ticker, threadContextHolder, servletRequestInfo);
                 auxThreadContexts.add(auxThreadContext);
             } else {
                 auxThreadContext = new ThreadContextImpl(this, mainThreadContext.getRootEntry(),
                         mainThreadContext.getTailEntry(), AuxThreadRootMessageSupplier.INSTANCE,
                         auxTimerName, startTick, mainThreadContext.getCaptureThreadStats(),
-                        threadAllocatedBytes, true, ticker, threadContextHolder,
-                        servletRequestInfo);
+                        maxQueryAggregates, maxServiceCallAggregates, threadAllocatedBytes, true,
+                        ticker, threadContextHolder, servletRequestInfo);
                 if (unmergedLimitExceededAuxThreadContexts == null) {
                     unmergedLimitExceededAuxThreadContexts = Sets.newHashSet();
                 }
@@ -702,62 +732,44 @@ public class Transaction {
                 checkNotNull(auxThreadContexts).add(auxThreadContext);
                 return;
             }
-            if (alreadyMergedAuxThreadTimers == null) {
-                alreadyMergedAuxThreadTimers = new RootTimerCollectorImpl();
-            }
-            if (alreadyMergedAuxThreadStats == null) {
-                alreadyMergedAuxThreadStats = new ThreadStatsCollectorImpl();
-            }
-            alreadyMergedAuxThreadTimers.mergeRootTimer(auxThreadContext.getRootTimer());
-            alreadyMergedAuxThreadStats.mergeThreadStats(auxThreadContext.getThreadStats());
+            initAlreadyMergedAuxComponentsIfNeeded();
+            mergeAux(auxThreadContext);
         }
     }
 
     AsyncTimerImpl startAsyncTimer(TimerName asyncTimerName, long startTick) {
-        AsyncTimerImpl asyncTimer = new AsyncTimerImpl((TimerNameImpl) asyncTimerName, startTick);
-        synchronized (asyncTimerLock) {
-            if (asyncTimers == null) {
-                asyncTimers = Lists.newArrayList();
-            }
-            if (asyncTimers.size() >= 1000) {
-                // this is just to conserve memory
-                if (aggregateAsyncTimers == null) {
-                    aggregateAsyncTimers = Maps.newHashMap();
-                }
-                List<AsyncTimerImpl> activeAsyncTimers = Lists.newArrayList();
-                for (AsyncTimerImpl loopAsyncTimer : asyncTimers) {
-                    if (loopAsyncTimer.active()) {
-                        activeAsyncTimers.add(loopAsyncTimer);
-                        continue;
-                    }
-                    AggregateAsyncTimer aggregateAsyncTimer =
-                            aggregateAsyncTimers.get(loopAsyncTimer.getName());
-                    if (aggregateAsyncTimer == null) {
-                        aggregateAsyncTimer = new AggregateAsyncTimer();
-                        aggregateAsyncTimers.put(loopAsyncTimer.getName(), aggregateAsyncTimer);
-                    }
-                    aggregateAsyncTimer.totalNanos += loopAsyncTimer.getTotalNanos();
-                    aggregateAsyncTimer.count += loopAsyncTimer.getCount();
-                }
-                asyncTimers = activeAsyncTimers;
-            }
-            asyncTimers.add(asyncTimer);
-        }
-        return asyncTimer;
+        return getOrInitAsyncComponents().startAsyncTimer(asyncTimerName, startTick);
+    }
+
+    AsyncQueryData getOrCreateAsyncQueryData(String queryType, String queryText,
+            boolean bypassLimit) {
+        return getOrInitAsyncComponents().getOrCreateAsyncQueryData(queryType, queryText,
+                bypassLimit);
+    }
+
+    AsyncQueryData getOrCreateAsyncServiceCallData(String serviceCallType, String serviceCallText,
+            boolean bypassLimit) {
+        return getOrInitAsyncComponents().getOrCreateAsyncServiceCallData(serviceCallType,
+                serviceCallText, bypassLimit);
     }
 
     TraceEntryImpl startInnerTransaction(String transactionType, String transactionName,
             MessageSupplier messageSupplier, TimerName timerName,
-            Holder</*@Nullable*/ ThreadContextImpl> threadContextHolder) {
+            ThreadContextThreadLocal.Holder threadContextHolder) {
         return transactionService.startTransaction(transactionType, transactionName,
                 messageSupplier, timerName, threadContextHolder);
     }
 
-    boolean isEntryLimitExceeded() {
-        return entryLimitCounter > maxTraceEntriesPerTransaction;
+    boolean isEntryLimitExceeded(int entryCount) {
+        return entryCount >= maxTraceEntries && entryLimitCounter > maxTraceEntries;
     }
 
-    void captureStackTrace(boolean auxiliary, ThreadInfo threadInfo, int limit) {
+    boolean isQueryLimitExceeded(int queryCount) {
+        // "LIMIT EXCEEDED BUCKET" will always push query count over the max
+        return queryCount > maxQueryAggregates;
+    }
+
+    void captureStackTrace(boolean auxiliary, ThreadInfo threadInfo) {
         if (completed) {
             return;
         }
@@ -775,8 +787,8 @@ public class Transaction {
             // profile is constructed and first stack trace is added prior to setting the
             // transaction profile field, so that it is not possible to read a profile that doesn't
             // have at least one stack trace
-            profile = new ThreadProfile();
-            profile.addStackTrace(threadInfo, limit);
+            profile = new ThreadProfile(maxProfileSamples);
+            profile.addStackTrace(threadInfo);
             if (auxiliary) {
                 auxThreadProfile = profile;
             } else {
@@ -784,7 +796,7 @@ public class Transaction {
             }
             return;
         }
-        profile.addStackTrace(threadInfo, limit);
+        profile.addStackTrace(threadInfo);
     }
 
     void end(long endTick, boolean completeAsyncTransaction) {
@@ -822,7 +834,7 @@ public class Transaction {
         return transactionRegistry;
     }
 
-    TransactionServiceImpl getTransactionService() {
+    TransactionService getTransactionService() {
         return transactionService;
     }
 
@@ -858,48 +870,96 @@ public class Transaction {
         memoryBarrierWrite();
     }
 
-    // must be called under synchronized (mainThreadContext)
+    @GuardedBy("mainThreadContext")
     @RequiresNonNull("auxThreadContexts")
-    private boolean allowAnotherAuxThreadContextWithHierarchy() {
-        if (auxThreadContexts.size() < TRANSACTION_AUX_THREAD_CONTEXT_LIMIT) {
+    private boolean allowAnotherAuxThreadContextWithTraceEntries() {
+        int unmergedCount = auxThreadContexts.size();
+        if (unmergeableAuxThreadContexts != null) {
+            unmergedCount += unmergeableAuxThreadContexts.size();
+        }
+        if (unmergedCount < TRANSACTION_AUX_THREAD_CONTEXT_LIMIT) {
             return true;
         }
         if (stopMergingAuxThreadContexts) {
             return false;
         }
         List<ThreadContextImpl> mergeableAuxThreadContexts = Lists.newArrayList();
-        List<ThreadContextImpl> nonMergeableAuxThreadContexts = Lists.newArrayList();
-        for (Iterator<ThreadContextImpl> i = auxThreadContexts.iterator(); i.hasNext();) {
-            ThreadContextImpl loopAuxThreadContext = i.next();
-            if (loopAuxThreadContext.isCompleteAndEmptyExceptForTimersAndThreadStats()) {
-                mergeableAuxThreadContexts.add(loopAuxThreadContext);
+        List<ThreadContextImpl> unmergeableAuxThreadContexts = Lists.newArrayList();
+        List<ThreadContextImpl> mergeableButIncompleteAuxThreadContexts = Lists.newArrayList();
+        for (ThreadContextImpl auxThreadContext : auxThreadContexts) {
+            if (!auxThreadContext.isMergeable()) {
+                // once it's not mergeable it will never be mergeable
+                unmergeableAuxThreadContexts.add(auxThreadContext);
+            } else if (auxThreadContext.isCompleted()) {
+                mergeableAuxThreadContexts.add(auxThreadContext);
             } else {
-                nonMergeableAuxThreadContexts.add(loopAuxThreadContext);
+                mergeableButIncompleteAuxThreadContexts.add(auxThreadContext);
             }
         }
-        if (mergeableAuxThreadContexts.size() < 0.1 * auxThreadContexts.size()) {
-            // unable to merge more than 10%
+        if (mergeableAuxThreadContexts.size() < 0.01 * TRANSACTION_AUX_THREAD_CONTEXT_LIMIT) {
+            // not worth continuing to merge
             stopMergingAuxThreadContexts = true;
             return false;
         }
+        initAlreadyMergedAuxComponentsIfNeeded();
+        for (ThreadContextImpl mergeableAuxThreadContext : mergeableAuxThreadContexts) {
+            mergeAux(mergeableAuxThreadContext);
+        }
+        if (this.unmergeableAuxThreadContexts == null) {
+            this.unmergeableAuxThreadContexts = Lists.newArrayList(unmergeableAuxThreadContexts);
+        } else {
+            this.unmergeableAuxThreadContexts.addAll(unmergeableAuxThreadContexts);
+        }
+        auxThreadContexts = Lists.newArrayList(mergeableButIncompleteAuxThreadContexts);
+        return true;
+    }
+
+    @GuardedBy("mainThreadContext")
+    @EnsuresNonNull({"alreadyMergedAuxThreadTimers", "alreadyMergedAuxThreadStats",
+            "alreadyMergedAuxQueries", "alreadyMergedAuxServiceCalls"})
+    private void initAlreadyMergedAuxComponentsIfNeeded() {
         if (alreadyMergedAuxThreadTimers == null) {
             alreadyMergedAuxThreadTimers = new RootTimerCollectorImpl();
         }
         if (alreadyMergedAuxThreadStats == null) {
             alreadyMergedAuxThreadStats = new ThreadStatsCollectorImpl();
         }
-        for (ThreadContextImpl mergeableAuxThreadContext : mergeableAuxThreadContexts) {
-            alreadyMergedAuxThreadTimers.mergeRootTimer(mergeableAuxThreadContext.getRootTimer());
-            alreadyMergedAuxThreadStats
-                    .mergeThreadStats(mergeableAuxThreadContext.getThreadStats());
+        if (alreadyMergedAuxQueries == null) {
+            alreadyMergedAuxQueries = new QueryCollector(maxQueryAggregates,
+                    AdvancedConfig.OVERALL_AGGREGATE_QUERIES_HARD_LIMIT_MULTIPLIER);
         }
-        auxThreadContexts = nonMergeableAuxThreadContexts;
-        return true;
+        if (alreadyMergedAuxServiceCalls == null) {
+            alreadyMergedAuxServiceCalls = new ServiceCallCollector(maxServiceCallAggregates,
+                    AdvancedConfig.OVERALL_AGGREGATE_QUERIES_HARD_LIMIT_MULTIPLIER);
+        }
+    }
+
+    @GuardedBy("mainThreadContext")
+    @RequiresNonNull({"alreadyMergedAuxThreadTimers", "alreadyMergedAuxThreadStats",
+            "alreadyMergedAuxQueries", "alreadyMergedAuxServiceCalls"})
+    private void mergeAux(ThreadContextImpl mergeableAuxThreadContext) {
+        alreadyMergedAuxThreadTimers.mergeRootTimer(mergeableAuxThreadContext.getRootTimer());
+        alreadyMergedAuxThreadStats.mergeThreadStats(mergeableAuxThreadContext.getThreadStats());
+        mergeableAuxThreadContext.mergeQueriesInto(alreadyMergedAuxQueries);
+        mergeableAuxThreadContext.mergeServiceCallsInto(alreadyMergedAuxServiceCalls);
+    }
+
+    private AsyncComponents getOrInitAsyncComponents() {
+        if (asyncComponents == null) {
+            synchronized (asyncComponentsInitLock) {
+                if (asyncComponents == null) {
+                    asyncComponents = new AsyncComponents(maxQueryAggregates,
+                            maxServiceCallAggregates, ticker);
+                }
+            }
+        }
+        return asyncComponents;
     }
 
     private static void addProtobufChildEntries(TraceEntryImpl entry,
             ListMultimap<TraceEntryImpl, TraceEntryImpl> parentChildMap, long transactionStartTick,
-            long captureTick, int depth, EntryVisitor entryVisitor, boolean removeSingleAuxEntry)
+            long captureTick, int depth, EntryVisitor entryVisitor,
+            SharedQueryTextCollection sharedQueryTextCollection, boolean removeSingleAuxEntry)
             throws Exception {
         if (!parentChildMap.containsKey(entry)) {
             // check containsKey to avoid creating garbage empty list via ListMultimap
@@ -911,11 +971,13 @@ public class Transaction {
                     && !childEntry.hasLocationStackTrace();
             if (singleAuxEntry && removeSingleAuxEntry) {
                 addProtobufChildEntries(childEntry, parentChildMap, transactionStartTick,
-                        captureTick, depth, entryVisitor, removeSingleAuxEntry);
+                        captureTick, depth, entryVisitor, sharedQueryTextCollection,
+                        removeSingleAuxEntry);
             } else {
-                childEntry.accept(depth, transactionStartTick, captureTick, entryVisitor);
+                childEntry.accept(depth, transactionStartTick, captureTick, entryVisitor,
+                        sharedQueryTextCollection);
                 addProtobufChildEntries(childEntry, parentChildMap, transactionStartTick,
-                        captureTick, depth + 1, entryVisitor, false);
+                        captureTick, depth + 1, entryVisitor, sharedQueryTextCollection, false);
             }
         }
     }
@@ -927,7 +989,7 @@ public class Transaction {
             }
             ListMultimap<TraceEntryImpl, ThreadContextImpl> parentChildMap =
                     ArrayListMultimap.create();
-            for (ThreadContextImpl auxThreadContext : auxThreadContexts) {
+            for (ThreadContextImpl auxThreadContext : getUnmergedAuxThreadContext()) {
                 // checkNotNull is safe b/c aux thread contexts have non-null parent thread context
                 // prior entries when they are not limit exceeded aux thread contexts
                 parentChildMap.put(
@@ -938,12 +1000,12 @@ public class Transaction {
         }
     }
 
-    // must be called under synchronized (mainThreadContext)
+    @GuardedBy("mainThreadContext")
     private void detachIncompleteAuxThreadContexts() {
         if (auxThreadContexts == null) {
             return;
         }
-        for (ThreadContextImpl auxThreadContext : auxThreadContexts) {
+        for (ThreadContextImpl auxThreadContext : getUnmergedAuxThreadContext()) {
             if (auxThreadContext.isCompleted()) {
                 continue;
             }
@@ -966,6 +1028,23 @@ public class Transaction {
                         "auxiliary thread extended beyond the transaction which started it\n{}",
                         sb);
             }
+        }
+    }
+
+    @GuardedBy("mainThreadContext")
+    @RequiresNonNull("auxThreadContexts")
+    private Iterable<ThreadContextImpl> getUnmergedAuxThreadContext() {
+        if (unmergeableAuxThreadContexts == null) {
+            if (unmergedLimitExceededAuxThreadContexts == null) {
+                return auxThreadContexts;
+            } else {
+                return Iterables.concat(auxThreadContexts, unmergedLimitExceededAuxThreadContexts);
+            }
+        } else if (unmergedLimitExceededAuxThreadContexts == null) {
+            return Iterables.concat(unmergeableAuxThreadContexts, auxThreadContexts);
+        } else {
+            return Iterables.concat(unmergeableAuxThreadContexts, auxThreadContexts,
+                    unmergedLimitExceededAuxThreadContexts);
         }
     }
 
@@ -993,64 +1072,6 @@ public class Transaction {
 
     interface ThreadStatsCollector {
         void mergeThreadStats(ThreadStats threadStats);
-    }
-
-    private static class AggregateAsyncTimer {
-
-        private long totalNanos;
-        private long count;
-    }
-
-    private static class SimpleTimerImpl implements CommonTimerImpl {
-
-        private final String name;
-        private final long totalNanos;
-        private final long count;
-
-        private SimpleTimerImpl(String name, long totalNanos, long count) {
-            this.name = name;
-            this.totalNanos = totalNanos;
-            this.count = count;
-        }
-
-        @Override
-        public String getName() {
-            return name;
-        }
-
-        @Override
-        public boolean isExtended() {
-            return false;
-        }
-
-        @Override
-        public long getTotalNanos() {
-            return totalNanos;
-        }
-
-        @Override
-        public long getCount() {
-            return count;
-        }
-
-        @Override
-        public void mergeChildTimersInto(List<MutableTraceTimer> childTimers) {
-            // async timers have no child timers
-        }
-
-        @Override
-        public void mergeChildTimersInto2(List<MutableAggregateTimer> childTimers) {
-            // async timers have no child timers
-        }
-
-        @Override
-        public TimerImplSnapshot getSnapshot() {
-            return ImmutableTimerImplSnapshot.builder()
-                    .totalNanos(totalNanos)
-                    .count(count)
-                    .active(false)
-                    .build();
-        }
     }
 
     private static class AuxThreadRootMessageSupplier extends MessageSupplier {
@@ -1129,6 +1150,50 @@ public class Transaction {
                     }
                 }
             }
+        }
+    }
+
+    private static class CountingEntryVisitor implements EntryVisitor {
+
+        private int count;
+
+        @Override
+        public void visitEntry(Trace.Entry entry) {
+            if (countEntry(entry)) {
+                count++;
+            }
+        }
+
+        private static boolean countEntry(Trace.Entry entry) {
+            // don't count "auxiliary thread" entries since those are not counted in
+            // maxTraceEntriesPerTransaction limit (and it's confusing when entry count exceeds the
+            // limit)
+            return !entry.getMessage().equals(Transaction.AUXILIARY_THREAD_MESSAGE);
+        }
+    }
+
+    private static class SharedQueryTextCollectionImpl implements SharedQueryTextCollection {
+
+        private final Map<String, Integer> sharedQueryTextIndexes = Maps.newHashMap();
+        private List<String> sharedQueryTexts = Lists.newArrayList();
+
+        @Override
+        public int getSharedQueryTextIndex(String queryText) {
+            Integer sharedQueryTextIndex = sharedQueryTextIndexes.get(queryText);
+            if (sharedQueryTextIndex == null) {
+                sharedQueryTextIndex = sharedQueryTextIndexes.size();
+                sharedQueryTextIndexes.put(queryText, sharedQueryTextIndex);
+                sharedQueryTexts.add(queryText);
+            }
+            return sharedQueryTextIndex;
+        }
+    }
+
+    private static class NopSharedQueryTextCollection implements SharedQueryTextCollection {
+
+        @Override
+        public int getSharedQueryTextIndex(String queryText) {
+            return 0;
         }
     }
 }

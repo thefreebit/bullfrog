@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
  */
 package org.glowroot.agent.model;
 
-import javax.annotation.Nullable;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -41,13 +41,13 @@ public class QueryDataMap {
         return type;
     }
 
-    public @Nullable QueryData get(String key) {
+    public @Nullable SyncQueryData get(String key) {
         // this mask requires capacity to be a power of 2
         int bucket = (key.hashCode() & (capacity - 1)) << 1;
         Object keyAtBucket = table[bucket];
         Object value = table[bucket + 1];
         if (key.equals(keyAtBucket)) {
-            return (QueryData) value;
+            return (SyncQueryData) value;
         }
         if (keyAtBucket == CHAINED_KEY) {
             return getChained(key, checkNotNull(value));
@@ -56,22 +56,11 @@ public class QueryDataMap {
     }
 
     // IMPORTANT put assumes get was already called and key is not present in this map
-    public void put(String key, QueryData value) {
+    public void put(String key, SyncQueryData value) {
         if (size++ > threshold) {
             rehash();
         }
         putWithoutRehashCheck(key, value);
-    }
-
-    private @Nullable QueryData getChained(String key, Object value) {
-        @Nullable
-        Object[] chainedTable = (/*@Nullable*/ Object[]) value;
-        for (int i = 0; i < chainedTable.length; i += 2) {
-            if (key.equals(chainedTable[i])) {
-                return (QueryData) chainedTable[i + 1];
-            }
-        }
-        return null;
     }
 
     private void putWithoutRehashCheck(Object key, @Nullable Object value) {
@@ -146,5 +135,16 @@ public class QueryDataMap {
             }
             putWithoutRehashCheck(chainedKey, values[j + 1]);
         }
+    }
+
+    private static @Nullable SyncQueryData getChained(String key, Object value) {
+        @Nullable
+        Object[] chainedTable = (/*@Nullable*/ Object[]) value;
+        for (int i = 0; i < chainedTable.length; i += 2) {
+            if (key.equals(chainedTable[i])) {
+                return (SyncQueryData) chainedTable[i + 1];
+            }
+        }
+        return null;
     }
 }

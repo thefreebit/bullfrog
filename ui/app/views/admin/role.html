@@ -1,5 +1,5 @@
 <!--
-  Copyright 2016-2017 the original author or authors.
+  Copyright 2016-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -13,21 +13,20 @@
   See the License for the specific language governing permissions and
   limitations under the License.
 -->
+<div class="gt-config-return-outer-div">
+  <a class="gt-config-return-link"
+     href="admin/role-list">
+    Return to list
+  </a>
+</div>
 <div class="panel panel-default">
   <div class="panel-heading">
-    <h2>
-      <a class="pull-right"
-         style="font-size: 16px; padding-top: 16px;"
-         href="admin/role-list">
-        Return to list
-      </a>
-      <span ng-class="{'gt-lighten-font': !loaded && !httpError}">
-        Roles
-        <span class="gt-inline-block gt-separator">
-          |
-        </span>
-        <span style="font-size: 24px;">{{heading}}</span>
+    <h2 ng-class="{'gt-lighten-font': !loaded && !httpError}">
+      Roles
+      <span class="gt-inline-block gt-separator">
+        |
       </span>
+      <span style="font-size: 24px;">{{heading}}</span>
     </h2>
   </div>
   <div class="panel-body">
@@ -178,6 +177,14 @@
             <label ng-class="{'gt-label-disabled': page.permissions.jvm._}"
                    style="margin-left: 30px;">
               <input type="checkbox"
+                     ng-model="page.permissions.jvm.forceGC"
+                     ng-disabled="page.permissions.jvm._ || !layout.adminEdit">Force GC
+            </label>
+          </div>
+          <div class="checkbox">
+            <label ng-class="{'gt-label-disabled': page.permissions.jvm._}"
+                   style="margin-left: 30px;">
+              <input type="checkbox"
                      ng-model="page.permissions.jvm.mbeanTree"
                      ng-disabled="page.permissions.jvm._ || !layout.adminEdit">MBean tree
             </label>
@@ -255,6 +262,14 @@
             <label ng-class="{'gt-label-disabled': page.permissions.config._ || page.permissions.config.edit._}"
                    style="margin-left: 60px;">
               <input type="checkbox"
+                     ng-model="page.permissions.config.edit.jvm"
+                     ng-disabled="page.permissions.config._ || page.permissions.config.edit._ || !layout.adminEdit">JVM
+            </label>
+          </div>
+          <div class="checkbox">
+            <label ng-class="{'gt-label-disabled': page.permissions.config._ || page.permissions.config.edit._}"
+                   style="margin-left: 60px;">
+              <input type="checkbox"
                      ng-model="page.permissions.config.edit.alert"
                      ng-disabled="page.permissions.config._ || page.permissions.config.edit._ || !layout.adminEdit">Alerts
             </label>
@@ -295,7 +310,8 @@
             <label>
               <input type="checkbox"
                      ng-model="page.permissions.admin._"
-                     ng-disabled="!layout.adminEdit">Administration (Users, Roles, Web, Storage, SMTP, HTTP proxy, Integrations)
+                     ng-disabled="!layout.adminEdit">Administration (Users, Roles, Web, Storage, SMTP, HTTP proxy,
+              Integrations)
             </label>
           </div>
           <div class="checkbox"
@@ -463,6 +479,14 @@
             <label ng-class="{'gt-label-disabled': page.permissions.jvm._}"
                    style="margin-left: 30px;">
               <input type="checkbox"
+                     ng-model="page.permissions.jvm.forceGC"
+                     ng-disabled="page.permissions.jvm._ || !layout.adminEdit">Force GC
+            </label>
+          </div>
+          <div class="checkbox">
+            <label ng-class="{'gt-label-disabled': page.permissions.jvm._}"
+                   style="margin-left: 30px;">
+              <input type="checkbox"
                      ng-model="page.permissions.jvm.mbeanTree"
                      ng-disabled="page.permissions.jvm._ || !layout.adminEdit">MBean tree
             </label>
@@ -512,7 +536,7 @@
                      ng-model="page.permissions.config.view"
                      ng-disabled="page.permissions.config._ || !layout.adminEdit"
                      ng-required="viewConfigRequired(page.permissions)">
-              View (Transactions, Gauges, Synthetic monitors, Alerts, UI, Plugins, Instrumentation, Advanced)
+              View (General, Transactions, Gauges, Synthetic monitors, Alerts, UI, Plugins, Instrumentation, Advanced)
               <span ng-if="!page.permissions.config.view && viewConfigRequired(page.permissions)"
                     style="font-style: italic;">
                 -- required for edit permission
@@ -525,6 +549,14 @@
               <input type="checkbox"
                      ng-model="page.permissions.config.edit._"
                      ng-disabled="page.permissions.config._ || !layout.adminEdit">Edit
+            </label>
+          </div>
+          <div class="checkbox">
+            <label ng-class="{'gt-label-disabled': page.permissions.config._ || page.permissions.config.edit._}"
+                   style="margin-left: 60px;">
+              <input type="checkbox"
+                     ng-model="page.permissions.config.edit.general"
+                     ng-disabled="page.permissions.config._ || page.permissions.config.edit._ || !layout.adminEdit">General
             </label>
           </div>
           <div class="checkbox">
@@ -547,8 +579,17 @@
             <label ng-class="{'gt-label-disabled': page.permissions.config._ || page.permissions.config.edit._}"
                    style="margin-left: 60px;">
               <input type="checkbox"
+                     ng-model="page.permissions.config.edit.jvm"
+                     ng-disabled="page.permissions.config._ || page.permissions.config.edit._ || !layout.adminEdit">JVM
+            </label>
+          </div>
+          <div class="checkbox">
+            <label ng-class="{'gt-label-disabled': page.permissions.config._ || page.permissions.config.edit._}"
+                   style="margin-left: 60px;">
+              <input type="checkbox"
                      ng-model="page.permissions.config.edit.syntheticMonitor"
-                     ng-disabled="page.permissions.config._ || page.permissions.config.edit._ || !layout.adminEdit">Synthetic monitors
+                     ng-disabled="page.permissions.config._ || page.permissions.config.edit._ || !layout.adminEdit">Synthetic
+              monitors
             </label>
           </div>
           <div class="checkbox">
@@ -601,7 +642,8 @@
             <label>
               <input type="checkbox"
                      ng-model="page.permissions.admin._"
-                     ng-disabled="!layout.adminEdit">Administration (Users, Roles, Web, Storage, SMTP, HTTP proxy, Integrations)
+                     ng-disabled="!layout.adminEdit">Administration (Users, Roles, Web, Storage, SMTP, HTTP proxy,
+              Integrations)
             </label>
           </div>
           <div class="checkbox"
@@ -644,15 +686,20 @@
                          ng-required="true"
                          ng-disabled="!layout.adminEdit"
                          style="min-width: 200px; max-width: 650px;">
-                <ui-select-match placeholder="Select agents...">{{$item.display}}</ui-select-match>
-                <!-- using layout.agentRollupValues instead of layout.agentRollups in case there are any agent rollup ids
-                     that start with '$', because angular silently ignores object keys starting with '$' -->
+                <ui-select-match placeholder="Select agents...">
+                  <span ng-class="{'gt-role-inactive-agent': $item.notActive}">{{$item.display}}</span>
+                </ui-select-match>
                 <ui-select-choices
-                    repeat="agentRollup.id as agentRollup in allAgentRollups | filter: {display: $select.search}">
-                  <div ng-bind-html="agentRollup.indentedDisplay | highlight: $select.search"></div>
+                    repeat="agentRollup.id as agentRollup in permissionBlock.allActiveAgentRollupsPlus | filter: {display: $select.search}">
+                  <div ng-class="{'gt-red': agentRollup.notActive}">
+                    <div ng-bind-html="agentRollup.indentedDisplay | highlight: $select.search"></div>
+                  </div>
                 </ui-select-choices>
               </ui-select>
             </div>
+          </div>
+          <div ng-if="rollupsExist" style="font-style: italic; padding-bottom: 10px;">
+            Note that permissions on rollups are inherited by their children.
           </div>
           <div class="checkbox">
             <label>
@@ -779,6 +826,14 @@
             <label ng-class="{'gt-label-disabled': permissionBlock.jvm._}"
                    style="margin-left: 30px;">
               <input type="checkbox"
+                     ng-model="permissionBlock.jvm.forceGC"
+                     ng-disabled="permissionBlock.jvm._ || !layout.adminEdit">Force GC
+            </label>
+          </div>
+          <div class="checkbox">
+            <label ng-class="{'gt-label-disabled': permissionBlock.jvm._}"
+                   style="margin-left: 30px;">
+              <input type="checkbox"
                      ng-model="permissionBlock.jvm.mbeanTree"
                      ng-disabled="permissionBlock.jvm._ || !layout.adminEdit">MBean tree
             </label>
@@ -828,7 +883,7 @@
                      ng-model="permissionBlock.config.view"
                      ng-disabled="permissionBlock.config._ || !layout.adminEdit"
                      ng-required="viewConfigRequired(permissionBlock)">
-              View (Transactions, Gauges, Synthetic monitors, Alerts, UI, Plugins, Instrumentation, Advanced)
+              View (General, Transactions, Gauges, Synthetic monitors, Alerts, UI, Plugins, Instrumentation, Advanced)
               <span ng-if="!permissionBlock.config.view && viewConfigRequired(permissionBlock)"
                     style="font-style: italic;">
                 -- required for edit permission
@@ -841,6 +896,14 @@
               <input type="checkbox"
                      ng-model="permissionBlock.config.edit._"
                      ng-disabled="permissionBlock.config._ || !layout.adminEdit">Edit
+            </label>
+          </div>
+          <div class="checkbox">
+            <label ng-class="{'gt-label-disabled': permissionBlock.config._ || permissionBlock.config.edit._}"
+                   style="margin-left: 60px;">
+              <input type="checkbox"
+                     ng-model="permissionBlock.config.edit.general"
+                     ng-disabled="permissionBlock.config._ || permissionBlock.config.edit._ || !layout.adminEdit">General
             </label>
           </div>
           <div class="checkbox">
@@ -863,8 +926,17 @@
             <label ng-class="{'gt-label-disabled': permissionBlock.config._ || permissionBlock.config.edit._}"
                    style="margin-left: 60px;">
               <input type="checkbox"
+                     ng-model="permissionBlock.config.edit.jvm"
+                     ng-disabled="permissionBlock.config._ || permissionBlock.config.edit._ || !layout.adminEdit">JVM
+            </label>
+          </div>
+          <div class="checkbox">
+            <label ng-class="{'gt-label-disabled': permissionBlock.config._ || permissionBlock.config.edit._}"
+                   style="margin-left: 60px;">
+              <input type="checkbox"
                      ng-model="permissionBlock.config.edit.syntheticMonitor"
-                     ng-disabled="permissionBlock.config._ || permissionBlock.config.edit._ || !layout.adminEdit">Synthetic monitors
+                     ng-disabled="permissionBlock.config._ || permissionBlock.config.edit._ || !layout.adminEdit">Synthetic
+              monitors
             </label>
           </div>
           <div class="checkbox">
@@ -899,7 +971,7 @@
                      ng-disabled="permissionBlock.config._ || permissionBlock.config.edit._ || !layout.adminEdit">Instrumentation
             </label>
           </div>
-          <div class="checkbox gt-role-permission-block-last-checkbox">
+          <div class="checkbox">
             <label ng-class="{'gt-label-disabled': permissionBlock.config._ || permissionBlock.config.edit._}"
                    style="margin-left: 60px;">
               <input type="checkbox"
@@ -907,9 +979,10 @@
                      ng-disabled="permissionBlock.config._ || permissionBlock.config.edit._ || !layout.adminEdit">Advanced
             </label>
           </div>
-          <button class="gt-role-permission-block-remove btn btn-default"
+          <button class="btn btn-default"
                   ng-click="removePermissionBlock(permissionBlock)"
-                  ng-if="layout.adminEdit">
+                  ng-if="layout.adminEdit"
+                  style="float: right; margin-top: 18px;">
             Remove this agent specific permission block
           </button>
         </div>
@@ -917,12 +990,12 @@
       <fieldset ng-if="layout.central && layout.adminEdit">
         <legend>Add {{page.permissionBlocks.length ? 'another' : 'an'}} agent specific permission block</legend>
         <div style="margin-bottom: 23px; margin-left: 14px;">
-          <div ng-if="!allAgentRollups.length" style="font-style: italic;">
-            There are no agents
+          <div ng-if="!allActiveAgentRollups.length" style="font-style: italic;">
+            There are no agents active in the past 7 days
           </div>
           <button class="btn btn-default"
                   ng-click="addPermissionBlock()"
-                  ng-if="allAgentRollups.length">
+                  ng-if="allActiveAgentRollups.length">
             Add
           </button>
         </div>
@@ -942,7 +1015,7 @@
                  ng-show="config.version"
                  gt-label="Delete"
                  gt-click="delete(deferred)"
-                 gt-btn-class="btn-default"
+                 gt-btn-class="gt-btn-danger"
                  class="gt-inline-block">
             </div>
           </div>
@@ -951,3 +1024,5 @@
     </div>
   </div>
 </div>
+<!-- each page with confirmation dialog needs its own confirmation dom so that it is deleted on $destroy -->
+<div ng-include="'template/gt-confirmation.html'"></div>

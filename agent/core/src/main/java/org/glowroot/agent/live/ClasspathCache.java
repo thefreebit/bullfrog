@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,7 +37,6 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarInputStream;
 import java.util.jar.Manifest;
 
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import com.google.common.base.Splitter;
@@ -55,6 +54,7 @@ import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
 import com.google.common.io.Closer;
 import com.google.common.io.Resources;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
@@ -69,7 +69,7 @@ import org.glowroot.agent.weaving.ClassNames;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static org.objectweb.asm.Opcodes.ACC_NATIVE;
 import static org.objectweb.asm.Opcodes.ACC_SYNTHETIC;
-import static org.objectweb.asm.Opcodes.ASM5;
+import static org.objectweb.asm.Opcodes.ASM6;
 
 // TODO remove items from classpathLocations and classNameLocations when class loaders are no longer
 // present, e.g. in wildfly after undeploying an application
@@ -175,17 +175,6 @@ class ClasspathCache {
         }
     }
 
-    private ImmutableList<String> combineClassNamesWithLimit(Set<String> fullMatchingClassNames,
-            Set<String> matchingClassNames, int limit) {
-        if (fullMatchingClassNames.size() < limit) {
-            int space = limit - fullMatchingClassNames.size();
-            int numToAdd = Math.min(space, matchingClassNames.size());
-            fullMatchingClassNames
-                    .addAll(ImmutableList.copyOf(Iterables.limit(matchingClassNames, numToAdd)));
-        }
-        return ImmutableList.copyOf(fullMatchingClassNames);
-    }
-
     @GuardedBy("this")
     private void updateCacheWithClasspathClasses(Multimap<String, Location> newClassNameLocations) {
         String javaClassPath = StandardSystemProperty.JAVA_CLASS_PATH.value();
@@ -217,49 +206,6 @@ class ClasspathCache {
         }
     }
 
-    private List<UiAnalyzedMethod> getAnalyzedMethods(Location location, String className)
-            throws IOException {
-        byte[] bytes = getBytes(location, className);
-        return getAnalyzedMethods(bytes);
-    }
-
-    private List<UiAnalyzedMethod> getAnalyzedMethods(byte[] bytes) {
-        AnalyzingClassVisitor cv = new AnalyzingClassVisitor();
-        ClassReader cr = new ClassReader(bytes);
-        cr.accept(cv, 0);
-        return cv.getAnalyzedMethods();
-    }
-
-    private List<UiAnalyzedMethod> getAnalyzedMethods(Class<?> clazz) {
-        List<UiAnalyzedMethod> analyzedMethods = Lists.newArrayList();
-        for (Method method : clazz.getDeclaredMethods()) {
-            if (method.isSynthetic() || Modifier.isNative(method.getModifiers())) {
-                // don't add synthetic or native methods to the analyzed model
-                continue;
-            }
-            if (method.getName().startsWith("glowroot$")) {
-                // don't add glowroot mixin methods (this naming is just by convention)
-                continue;
-            }
-            ImmutableUiAnalyzedMethod.Builder builder = ImmutableUiAnalyzedMethod.builder();
-            builder.name(method.getName());
-            for (Class<?> parameterType : method.getParameterTypes()) {
-                // Class.getName() for arrays returns internal notation (e.g. "[B" for byte array)
-                // so using Type.getType().getClassName() instead
-                builder.addParameterTypes(Type.getType(parameterType).getClassName());
-            }
-            // Class.getName() for arrays returns internal notation (e.g. "[B" for byte array)
-            // so using Type.getType().getClassName() instead
-            builder.returnType(Type.getType(method.getReturnType()).getClassName());
-            builder.modifiers(method.getModifiers());
-            for (Class<?> exceptionType : method.getExceptionTypes()) {
-                builder.addExceptions(exceptionType.getName());
-            }
-            analyzedMethods.add(builder.build());
-        }
-        return analyzedMethods;
-    }
-
     @GuardedBy("this")
     private void updateCache(ClassLoader loader, Multimap<String, Location> newClassNameLocations) {
         List<URL> urls = getURLs(loader);
@@ -272,59 +218,6 @@ class ClasspathCache {
         }
         for (Location location : locations) {
             loadClassNames(location, newClassNameLocations);
-        }
-    }
-
-    private @Nullable Location tryToGetFileFromURL(URL url, ClassLoader loader) {
-        if (url.getProtocol().equals("vfs")) {
-            // special case for jboss/wildfly
-            try {
-                return getFileFromJBossVfsURL(url, loader);
-            } catch (Exception e) {
-                logger.warn(e.getMessage(), e);
-            }
-            return null;
-        }
-        try {
-            URI uri = url.toURI();
-            if (uri.getScheme().equals("file")) {
-                return getLocationFromFile(new File(uri));
-            } else if (uri.getScheme().equals("jar")) {
-                String f = uri.getSchemeSpecificPart();
-                if (f.startsWith("file:")) {
-                    return getLocationFromJarFile(f);
-                }
-            }
-        } catch (URISyntaxException e) {
-            // log exception at debug level
-            logger.debug(e.getMessage(), e);
-        }
-        return null;
-    }
-
-    private List<URL> getURLs(ClassLoader loader) {
-        if (loader instanceof URLClassLoader) {
-            try {
-                return Lists.newArrayList(((URLClassLoader) loader).getURLs());
-            } catch (Exception e) {
-                // tomcat WebappClassLoader.getURLs() throws NullPointerException after stop() has
-                // been called on the WebappClassLoader (this happens, for example, after a webapp
-                // fails to load)
-                //
-                // log exception at debug level
-                logger.debug(e.getMessage(), e);
-                return ImmutableList.of();
-            }
-        }
-        // special case for jboss/wildfly class loader
-        try {
-            return Collections.list(loader.getResources("/"));
-        } catch (Exception e) {
-            // some problematic class loaders (e.g. drools) can throw unchecked exception above
-            //
-            // log exception at debug level
-            logger.debug(e.getMessage(), e);
-            return ImmutableList.of();
         }
     }
 
@@ -342,6 +235,7 @@ class ClasspathCache {
         return loaders;
     }
 
+    @GuardedBy("this")
     private void loadClassNames(Location location,
             Multimap<String, Location> newClassNameLocations) {
         if (classpathLocations.contains(location)) {
@@ -380,30 +274,13 @@ class ClasspathCache {
         }
     }
 
-    private static void loadClassNamesFromDirectory(File dir, String prefix, Location location,
-            Multimap<String, Location> newClassNameLocations) throws MalformedURLException {
-        File[] files = dir.listFiles();
-        if (files == null) {
-            return;
-        }
-        for (File file : files) {
-            String name = file.getName();
-            if (file.isFile() && name.endsWith(".class")) {
-                String className = prefix + name.substring(0, name.lastIndexOf('.'));
-                newClassNameLocations.put(className, location);
-            } else if (file.isDirectory()) {
-                loadClassNamesFromDirectory(file, prefix + name + ".", location,
-                        newClassNameLocations);
-            }
-        }
-    }
-
+    @GuardedBy("this")
     private void loadClassNamesFromJarFile(File jarFile, Location location,
             Multimap<String, Location> newClassNameLocations) throws IOException {
         Closer closer = Closer.create();
-        InputStream s = new FileInputStream(jarFile);
-        JarInputStream jarIn = closer.register(new JarInputStream(s));
         try {
+            InputStream in = closer.register(new FileInputStream(jarFile));
+            JarInputStream jarIn = closer.register(new JarInputStream(in));
             loadClassNamesFromManifestClassPath(jarIn, jarFile, newClassNameLocations);
             loadClassNamesFromJarInputStream(jarIn, "", location, newClassNameLocations);
         } catch (Throwable t) {
@@ -413,6 +290,7 @@ class ClasspathCache {
         }
     }
 
+    @GuardedBy("this")
     private void loadClassNamesFromManifestClassPath(JarInputStream jarIn, File jarFile,
             Multimap<String, Location> newClassNameLocations) {
         Manifest manifest = jarIn.getManifest();
@@ -433,6 +311,131 @@ class ClasspathCache {
         }
     }
 
+    private static ImmutableList<String> combineClassNamesWithLimit(
+            Set<String> fullMatchingClassNames, Set<String> matchingClassNames, int limit) {
+        if (fullMatchingClassNames.size() < limit) {
+            int space = limit - fullMatchingClassNames.size();
+            int numToAdd = Math.min(space, matchingClassNames.size());
+            fullMatchingClassNames
+                    .addAll(ImmutableList.copyOf(Iterables.limit(matchingClassNames, numToAdd)));
+        }
+        return ImmutableList.copyOf(fullMatchingClassNames);
+    }
+
+    private static List<UiAnalyzedMethod> getAnalyzedMethods(Location location, String className)
+            throws IOException {
+        byte[] bytes = getBytes(location, className);
+        return getAnalyzedMethods(bytes);
+    }
+
+    private static List<UiAnalyzedMethod> getAnalyzedMethods(byte[] bytes) {
+        AnalyzingClassVisitor cv = new AnalyzingClassVisitor();
+        ClassReader cr = new ClassReader(bytes);
+        cr.accept(cv, 0);
+        return cv.getAnalyzedMethods();
+    }
+
+    private static List<UiAnalyzedMethod> getAnalyzedMethods(Class<?> clazz) {
+        List<UiAnalyzedMethod> analyzedMethods = Lists.newArrayList();
+        for (Method method : clazz.getDeclaredMethods()) {
+            if (method.isSynthetic() || Modifier.isNative(method.getModifiers())) {
+                // don't add synthetic or native methods to the analyzed model
+                continue;
+            }
+            if (method.getName().startsWith("glowroot$")) {
+                // don't add glowroot mixin methods (this naming is just by convention)
+                continue;
+            }
+            ImmutableUiAnalyzedMethod.Builder builder = ImmutableUiAnalyzedMethod.builder();
+            builder.name(method.getName());
+            for (Class<?> parameterType : method.getParameterTypes()) {
+                // Class.getName() for arrays returns internal notation (e.g. "[B" for byte array)
+                // so using Type.getType().getClassName() instead
+                builder.addParameterTypes(Type.getType(parameterType).getClassName());
+            }
+            // Class.getName() for arrays returns internal notation (e.g. "[B" for byte array)
+            // so using Type.getType().getClassName() instead
+            builder.returnType(Type.getType(method.getReturnType()).getClassName());
+            builder.modifiers(method.getModifiers());
+            for (Class<?> exceptionType : method.getExceptionTypes()) {
+                builder.addExceptions(exceptionType.getName());
+            }
+            analyzedMethods.add(builder.build());
+        }
+        return analyzedMethods;
+    }
+
+    private static @Nullable Location tryToGetFileFromURL(URL url, ClassLoader loader) {
+        if (url.getProtocol().equals("vfs")) {
+            // special case for jboss/wildfly
+            try {
+                return getFileFromJBossVfsURL(url, loader);
+            } catch (Exception e) {
+                logger.warn(e.getMessage(), e);
+            }
+            return null;
+        }
+        try {
+            URI uri = url.toURI();
+            if (uri.getScheme().equals("file")) {
+                return getLocationFromFile(new File(uri));
+            } else if (uri.getScheme().equals("jar")) {
+                String f = uri.getSchemeSpecificPart();
+                if (f.startsWith("file:")) {
+                    return getLocationFromJarFile(f);
+                }
+            }
+        } catch (URISyntaxException e) {
+            // log exception at debug level
+            logger.debug(e.getMessage(), e);
+        }
+        return null;
+    }
+
+    private static List<URL> getURLs(ClassLoader loader) {
+        if (loader instanceof URLClassLoader) {
+            try {
+                return Lists.newArrayList(((URLClassLoader) loader).getURLs());
+            } catch (Exception e) {
+                // tomcat WebappClassLoader.getURLs() throws NullPointerException after stop() has
+                // been called on the WebappClassLoader (this happens, for example, after a webapp
+                // fails to load)
+                //
+                // log exception at debug level
+                logger.debug(e.getMessage(), e);
+                return ImmutableList.of();
+            }
+        }
+        // special case for jboss/wildfly class loader
+        try {
+            return Collections.list(loader.getResources("/"));
+        } catch (Exception e) {
+            // some problematic class loaders (e.g. drools) can throw unchecked exception above
+            //
+            // log exception at debug level
+            logger.debug(e.getMessage(), e);
+            return ImmutableList.of();
+        }
+    }
+
+    private static void loadClassNamesFromDirectory(File dir, String prefix, Location location,
+            Multimap<String, Location> newClassNameLocations) throws MalformedURLException {
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return;
+        }
+        for (File file : files) {
+            String name = file.getName();
+            if (file.isFile() && name.endsWith(".class")) {
+                String className = prefix + name.substring(0, name.lastIndexOf('.'));
+                newClassNameLocations.put(className, location);
+            } else if (file.isDirectory()) {
+                loadClassNamesFromDirectory(file, prefix + name + ".", location,
+                        newClassNameLocations);
+            }
+        }
+    }
+
     private static void loadClassNamesFromJarFileInsideJarFile(File jarFile,
             String jarFileInsideJarFile, Location location,
             Multimap<String, Location> newClassNameLocations) throws IOException {
@@ -445,15 +448,8 @@ class ClasspathCache {
         }
         Closer closer = Closer.create();
         try {
-            InputStream in = uri.toURL().openStream();
-            JarInputStream jarIn;
-            try {
-                jarIn = new JarInputStream(in);
-            } catch (IOException e) {
-                in.close();
-                throw e;
-            }
-            closer.register(jarIn);
+            InputStream in = closer.register(uri.toURL().openStream());
+            JarInputStream jarIn = closer.register(new JarInputStream(in));
             loadClassNamesFromJarInputStream(jarIn, "", location, newClassNameLocations);
         } catch (Throwable t) {
             throw closer.rethrow(t);
@@ -466,9 +462,9 @@ class ClasspathCache {
             String directoryInsideJarFile, Location location,
             Multimap<String, Location> newClassNameLocations) throws IOException {
         Closer closer = Closer.create();
-        InputStream s = new FileInputStream(jarFile);
-        JarInputStream jarIn = closer.register(new JarInputStream(s));
         try {
+            InputStream in = closer.register(new FileInputStream(jarFile));
+            JarInputStream jarIn = closer.register(new JarInputStream(in));
             loadClassNamesFromJarInputStream(jarIn, directoryInsideJarFile, location,
                     newClassNameLocations);
         } catch (Throwable t) {
@@ -551,7 +547,7 @@ class ClasspathCache {
         private final List<UiAnalyzedMethod> analyzedMethods = Lists.newArrayList();
 
         private AnalyzingClassVisitor() {
-            super(ASM5);
+            super(ASM6);
         }
 
         @Override
@@ -671,15 +667,8 @@ class ClasspathCache {
         }
         Closer closer = Closer.create();
         try {
-            InputStream in = uri.toURL().openStream();
-            JarInputStream jarIn;
-            try {
-                jarIn = new JarInputStream(in);
-            } catch (IOException e) {
-                in.close();
-                throw e;
-            }
-            closer.register(jarIn);
+            InputStream in = closer.register(uri.toURL().openStream());
+            JarInputStream jarIn = closer.register(new JarInputStream(in));
             JarEntry jarEntry;
             while ((jarEntry = jarIn.getNextJarEntry()) != null) {
                 if (jarEntry.isDirectory()) {

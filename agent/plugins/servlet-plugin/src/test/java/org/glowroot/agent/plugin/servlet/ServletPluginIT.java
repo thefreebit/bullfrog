@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package org.glowroot.agent.plugin.servlet;
 import java.io.IOException;
 import java.util.Iterator;
 
-import javax.annotation.Nullable;
 import javax.servlet.FilterChain;
 import javax.servlet.Servlet;
 import javax.servlet.ServletConfig;
@@ -168,9 +167,6 @@ public class ServletPluginIT {
         Trace.Entry entry = i.next();
         assertThat(entry.getError().getMessage()).isEqualTo("sendError, HTTP status code 500");
         assertThat(entry.getError().hasException()).isFalse();
-        assertThat(entry.getLocationStackTraceElementList()).isNotEmpty();
-        assertThat(entry.getLocationStackTraceElementList().get(0).getMethodName())
-                .isEqualTo("sendError");
 
         assertThat(i.hasNext()).isFalse();
     }
@@ -190,8 +186,6 @@ public class ServletPluginIT {
         Trace.Entry entry = i.next();
         assertThat(entry.getError().getMessage()).isEqualTo("setStatus, HTTP status code 500");
         assertThat(entry.getError().hasException()).isFalse();
-        assertThat(entry.getLocationStackTraceElementList().get(0).getMethodName())
-                .isEqualTo("setStatus");
 
         assertThat(i.hasNext()).isFalse();
     }
@@ -235,9 +229,6 @@ public class ServletPluginIT {
         Trace.Entry entry = i.next();
         assertThat(entry.getError().getMessage()).isEqualTo("sendError, HTTP status code 400");
         assertThat(entry.getError().hasException()).isFalse();
-        assertThat(entry.getLocationStackTraceElementList()).isNotEmpty();
-        assertThat(entry.getLocationStackTraceElementList().get(0).getMethodName())
-                .isEqualTo("sendError");
 
         assertThat(i.hasNext()).isFalse();
     }
@@ -261,8 +252,6 @@ public class ServletPluginIT {
         Trace.Entry entry = i.next();
         assertThat(entry.getError().getMessage()).isEqualTo("setStatus, HTTP status code 400");
         assertThat(entry.getError().hasException()).isFalse();
-        assertThat(entry.getLocationStackTraceElementList().get(0).getMethodName())
-                .isEqualTo("setStatus");
 
         assertThat(i.hasNext()).isFalse();
     }
@@ -281,7 +270,7 @@ public class ServletPluginIT {
         // then
     }
 
-    private static @Nullable String getDetailValue(Trace.Header header, String name) {
+    private static String getDetailValue(Trace.Header header, String name) {
         for (Trace.DetailEntry detail : header.getDetailEntryList()) {
             if (detail.getName().equals(name)) {
                 return detail.getValueList().get(0).getString();

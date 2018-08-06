@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,9 @@
  */
 package org.glowroot.common.model;
 
-import javax.annotation.Nullable;
-
 import com.google.common.collect.Ordering;
 import com.google.common.primitives.Doubles;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 public class MutableQuery {
 
@@ -29,6 +28,7 @@ public class MutableQuery {
         }
     };
 
+    private final String type;
     private final String truncatedText;
     private final @Nullable String fullTextSha1;
 
@@ -38,9 +38,14 @@ public class MutableQuery {
     private boolean hasTotalRows;
     private long totalRows;
 
-    MutableQuery(String truncatedText, @Nullable String fullTextSha1) {
+    MutableQuery(String type, String truncatedText, @Nullable String fullTextSha1) {
+        this.type = type;
         this.truncatedText = truncatedText;
         this.fullTextSha1 = fullTextSha1;
+    }
+
+    public String getType() {
+        return type;
     }
 
     public String getTruncatedText() {
@@ -82,7 +87,7 @@ public class MutableQuery {
         }
     }
 
-    void addTo(MutableQuery query) {
+    void add(MutableQuery query) {
         addToTotalDurationNanos(query.totalDurationNanos);
         addToExecutionCount(query.executionCount);
         addToTotalRows(query.hasTotalRows, query.totalRows);

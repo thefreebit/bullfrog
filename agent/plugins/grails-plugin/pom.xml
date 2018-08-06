@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
     <groupId>org.glowroot</groupId>
     <artifactId>glowroot-parent</artifactId>
-    <version>0.9.25</version>
+    <version>0.10.12</version>
     <relativePath>../../..</relativePath>
   </parent>
 
@@ -17,7 +18,7 @@
 
   <properties>
     <!-- instrumented libraries -->
-    <grails.version>3.3.1</grails.version>
+    <grails.version>3.3.3</grails.version>
   </properties>
 
   <dependencies>
@@ -25,13 +26,6 @@
       <groupId>org.glowroot</groupId>
       <artifactId>glowroot-agent-plugin-api</artifactId>
       <version>${project.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.google.code.findbugs</groupId>
-      <artifactId>jsr305</artifactId>
-      <!-- cannot set to optional, all annotation classes must be available on IBM Java 1.6 SR8 and
-        earlier due to http://www-01.ibm.com/support/docview.wss?uid=swg1IZ76354 -->
       <scope>provided</scope>
     </dependency>
     <dependency>
@@ -45,9 +39,8 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.glowroot</groupId>
-      <artifactId>glowroot-agent-it-harness</artifactId>
-      <version>${project.version}</version>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -114,7 +107,7 @@
       <!-- this is to resolve maven enforcer RequireUpperBoundDeps error -->
       <groupId>org.aspectj</groupId>
       <artifactId>aspectjweaver</artifactId>
-      <version>1.8.11</version>
+      <version>1.9.1</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -122,7 +115,7 @@
       <groupId>org.springframework</groupId>
       <artifactId>spring-context</artifactId>
       <!-- Spring 5+ requires Java 8+ -->
-      <version>4.3.11.RELEASE</version>
+      <version>4.3.17.RELEASE</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -130,7 +123,7 @@
       <groupId>org.springframework</groupId>
       <artifactId>spring-core</artifactId>
       <!-- Spring 5+ requires Java 8+ -->
-      <version>4.3.11.RELEASE</version>
+      <version>4.3.17.RELEASE</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -186,44 +179,48 @@
 
   <profiles>
     <profile>
-      <id>shade</id>
+      <id>auto-activated-test-unshaded</id>
       <activation>
         <property>
-          <name>!glowroot.shade.skip</name>
+          <name>!glowroot.test.shaded</name>
         </property>
       </activation>
-      <build>
-        <plugins>
-          <plugin>
-            <artifactId>maven-shade-plugin</artifactId>
-            <configuration>
-              <dependencyReducedPomLocation>
-                ${project.build.directory}/dependency-reduced-pom.xml
-              </dependencyReducedPomLocation>
-              <createSourcesJar>true</createSourcesJar>
-              <shadeSourcesContent>true</shadeSourcesContent>
-            </configuration>
-            <executions>
-              <execution>
-                <id>default</id>
-                <goals>
-                  <goal>shade</goal>
-                </goals>
-                <configuration>
-                  <relocations>
-                    <relocation>
-                      <!-- all annotation classes must be available on IBM Java 1.6 SR8 and earlier
-                        due to http://www-01.ibm.com/support/docview.wss?uid=swg1IZ76354 -->
-                      <pattern>javax.annotation</pattern>
-                      <shadedPattern>org.glowroot.agent.shaded.javax.annotation</shadedPattern>
-                    </relocation>
-                  </relocations>
-                </configuration>
-              </execution>
-            </executions>
-          </plugin>
-        </plugins>
-      </build>
+      <dependencies>
+        <dependency>
+          <groupId>org.glowroot</groupId>
+          <artifactId>glowroot-agent-it-harness-unshaded</artifactId>
+          <version>${project.version}</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <id>auto-activated-test-shaded</id>
+      <activation>
+        <property>
+          <name>glowroot.test.shaded</name>
+        </property>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>org.glowroot</groupId>
+          <artifactId>glowroot-agent-it-harness</artifactId>
+          <version>${project.version}</version>
+          <scope>test</scope>
+          <exclusions>
+            <exclusion>
+              <!-- exclusion is needed due to https://issues.apache.org/jira/browse/MSHADE-206 -->
+              <groupId>org.glowroot</groupId>
+              <artifactId>glowroot-agent-it-harness-unshaded</artifactId>
+            </exclusion>
+            <exclusion>
+              <!-- exclusion is needed due to https://issues.apache.org/jira/browse/MSHADE-206 -->
+              <groupId>org.glowroot</groupId>
+              <artifactId>glowroot-agent-core</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
+      </dependencies>
     </profile>
     <profile>
       <id>java7</id>

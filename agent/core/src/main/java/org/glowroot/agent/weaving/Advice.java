@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,13 +19,12 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-import javax.annotation.Nullable;
-
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
 import com.google.common.primitives.Ints;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.commons.Method;
@@ -117,7 +116,9 @@ abstract class Advice {
             }
             String leftTimerName = left.pointcut().timerName();
             String rightTimerName = right.pointcut().timerName();
-            // empty timer names are placed at the end
+            // empty timer names are placed at the end (this applies to "Optional transaction
+            // overrides only" which is good so that those can update things after transaction is
+            // started in advice for the same method)
             if (leftTimerName.isEmpty() && rightTimerName.isEmpty()) {
                 return 0;
             }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2015 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,17 +15,26 @@
  */
 package org.glowroot.agent.util;
 
-import javax.annotation.Nullable;
-
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.StandardSystemProperty;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
+// LIMIT DEPENDENCY USAGE IN THIS CLASS SO IT DOESN'T TRIGGER ANY CLASS LOADING ON ITS OWN
 public class JavaVersion {
 
     private static final boolean IS_JAVA_6;
+    private static final boolean IS_GREATER_THAN_OR_EQUAL_TO_JAVA_9;
+
+    private static final boolean IBM_JVM;
+    private static final boolean JROCKIT_JVM;
 
     static {
-        IS_JAVA_6 = parseIsJava6(StandardSystemProperty.JAVA_VERSION.value());
+        String javaVersion = System.getProperty("java.version");
+        IS_JAVA_6 = parseIsJava6(javaVersion);
+        IS_GREATER_THAN_OR_EQUAL_TO_JAVA_9 = parseIsGreaterThanOrEqualToJava9(javaVersion);
+
+        String javaVmName = System.getProperty("java.vm.name");
+        IBM_JVM = "IBM J9 VM".equals(javaVmName);
+        JROCKIT_JVM = "Oracle JRockit(R)".equals(javaVmName);
     }
 
     private JavaVersion() {}
@@ -34,8 +43,25 @@ public class JavaVersion {
         return IS_JAVA_6;
     }
 
+    public static boolean isGreaterThanOrEqualToJava9() {
+        return IS_GREATER_THAN_OR_EQUAL_TO_JAVA_9;
+    }
+
+    public static boolean isIbmJvm() {
+        return IBM_JVM;
+    }
+
+    public static boolean isJRockitJvm() {
+        return JROCKIT_JVM;
+    }
+
     @VisibleForTesting
     static boolean parseIsJava6(@Nullable String javaVersion) {
         return javaVersion != null && javaVersion.startsWith("1.6");
+    }
+
+    @VisibleForTesting
+    static boolean parseIsGreaterThanOrEqualToJava9(@Nullable String javaVersion) {
+        return javaVersion != null && !javaVersion.startsWith("1.");
     }
 }

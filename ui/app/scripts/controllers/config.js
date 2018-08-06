@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,20 +19,13 @@
 glowroot.controller('ConfigCtrl', [
   '$scope',
   '$location',
+  '$http',
   '$timeout',
   'queryStrings',
-  function ($scope, $location, $timeout, queryStrings) {
+  function ($scope, $location, $http, $timeout) {
     // \u00b7 is &middot;
     document.title = 'Configuration \u00b7 BullFrog';
     $scope.$parent.activeNavbarItem = 'gears';
-
-    $scope.hideAgentRollupDropdown = function () {
-      if (!$scope.layout) {
-        // this is ok, under grunt serve and layout hasn't loaded yet
-        return true;
-      }
-      return $scope.layout.agentRollups.length === 1;
-    };
 
     $scope.hideMainContent = function () {
       return $scope.layout.central && !$scope.agentRollupId && !$scope.agentId;
@@ -66,55 +59,63 @@ glowroot.controller('ConfigCtrl', [
       return $location.path().substring(1);
     };
 
-    $scope.isAgentRollup = function () {
-      // using query string instead of layout.agentRollups[agentRollupId].agent in case agentRollupId doesn't exist
-      return $location.search()['agent-rollup-id'];
-    };
-
-    function agentRollupUrl(path, agentRollup) {
-      var query = $scope.agentRollupQuery(agentRollup);
-      return path + queryStrings.encodeObject(query);
+    function agentRollupUrl(path, agentRollupId) {
+      if ($scope.isRollup(agentRollupId)) {
+        return path + '?agent-rollup-id=' + encodeURIComponent(agentRollupId);
+      } else {
+        return path + '?agent-id=' + encodeURIComponent(agentRollupId);
+      }
     }
 
-    $scope.agentRollupUrl = function (agentRollup) {
+    $scope.agentRollupUrl = function (agentRollupId) {
       var path = $location.path().substring(1);
-      if (agentRollup.agent) {
-        return agentRollupUrl(path, agentRollup);
+      if (path === 'config/gauge') {
+        path = 'config/gauge-list';
+      } else if (path === 'config/synthetic-monitor') {
+        path = 'config/synthetic-monitor-list';
+      } else if (path === 'config/alert') {
+        path = 'config/alert-list';
+      } else if (path === 'config/plugin') {
+        path = 'config/plugin-list';
+      } else if (path === 'config/instrumentation') {
+        path = 'config/instrumentation-list';
       }
-      if (path === 'config/synthetic-monitor-list'
-          || path === 'config/synthetic-monitor'
-          || path === 'config/alert-list'
-          || path === 'config/alert'
-          || path === 'config/ui'
-          || path === 'config/advanced') {
-        return agentRollupUrl(path, agentRollup);
-      } else {
-        return agentRollupUrl('config/synthetic-monitor-list', agentRollup);
-      }
-    };
-
-    $scope.$on('$stateChangeSuccess', function () {
-      // don't let the active sidebar selection get out of sync (which can happen after using the back button)
-      if (document.activeElement) {
-        var gtUrl = document.activeElement.getAttribute('gt-url');
-        if (gtUrl && gtUrl !== $location.path().substring(1)) {
-          document.activeElement.blur();
+      if ($scope.isRollup(agentRollupId)) {
+        if (path !== 'config/general' && path !== 'config/synthetic-monitor-list' && path !== 'config/alert-list'
+            && path !== 'config/ui' && path !== 'config/advanced') {
+          path = 'config/general';
         }
       }
-    });
+      return agentRollupUrl(path, agentRollupId);
+    };
 
-    $scope.selectedAgentRollup = $scope.agentRollupId;
+    if ($scope.layout.central) {
 
-    $scope.$watch(function () {
-      return $location.search();
-    }, function (newValue, oldValue) {
-      if (newValue !== oldValue) {
-        // need to refresh selectpicker in order to update hrefs of the items
-        $timeout(function () {
-          // timeout is needed so this runs after dom is updated
-          $('#agentRollupDropdown').selectpicker('refresh');
-        });
+      $scope.$watch(function () {
+        return $location.search();
+      }, function (newValue, oldValue) {
+        if (newValue !== oldValue) {
+          // need to refresh selectpicker in order to update hrefs of the items
+          $timeout(function () {
+            // timeout is needed so this runs after dom is updated
+            $('#agentRollupDropdown').selectpicker('refresh');
+          });
+        }
+      }, true);
+
+      var refreshAgentRollups = function () {
+        var now = new Date().getTime();
+        var from = now - 7 * 24 * 60 * 60 * 1000;
+        // looking to the future just to be safe
+        var to = now + 7 * 24 * 60 * 60 * 1000;
+        $scope.refreshAgentRollups(from, to, $scope);
+      };
+
+      $('#agentRollupDropdown').on('show.bs.select', refreshAgentRollups);
+
+      if ($scope.agentRollups === undefined) {
+        refreshAgentRollups();
       }
-    }, true);
+    }
   }
 ]);

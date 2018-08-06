@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,21 +33,26 @@ import org.glowroot.agent.config.UserRecordingConfig;
 import org.glowroot.agent.plugin.api.ThreadContext.Priority;
 import org.glowroot.common.util.Cancellable;
 
+import static com.google.common.base.Preconditions.checkNotNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 public class UserProfileScheduler {
 
     private static final Logger logger = LoggerFactory.getLogger(UserProfileRunnable.class);
 
-    private final ScheduledExecutorService backgroundExecutor;
     private final ConfigService configService;
     private final Random random;
 
-    public UserProfileScheduler(ScheduledExecutorService backgroundExecutor,
-            ConfigService configService, Random random) {
-        this.backgroundExecutor = backgroundExecutor;
+    // intentionally not volatile for small optimization
+    private @MonotonicNonNull ScheduledExecutorService backgroundExecutor;
+
+    public UserProfileScheduler(ConfigService configService, Random random) {
         this.configService = configService;
         this.random = random;
+    }
+
+    public void setBackgroundExecutor(ScheduledExecutorService backgroundExecutor) {
+        this.backgroundExecutor = backgroundExecutor;
     }
 
     void maybeScheduleUserProfiling(Transaction transaction, String user) {
@@ -55,7 +61,7 @@ public class UserProfileScheduler {
         if (users.isEmpty()) {
             return;
         }
-        if (!TransactionCollector.containsIgnoreCase(users, user)) {
+        if (!containsIgnoreCase(users, user)) {
             return;
         }
         // for now lumping user recording into slow traces tab
@@ -68,10 +74,22 @@ public class UserProfileScheduler {
         if (intervalMillis == null || intervalMillis <= 0) {
             return;
         }
+        if (backgroundExecutor == null) {
+            return;
+        }
         UserProfileRunnable userProfileRunnable =
                 new UserProfileRunnable(transaction, intervalMillis);
         userProfileRunnable.scheduleFirst();
         transaction.setUserProfileRunnable(userProfileRunnable);
+    }
+
+    private static boolean containsIgnoreCase(List<String> list, String test) {
+        for (String item : list) {
+            if (test.equalsIgnoreCase(item)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @VisibleForTesting
@@ -115,6 +133,7 @@ public class UserProfileScheduler {
             }
         }
 
+        @RequiresNonNull("backgroundExecutor")
         private void scheduleFirst() {
             long randomDelayFromIntervalStart = (long) (random.nextFloat() * intervalMillis);
             currentFuture =
@@ -124,8 +143,8 @@ public class UserProfileScheduler {
 
         private void scheduleNext() {
             long randomDelayFromIntervalStart = (long) (random.nextFloat() * intervalMillis);
-            backgroundExecutor.schedule(this, remainingInInterval + randomDelayFromIntervalStart,
-                    MILLISECONDS);
+            checkNotNull(backgroundExecutor).schedule(this,
+                    remainingInInterval + randomDelayFromIntervalStart, MILLISECONDS);
             remainingInInterval = intervalMillis - randomDelayFromIntervalStart;
         }
 
@@ -136,7 +155,7 @@ public class UserProfileScheduler {
                 activeThreadContexts.add(mainThreadContext);
             }
             activeThreadContexts.addAll(transaction.getActiveAuxThreadContexts());
-            StackTraceCollector.captureStackTraces(activeThreadContexts, configService);
+            StackTraceCollector.captureStackTraces(activeThreadContexts);
         }
     }
 }

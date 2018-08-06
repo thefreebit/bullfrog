@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,20 +18,15 @@ package org.glowroot.agent.plugin.servlet;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.regex.Pattern;
 
-import javax.annotation.Nullable;
-
-import com.google.common.base.Strings;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-
+import org.glowroot.agent.plugin.api.checker.Nullable;
+import org.glowroot.agent.plugin.api.util.ImmutableList;
+import org.glowroot.agent.plugin.api.util.ImmutableMap;
 import org.glowroot.agent.plugin.servlet.ServletAspect.HttpServletRequest;
 
 // shallow copies are necessary because request may not be thread safe, which may affect ability
@@ -45,12 +40,11 @@ class DetailCapture {
 
     private DetailCapture() {}
 
-    static ImmutableMap<String, Object> captureRequestParameters(
-            Map</*@Nullable*/ String, /*@Nullable*/ String /*@Nullable*/ []> requestParameters) {
-        ImmutableList<Pattern> capturePatterns = ServletPluginProperties.captureRequestParameters();
-        ImmutableList<Pattern> maskPatterns = ServletPluginProperties.maskRequestParameters();
-        ImmutableMap.Builder<String, Object> map = ImmutableMap.builder();
-        for (Entry</*@Nullable*/ String, /*@Nullable*/ String /*@Nullable*/ []> entry : requestParameters
+    static Map<String, Object> captureRequestParameters(
+            Map</*@Nullable*/ String, /*@Nullable*/ Object> requestParameters) {
+        List<Pattern> capturePatterns = ServletPluginProperties.captureRequestParameters();
+        Map<String, Object> map = new HashMap<String, Object>();
+        for (Map.Entry</*@Nullable*/ String, /*@Nullable*/ Object> entry : requestParameters
                 .entrySet()) {
             String name = entry.getKey();
             if (name == null) {
@@ -61,27 +55,23 @@ class DetailCapture {
             if (!matchesOneOf(keyLowerCase, capturePatterns)) {
                 continue;
             }
-            if (matchesOneOf(keyLowerCase, maskPatterns)) {
-                map.put(name, "****");
-                continue;
-            }
             @Nullable
-            String[] values = entry.getValue();
-            if (values != null) {
-                set(map, name, values);
+            Object values = entry.getValue();
+            if (values instanceof String[]) {
+                set(map, name, (String[]) values);
             }
         }
-        return map.build();
+        return ImmutableMap.copyOf(map);
     }
 
-    static ImmutableMap<String, Object> captureRequestParameters(HttpServletRequest request) {
+    static Map<String, Object> captureRequestParameters(HttpServletRequest request) {
         Enumeration<? extends /*@Nullable*/ Object> e = request.getParameterNames();
         if (e == null) {
-            return ImmutableMap.of();
+            return Collections.emptyMap();
         }
-        ImmutableList<Pattern> capturePatterns = ServletPluginProperties.captureRequestParameters();
-        ImmutableList<Pattern> maskPatterns = ServletPluginProperties.maskRequestParameters();
-        ImmutableMap.Builder<String, Object> map = ImmutableMap.builder();
+        List<Pattern> capturePatterns = ServletPluginProperties.captureRequestParameters();
+        List<Pattern> maskPatterns = ServletPluginProperties.maskRequestParameters();
+        Map<String, Object> map = new HashMap<String, Object>();
         while (e.hasMoreElements()) {
             Object nameObj = e.nextElement();
             if (nameObj == null) {
@@ -106,11 +96,10 @@ class DetailCapture {
                 set(map, name, values);
             }
         }
-        return map.build();
+        return ImmutableMap.copyOf(map);
     }
 
-    private static void set(ImmutableMap.Builder<String, Object> map, String name,
-            @Nullable String[] values) {
+    private static void set(Map<String, Object> map, String name, @Nullable String[] values) {
         if (values == null) {
             return;
         }
@@ -127,15 +116,15 @@ class DetailCapture {
         }
     }
 
-    static ImmutableMap<String, Object> captureRequestHeaders(HttpServletRequest request) {
-        ImmutableList<Pattern> capturePatterns = ServletPluginProperties.captureRequestHeaders();
+    static Map<String, Object> captureRequestHeaders(HttpServletRequest request) {
+        List<Pattern> capturePatterns = ServletPluginProperties.captureRequestHeaders();
         if (capturePatterns.isEmpty()) {
-            return ImmutableMap.of();
+            return Collections.emptyMap();
         }
-        Map<String, Object> requestHeaders = Maps.newHashMap();
+        Map<String, Object> requestHeaders = new HashMap<String, Object>();
         Enumeration</*@Nullable*/ String> headerNames = request.getHeaderNames();
         if (headerNames == null) {
-            return ImmutableMap.of();
+            return Collections.emptyMap();
         }
         for (Enumeration</*@Nullable*/ String> e = headerNames; e.hasMoreElements();) {
             String name = e.nextElement();
@@ -189,7 +178,7 @@ class DetailCapture {
             if (!values.hasMoreElements()) {
                 requestHeaders.put(name, Strings.nullToEmpty(value));
             } else {
-                List<String> list = Lists.newArrayList();
+                List<String> list = new ArrayList<String>();
                 list.add(Strings.nullToEmpty(value));
                 while (values.hasMoreElements()) {
                     list.add(Strings.nullToEmpty(values.nextElement()));

@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,30 +17,35 @@ package org.glowroot.agent.weaving;
 
 import java.util.List;
 
-import javax.annotation.Nullable;
-
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 import org.objectweb.asm.AnnotationVisitor;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Type;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 import static org.objectweb.asm.Opcodes.ACC_BRIDGE;
-import static org.objectweb.asm.Opcodes.ASM5;
+import static org.objectweb.asm.Opcodes.ASM6;
 
 class ThinClassVisitor extends ClassVisitor {
 
     private final ImmutableThinClass.Builder thinClassBuilder = ImmutableThinClass.builder();
 
+    private int majorVersion;
+
     private @Nullable ThinClass thinClass;
 
+    private boolean constructorPointcut;
+
     ThinClassVisitor() {
-        super(ASM5);
+        super(ASM6);
     }
 
     @Override
     public void visit(int version, int access, String name, @Nullable String signature,
             @Nullable String superName, String /*@Nullable*/ [] interfaces) {
+        majorVersion = version & 0xFFFF;
         thinClassBuilder.access(access);
         thinClassBuilder.name(name);
         thinClassBuilder.superName(superName);
@@ -52,7 +57,13 @@ class ThinClassVisitor extends ClassVisitor {
     @Override
     public @Nullable AnnotationVisitor visitAnnotation(String desc, boolean visible) {
         thinClassBuilder.addAnnotations(desc);
-        return null;
+        if (desc.equals("Lorg/glowroot/agent/plugin/api/weaving/Pointcut;")) {
+            return new PointcutAnnotationVisitor();
+        } else if (desc.equals("Ljavax/ejb/Remote;")) {
+            return new RemoteAnnotationVisitor();
+        } else {
+            return null;
+        }
     }
 
     @Override
@@ -74,8 +85,16 @@ class ThinClassVisitor extends ClassVisitor {
         thinClass = thinClassBuilder.build();
     }
 
+    int getMajorVersion() {
+        return majorVersion;
+    }
+
     ThinClass getThinClass() {
         return checkNotNull(thinClass);
+    }
+
+    boolean isConstructorPointcut() {
+        return constructorPointcut;
     }
 
     @Value.Immutable
@@ -88,6 +107,7 @@ class ThinClassVisitor extends ClassVisitor {
         List<String> annotations();
         List<ThinMethod> nonBridgeMethods();
         List<ThinMethod> bridgeMethods();
+        List<Type> ejbRemoteInterfaces();
     }
 
     @Value.Immutable
@@ -101,12 +121,26 @@ class ThinClassVisitor extends ClassVisitor {
         List<String> annotations();
     }
 
+    private class PointcutAnnotationVisitor extends AnnotationVisitor {
+
+        private PointcutAnnotationVisitor() {
+            super(ASM6);
+        }
+
+        @Override
+        public void visit(@Nullable String name, Object value) {
+            if ("methodName".equals(name) && "<init>".equals(value)) {
+                constructorPointcut = true;
+            }
+        }
+    }
+
     private class AnnotationCaptureMethodVisitor extends MethodVisitor {
 
         private final ImmutableThinMethod.Builder thinMethodBuilder;
 
         private AnnotationCaptureMethodVisitor(ImmutableThinMethod.Builder thinMethodBuilder) {
-            super(ASM5);
+            super(ASM6);
             this.thinMethodBuilder = thinMethodBuilder;
         }
 
@@ -123,6 +157,36 @@ class ThinClassVisitor extends ClassVisitor {
                 thinClassBuilder.addBridgeMethods(thinMethod);
             } else {
                 thinClassBuilder.addNonBridgeMethods(thinMethod);
+            }
+        }
+    }
+
+    private class RemoteAnnotationVisitor extends AnnotationVisitor {
+
+        private RemoteAnnotationVisitor() {
+            super(ASM6);
+        }
+
+        @Override
+        public @Nullable AnnotationVisitor visitArray(String name) {
+            if (name.equals("value")) {
+                return new ValueAnnotationVisitor();
+            } else {
+                return null;
+            }
+        }
+    }
+
+    private class ValueAnnotationVisitor extends AnnotationVisitor {
+
+        private ValueAnnotationVisitor() {
+            super(ASM6);
+        }
+
+        @Override
+        public void visit(@Nullable String name, Object value) {
+            if (name == null && value instanceof Type) {
+                thinClassBuilder.addEjbRemoteInterfaces((Type) value);
             }
         }
     }

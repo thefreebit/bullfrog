@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,8 @@ package org.glowroot.agent.jul;
 import java.text.MessageFormat;
 import java.util.ResourceBundle;
 
-import javax.annotation.Nullable;
-
 import com.google.common.annotations.VisibleForTesting;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -271,6 +270,11 @@ public class Logger {
     }
 
     @SuppressWarnings("unused")
+    public void logrb(Level level, ResourceBundle bundle, String msg, Object... params) {
+        log(level, msg, params);
+    }
+
+    @SuppressWarnings("unused")
     public void logrb(Level level, String sourceClass, String sourceMethod, String bundleName,
             String msg, Throwable thrown) {
         log(level, msg, thrown);
@@ -279,6 +283,11 @@ public class Logger {
     @SuppressWarnings("unused")
     public void logrb(Level level, String sourceClass, String sourceMethod, ResourceBundle bundle,
             String msg, Throwable thrown) {
+        log(level, msg, thrown);
+    }
+
+    @SuppressWarnings("unused")
+    public void logrb(Level level, ResourceBundle bundle, String msg, Throwable thrown) {
         log(level, msg, thrown);
     }
 

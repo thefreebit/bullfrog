@@ -19,11 +19,10 @@
 glowroot.controller('AdminSmtpCtrl', [
   '$scope',
   '$http',
-  'modals',
   'encryptionKeyMessage',
   'confirmIfHasChanges',
   'httpErrors',
-  function ($scope, $http, modals, encryptionKeyMessage, confirmIfHasChanges, httpErrors) {
+  function ($scope, $http, encryptionKeyMessage, confirmIfHasChanges, httpErrors) {
 
     // initialize page binding object
     $scope.page = {};
@@ -48,11 +47,7 @@ glowroot.controller('AdminSmtpCtrl', [
       if (!$scope.config) {
         return;
       }
-      if (newValue === 'none') {
-        delete $scope.config.connectionSecurity;
-      } else {
-        $scope.config.connectionSecurity = newValue;
-      }
+      $scope.config.connectionSecurity = newValue === 'none' ? null : newValue;
     });
 
     $scope.onPasswordChange = function () {

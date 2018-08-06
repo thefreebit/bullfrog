@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,13 +17,15 @@ package org.glowroot.agent.impl;
 
 import java.util.concurrent.TimeUnit;
 
-import javax.annotation.Nullable;
-
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.glowroot.agent.model.ThreadContextPlus;
+import org.glowroot.agent.bytecode.api.ThreadContextPlus;
+import org.glowroot.agent.bytecode.api.ThreadContextThreadLocal;
+import org.glowroot.agent.impl.NopTransactionService.NopAuxThreadContext;
+import org.glowroot.agent.impl.NopTransactionService.NopTimer;
 import org.glowroot.agent.plugin.api.AsyncQueryEntry;
 import org.glowroot.agent.plugin.api.AsyncTraceEntry;
 import org.glowroot.agent.plugin.api.AuxThreadContext;
@@ -33,38 +35,45 @@ import org.glowroot.agent.plugin.api.QueryMessageSupplier;
 import org.glowroot.agent.plugin.api.Timer;
 import org.glowroot.agent.plugin.api.TimerName;
 import org.glowroot.agent.plugin.api.TraceEntry;
-import org.glowroot.agent.plugin.api.internal.NopTransactionService;
-import org.glowroot.agent.plugin.api.internal.NopTransactionService.NopAuxThreadContext;
-import org.glowroot.agent.plugin.api.internal.NopTransactionService.NopTimer;
-import org.glowroot.agent.plugin.api.util.FastThreadLocal.Holder;
-import org.glowroot.common.util.UsedByGeneratedBytecode;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
-public class OptionalThreadContextImpl implements ThreadContextPlus {
+class OptionalThreadContextImpl implements ThreadContextPlus {
 
     private static final Logger logger = LoggerFactory.getLogger(OptionalThreadContextImpl.class);
 
-    private @MonotonicNonNull ThreadContextImpl threadContext;
+    private @MonotonicNonNull ThreadContextPlus threadContext;
 
-    private final TransactionServiceImpl transactionService;
-    private final Holder</*@Nullable*/ ThreadContextImpl> threadContextHolder;
+    private final TransactionService transactionService;
+    private final ThreadContextThreadLocal.Holder threadContextHolder;
 
-    @UsedByGeneratedBytecode
-    public static OptionalThreadContextImpl create(TransactionServiceImpl transactionService,
-            Holder</*@Nullable*/ ThreadContextImpl> threadContextHolder) {
+    static OptionalThreadContextImpl create(TransactionService transactionService,
+            ThreadContextThreadLocal.Holder threadContextHolder) {
         return new OptionalThreadContextImpl(transactionService, threadContextHolder);
     }
 
-    private OptionalThreadContextImpl(TransactionServiceImpl transactionService,
-            Holder</*@Nullable*/ ThreadContextImpl> threadContextHolder) {
+    private OptionalThreadContextImpl(TransactionService transactionService,
+            ThreadContextThreadLocal.Holder threadContextHolder) {
         this.transactionService = transactionService;
         this.threadContextHolder = threadContextHolder;
     }
 
     @Override
+    public boolean isInTransaction() {
+        return threadContext != null;
+    }
+
+    @Override
     public TraceEntry startTransaction(String transactionType, String transactionName,
             MessageSupplier messageSupplier, TimerName timerName) {
+        return startTransaction(transactionType, transactionName, messageSupplier, timerName,
+                AlreadyInTransactionBehavior.CAPTURE_TRACE_ENTRY);
+    }
+
+    @Override
+    public TraceEntry startTransaction(String transactionType, String transactionName,
+            MessageSupplier messageSupplier, TimerName timerName,
+            AlreadyInTransactionBehavior alreadyInTransactionBehavior) {
         if (transactionType == null) {
             logger.error("startTransaction(): argument 'transactionType' must be non-null");
             return NopTransactionService.TRACE_ENTRY;
@@ -88,7 +97,7 @@ public class OptionalThreadContextImpl implements ThreadContextPlus {
             return traceEntry;
         } else {
             return threadContext.startTransaction(transactionType, transactionName, messageSupplier,
-                    timerName);
+                    timerName, alreadyInTransactionBehavior);
         }
     }
 
@@ -305,24 +314,6 @@ public class OptionalThreadContextImpl implements ThreadContextPlus {
         if (messageSupplier instanceof ServletRequestInfo) {
             setServletRequestInfo((ServletRequestInfo) messageSupplier);
         }
-    }
-
-    @Override
-    @Deprecated
-    public void setAsyncTransaction() {
-        setTransactionAsync();
-    }
-
-    @Override
-    @Deprecated
-    public void completeAsyncTransaction() {
-        setTransactionAsyncComplete();
-    }
-
-    @Override
-    @Deprecated
-    public void setOuterTransaction() {
-        setTransactionOuter();
     }
 
     @Override

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,11 +29,10 @@ import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
 
+import org.glowroot.agent.bytecode.api.ThreadContextThreadLocal;
 import org.glowroot.agent.config.ConfigService;
-import org.glowroot.agent.impl.ThreadContextImpl;
 import org.glowroot.agent.impl.TimerNameCache;
 import org.glowroot.agent.impl.TransactionRegistry;
-import org.glowroot.agent.plugin.api.util.FastThreadLocal;
 import org.glowroot.agent.plugin.api.weaving.Mixin;
 import org.glowroot.agent.plugin.api.weaving.OptionalReturn;
 import org.glowroot.agent.plugin.api.weaving.Pointcut;
@@ -73,6 +72,7 @@ import org.glowroot.agent.weaving.SomeAspect.ClassNamePatternAdvice;
 import org.glowroot.agent.weaving.SomeAspect.ComplexSuperTypeRestrictionAdvice;
 import org.glowroot.agent.weaving.SomeAspect.FinalMethodAdvice;
 import org.glowroot.agent.weaving.SomeAspect.GenericMiscAdvice;
+import org.glowroot.agent.weaving.SomeAspect.HackedConstructorBytecodeAdvice;
 import org.glowroot.agent.weaving.SomeAspect.HasString;
 import org.glowroot.agent.weaving.SomeAspect.HasStringClassMixin;
 import org.glowroot.agent.weaving.SomeAspect.HasStringInterfaceMixin;
@@ -137,6 +137,7 @@ import org.glowroot.agent.weaving.targets.OnlyThrowingMisc;
 import org.glowroot.agent.weaving.targets.PrimitiveMisc;
 import org.glowroot.agent.weaving.targets.ShimmedMisc;
 import org.glowroot.agent.weaving.targets.StaticMisc;
+import org.glowroot.agent.weaving.targets.StaticSubbedMisc;
 import org.glowroot.agent.weaving.targets.SubBasicMisc;
 import org.glowroot.agent.weaving.targets.SubException;
 import org.glowroot.agent.weaving.targets.SubMisc;
@@ -1016,7 +1017,7 @@ public class WeaverTest {
                 ImmutableList.<ShimType>of(), ImmutableList.<MixinType>of());
         TransactionRegistry transactionRegistry = mock(TransactionRegistry.class);
         when(transactionRegistry.getCurrentThreadContextHolder())
-                .thenReturn(new FastThreadLocal<ThreadContextImpl>().getHolder());
+                .thenReturn(new ThreadContextThreadLocal().getHolder());
         Weaver weaver = new Weaver(advisorsSupplier, ImmutableList.<ShimType>of(),
                 ImmutableList.<MixinType>of(), analyzedWorld, transactionRegistry,
                 Ticker.systemTicker(), new TimerNameCache(), mock(ConfigService.class));
@@ -1108,6 +1109,19 @@ public class WeaverTest {
         assertThat(SomeAspectThreadLocals.onReturnCount.get()).isEqualTo(1);
         assertThat(SomeAspectThreadLocals.onThrowCount.get()).isEqualTo(0);
         assertThat(SomeAspectThreadLocals.onAfterCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    public void shouldNotWeaveStaticSubbedMethod() throws Exception {
+        // given
+        Misc test = newWovenObject(StaticSubbedMisc.class, Misc.class, StaticAdvice.class);
+        // when
+        test.execute1();
+        // then
+        assertThat(SomeAspectThreadLocals.onBeforeCount.get()).isEqualTo(0);
+        assertThat(SomeAspectThreadLocals.onReturnCount.get()).isEqualTo(0);
+        assertThat(SomeAspectThreadLocals.onThrowCount.get()).isEqualTo(0);
+        assertThat(SomeAspectThreadLocals.onAfterCount.get()).isEqualTo(0);
     }
 
     // ===================== primitive args =====================
@@ -1315,7 +1329,8 @@ public class WeaverTest {
     @Test
     public void shouldHandleConstructorPointcut() throws Exception {
         // given
-        Misc test = newWovenObject(BasicMisc.class, Misc.class, BasicMiscConstructorAdvice.class);
+        Misc test = newWovenObject(BasicMisc.class, Misc.class,
+                enhanceConstructorAdviceClass(BasicMiscConstructorAdvice.class));
         // reset thread locals after instantiated BasicMisc, to avoid counting that constructor call
         SomeAspectThreadLocals.resetThreadLocals();
         // when
@@ -1334,8 +1349,8 @@ public class WeaverTest {
     @Test
     public void shouldVerifyConstructorPointcutsAreNotNested() throws Exception {
         // given
-        Misc test =
-                newWovenObject(BasicMisc.class, Misc.class, BasicMiscAllConstructorAdvice.class);
+        Misc test = newWovenObject(BasicMisc.class, Misc.class,
+                enhanceConstructorAdviceClass(BasicMiscAllConstructorAdvice.class));
         // reset thread locals after instantiated BasicMisc, to avoid counting that constructor call
         SomeAspectThreadLocals.resetThreadLocals();
         // when
@@ -1700,6 +1715,39 @@ public class WeaverTest {
         assertThat(SomeAspectThreadLocals.onAfterCount.get()).isEqualTo(1);
     }
 
+    @Test
+    public void shouldExecuteAdviceOnStillMoreNotPerfectBytecode() throws Exception {
+        // given
+        LazyDefinedClass implClass =
+                GenerateStillMoreNotPerfectBytecode.generateStillMoreNotPerfectBytecode();
+        GenerateStillMoreNotPerfectBytecode.Test test = newWovenObject(implClass,
+                GenerateStillMoreNotPerfectBytecode.Test.class, MoreNotPerfectBytecodeAdvice.class);
+        // when
+        test.execute();
+        // then
+        assertThat(SomeAspectThreadLocals.onBeforeCount.get()).isEqualTo(1);
+        assertThat(SomeAspectThreadLocals.onReturnCount.get()).isEqualTo(1);
+        assertThat(SomeAspectThreadLocals.onThrowCount.get()).isEqualTo(0);
+        assertThat(SomeAspectThreadLocals.onAfterCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    public void shouldExecuteAdviceOnHackedConstructorBytecode() throws Exception {
+        // given
+        LazyDefinedClass implClass =
+                GenerateHackedConstructorBytecode.generateHackedConstructorBytecode();
+        newWovenObject(implClass, GenerateHackedConstructorBytecode.Test.class,
+                enhanceConstructorAdviceClass(HackedConstructorBytecodeAdvice.class));
+        // when
+        // (advice is on constructor, so already captured above)
+        // then
+        assertThat(SomeAspectThreadLocals.enabledCount.get()).isEqualTo(1);
+        assertThat(SomeAspectThreadLocals.onBeforeCount.get()).isEqualTo(1);
+        assertThat(SomeAspectThreadLocals.onReturnCount.get()).isEqualTo(1);
+        assertThat(SomeAspectThreadLocals.onThrowCount.get()).isEqualTo(0);
+        assertThat(SomeAspectThreadLocals.onAfterCount.get()).isEqualTo(1);
+    }
+
     public static <S, T extends S> S newWovenObject(Class<T> implClass, Class<S> bridgeClass,
             Class<?> adviceOrShimOrMixinClass, Class<?>... extraBridgeClasses) throws Exception {
         // SomeAspectThreadLocals is passed as bridgeable so that the static thread locals will be
@@ -1730,7 +1778,7 @@ public class WeaverTest {
         AnalyzedWorld analyzedWorld = new AnalyzedWorld(advisorsSupplier, shimTypes, mixinTypes);
         TransactionRegistry transactionRegistry = mock(TransactionRegistry.class);
         when(transactionRegistry.getCurrentThreadContextHolder())
-                .thenReturn(new FastThreadLocal<ThreadContextImpl>().getHolder());
+                .thenReturn(new ThreadContextThreadLocal().getHolder());
         Weaver weaver = new Weaver(advisorsSupplier, shimTypes, mixinTypes, analyzedWorld,
                 transactionRegistry, Ticker.systemTicker(), new TimerNameCache(),
                 mock(ConfigService.class));
@@ -1770,7 +1818,7 @@ public class WeaverTest {
                 new AnalyzedWorld(advisorsSupplier, shimTypes, mixinTypes);
         TransactionRegistry transactionRegistry = mock(TransactionRegistry.class);
         when(transactionRegistry.getCurrentThreadContextHolder())
-                .thenReturn(new FastThreadLocal<ThreadContextImpl>().getHolder());
+                .thenReturn(new ThreadContextThreadLocal().getHolder());
         Weaver weaver = new Weaver(advisorsSupplier, shimTypes, mixinTypes, analyzedWorld,
                 transactionRegistry, Ticker.systemTicker(), new TimerNameCache(),
                 mock(ConfigService.class));
@@ -1781,6 +1829,12 @@ public class WeaverTest {
         @SuppressWarnings("unchecked")
         Class<T> implClass = (Class<T>) Class.forName(className, false, isolatedWeavingClassLoader);
         return isolatedWeavingClassLoader.newInstance(implClass, bridgeClass);
+    }
+
+    private static Class<?> enhanceConstructorAdviceClass(Class<?> adviceClass)
+            throws ClassNotFoundException {
+        IsolatedWeavingClassLoader isolatedWeavingClassLoader = new IsolatedWeavingClassLoader();
+        return Class.forName(adviceClass.getName(), false, isolatedWeavingClassLoader);
     }
 
     private static void assumeJdk7() {

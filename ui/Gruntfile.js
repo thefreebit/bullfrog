@@ -15,6 +15,8 @@ module.exports = function (grunt) {
     exportDist: 'target/generated-resources/export-dist/org/glowroot/ui/export-dist'
   };
 
+  var livereload = 35729;
+
   // Define the configuration for all the tasks
   grunt.initConfig({
 
@@ -36,7 +38,7 @@ module.exports = function (grunt) {
       },
       livereload: {
         options: {
-          livereload: '<%= connect.livereload.options.livereload %>'
+          livereload: livereload
         },
         files: [
           '<%= yeoman.app %>/index.html',
@@ -62,9 +64,51 @@ module.exports = function (grunt) {
         {from: '^/report/.*$', to: '/index.html'},
         {from: '^/config/.*$', to: '/index.html'},
         {from: '^/admin/.*$', to: '/index.html'},
-        {from: '^/profile/.*', to: '/index.html'},
+        {from: '^/profile/.*$', to: '/index.html'},
         {from: '^/login$', to: '/index.html'}
       ],
+      options: {
+        port: 9000,
+        // Change this to '0.0.0.0' to access the server from outside.
+        hostname: 'localhost',
+        open: true,
+        middleware: function (connect) {
+          var setXUACompatibleHeader = function (req, res, next) {
+            // X-UA-Compatible must be set via header (as opposed to via meta tag)
+            // see https://github.com/h5bp/html5-boilerplate/blob/master/doc/html.md#x-ua-compatible
+            res.setHeader('X-UA-Compatible', 'IE=edge');
+            next();
+          };
+          var serveStatic = require('serve-static');
+          return [
+            require('connect-livereload')({
+              port: livereload,
+              include: [
+                /^\/$/,
+                /^\/transaction\//,
+                /^\/error\//,
+                /^\/jvm\//,
+                /^\/synthetic-monitors(|\\?.*)/,
+                /^\/incidents(|\\?.*)/,
+                /^\/report\//,
+                /^\/config\//,
+                /^\/admin\//,
+                /^\/profile\//,
+                /^\/login$/
+              ],
+              hostname: 'localhost'
+            }),
+            setXUACompatibleHeader,
+            require('grunt-connect-rewrite/lib/utils').rewriteRequest,
+            require('grunt-connect-proxy/lib/utils').proxyRequest,
+            serveStatic('.tmp'),
+            connect().use('/bower_components', serveStatic('bower_components')),
+            serveStatic(appConfig.app),
+            connect().use('/fonts', serveStatic('bower_components/fontawesome/web-fonts-with-css/webfonts')),
+            connect().use('/uib/template', serveStatic('bower_components/angular-ui-bootstrap/template'))
+          ];
+        }
+      },
       livereload: {
         proxies: [
           {
@@ -77,33 +121,29 @@ module.exports = function (grunt) {
             host: 'localhost',
             port: 4000
           }
-        ],
-        options: {
-          port: 9000,
-          // Change this to '0.0.0.0' to access the server from outside.
-          hostname: 'localhost',
-          livereload: 35729,
-          open: true,
-          middleware: function (connect) {
-            var setXUACompatibleHeader = function (req, res, next) {
-              // X-UA-Compatible must be set via header (as opposed to via meta tag)
-              // see https://github.com/h5bp/html5-boilerplate/blob/master/doc/html.md#x-ua-compatible
-              res.setHeader('X-UA-Compatible', 'IE=edge');
-              next();
-            };
-            var serveStatic = require('serve-static');
-            return [
-              setXUACompatibleHeader,
-              require('grunt-connect-rewrite/lib/utils').rewriteRequest,
-              require('grunt-connect-proxy/lib/utils').proxyRequest,
-              serveStatic('.tmp'),
-              connect().use('/bower_components', serveStatic('bower_components')),
-              serveStatic(appConfig.app),
-              connect().use('/fonts', serveStatic('bower_components/fontawesome/fonts')),
-              connect().use('/uib/template', serveStatic('bower_components/angular-ui-bootstrap/template'))
-            ];
+        ]
+      },
+      demo: {
+        proxies: [
+          {
+            context: '/backend',
+            host: 'demo.glowroot.org',
+            port: 443,
+            protocol: 'https:',
+            headers: {
+              host: 'demo.glowroot.org'
+            }
+          },
+          {
+            context: '/export',
+            host: 'demo.glowroot.org',
+            port: 443,
+            protocol: 'https:',
+            headers: {
+              host: 'demo.glowroot.org'
+            }
           }
-        }
+        ]
       }
     },
 
@@ -245,11 +285,12 @@ module.exports = function (grunt) {
           },
           {
             expand: true,
-            cwd: 'bower_components/fontawesome',
-            dest: '<%= yeoman.dist %>',
+            cwd: 'bower_components/fontawesome/web-fonts-with-css/webfonts',
+            dest: '<%= yeoman.dist %>/fonts',
             src: [
               // only supporting IE9+ so only need woff/woff2
-              'fonts/*.woff{,2}'
+              'fa-regular-400.woff{,2}',
+              'fa-solid-900.woff{,2}'
             ]
           },
           {
@@ -309,7 +350,7 @@ module.exports = function (grunt) {
         },
         blockReplacements: {
           // this is workaround for grunt-usemin issue #391
-          js: function (block){
+          js: function (block) {
             if (block.dest === 'scripts/vendor-flame-graph.js') {
               return '<script async src="' + block.dest + '"><\/script>';
             } else {
@@ -344,21 +385,16 @@ module.exports = function (grunt) {
   });
 
   grunt.registerTask('serve', 'Compile then start a connect web server', function (target) {
-    if (target === 'xyzzy') {
-      return grunt.task.run([
-        'configureProxies:xyzzy',
-        'configureRewriteRules',
-        'connect:xyzzy:keepalive'
-      ]);
+    if (target === undefined) {
+      target = 'livereload';
     }
-
     grunt.task.run([
       'clean:serve',
       'less',
       'handlebars',
       'configureRewriteRules',
-      'configureProxies:livereload',
-      'connect:livereload',
+      'configureProxies:' + target,
+      'connect:' + target,
       'watch'
     ]);
   });

@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,25 +14,26 @@
  * limitations under the License.
  */
 
-/* global glowroot, angular, moment, $ */
+/* global glowroot, angular, $ */
 
 glowroot.controller('TransactionCtrl', [
   '$scope',
   '$location',
+  '$http',
   '$timeout',
   'queryStrings',
   'charts',
   'headerDisplay',
   'shortName',
   'defaultSummarySortOrder',
-  function ($scope, $location, $timeout, queryStrings, charts, headerDisplay, shortName, defaultSummarySortOrder) {
+  function ($scope, $location, $http, $timeout, queryStrings, charts, headerDisplay, shortName, defaultSummarySortOrder) {
 
     // \u00b7 is &middot;
     document.title = headerDisplay + ' \u00b7 BullFrog';
     $scope.$parent.activeNavbarItem = shortName;
 
-    if ($scope.layout.central) {
-      $scope.headerDisplay = $scope.agentRollupId || '<agent>';
+    if (!$scope.layout.central && $scope.layout.embeddedAgentRollup.display) {
+      $scope.headerDisplay = $scope.layout.embeddedAgentRollup.display;
     } else {
       $scope.headerDisplay = headerDisplay;
     }
@@ -41,12 +42,8 @@ glowroot.controller('TransactionCtrl', [
 
     $scope.range = {};
 
-    $scope.hideAgentRollupDropdown = function () {
-      return $scope.layout.agentRollups.length === 1 || !$scope.layout.central;
-    };
-
     $scope.hideTransactionTypeDropdown = function () {
-      var agentRollup = $scope.layout.agentRollups[$scope.agentRollupId];
+      var agentRollup = $scope.agentRollup;
       if (!agentRollup) {
         // show empty dropdown
         return false;
@@ -66,19 +63,28 @@ glowroot.controller('TransactionCtrl', [
       return ($scope.layout.central && !$scope.agentRollupId) || !$scope.transactionType;
     };
 
-    $scope.headerQueryString = function (agentRollup, transactionType) {
+    $scope.headerQueryString = function (agentRollupId, transactionType) {
       var query = {};
       if ($scope.layout.central) {
-        if (agentRollup.agent) {
-          query['agent-id'] = agentRollup.id;
+        if (agentRollupId) {
+          // this is from agent dropdown
+          if ($scope.isRollup(agentRollupId)) {
+            query['agent-rollup-id'] = agentRollupId;
+          } else {
+            query['agent-id'] = agentRollupId;
+          }
         } else {
-          query['agent-rollup-id'] = agentRollup.id;
+          // this is from transaction dropdown
+          var agentId = $location.search()['agent-id'];
+          if (agentId) {
+            query['agent-id'] = agentId;
+          } else {
+            query['agent-rollup-id'] = $location.search()['agent-rollup-id'];
+          }
         }
       }
       if (transactionType) {
         query['transaction-type'] = transactionType;
-      } else {
-        query['transaction-type'] = agentRollup.defaultDisplayedTransactionType;
       }
       if ($scope.range.last) {
         if ($scope.range.last !== 4 * 60 * 60 * 1000) {
@@ -89,28 +95,6 @@ glowroot.controller('TransactionCtrl', [
         query.to = $scope.range.chartTo;
       }
       return queryStrings.encodeObject(query);
-    };
-
-    // TODO this is exact duplicate of same function in gauge-values.js
-    $scope.applyLast = function () {
-      if (!$scope.range.last) {
-        return;
-      }
-      var now = moment().startOf('second').valueOf();
-      var from = now - $scope.range.last;
-      var to = now + $scope.range.last / 10;
-      var dataPointIntervalMillis = charts.getDataPointIntervalMillis(from, to);
-      var revisedFrom = Math.floor(from / dataPointIntervalMillis) * dataPointIntervalMillis;
-      var revisedTo = Math.ceil(to / dataPointIntervalMillis) * dataPointIntervalMillis;
-      var revisedDataPointIntervalMillis = charts.getDataPointIntervalMillis(revisedFrom, revisedTo);
-      if (revisedDataPointIntervalMillis !== dataPointIntervalMillis) {
-        // expanded out to larger rollup threshold so need to re-adjust
-        // ok to use original from/to instead of revisedFrom/revisedTo
-        revisedFrom = Math.floor(from / revisedDataPointIntervalMillis) * revisedDataPointIntervalMillis;
-        revisedTo = Math.ceil(to / revisedDataPointIntervalMillis) * revisedDataPointIntervalMillis;
-      }
-      $scope.range.chartFrom = revisedFrom;
-      $scope.range.chartTo = revisedTo;
     };
 
     function onLocationChangeSuccess() {
@@ -132,7 +116,7 @@ glowroot.controller('TransactionCtrl', [
       $scope.summarySortOrder = $location.search()['summary-sort-order'] || $scope.defaultSummarySortOrder;
 
       // always re-apply last in order to reflect the latest time
-      $scope.applyLast();
+      charts.applyLast($scope);
     }
 
     // need to defer listener registration, otherwise captures initial location change sometimes
@@ -144,29 +128,49 @@ glowroot.controller('TransactionCtrl', [
     $scope.$watchGroup(['range.last', 'range.chartFrom', 'range.chartTo'],
         function (newValues, oldValues) {
           if (newValues !== oldValues) {
-            $location.search($scope.buildQueryObject());
+            if ($location.path() === '/transaction/traces') {
+              $location.search($scope.buildQueryObjectForTraceTab(true));
+            } else {
+              $location.search($scope.buildQueryObject(true));
+            }
           }
         });
 
     $scope.tabQueryString = function () {
-      return queryStrings.encodeObject($scope.buildQueryObject({}));
+      return queryStrings.encodeObject($scope.buildQueryObject());
     };
 
-    $scope.buildQueryObject = function (baseQuery, allowSeconds) {
-      var query = baseQuery || angular.copy($location.search());
+    $scope.buildQueryObject = function (overlayExtras) {
+      return buildQueryObject(overlayExtras, $scope.range.last);
+    };
+
+    $scope.buildQueryObjectForChartRange = function (last) {
+      var query = buildQueryObject(true, last);
+      if ($location.path() === '/transaction/traces' || $location.path() === '/error/traces') {
+        // clear duration filter on zooming out to avoid confusion
+        delete query['duration-millis-low'];
+        delete query['duration-millis-high'];
+      }
+      return query;
+    };
+
+    $scope.buildQueryObjectForTraceTab = function (overlayExtras) {
+      return buildQueryObject(overlayExtras, $scope.range.last, true);
+    };
+
+    function buildQueryObject(overlayExtras, last, allowSeconds) {
+      var query = {};
       if ($scope.layout.central) {
-        var agentRollup = $scope.layout.agentRollups[$scope.agentRollupId];
-        if (agentRollup) {
-          if (agentRollup.agent) {
-            query['agent-id'] = $scope.agentRollupId;
-          } else {
-            query['agent-rollup-id'] = $scope.agentRollupId;
-          }
+        var agentId = $location.search()['agent-id'];
+        if (agentId) {
+          query['agent-id'] = agentId;
+        } else {
+          query['agent-rollup-id'] = $location.search()['agent-rollup-id'];
         }
       }
       query['transaction-type'] = $scope.transactionType;
       query['transaction-name'] = $scope.transactionName;
-      if (!$scope.range.last) {
+      if (!last) {
         if (allowSeconds) {
           query.from = $scope.range.chartFrom;
           query.to = $scope.range.chartTo;
@@ -175,8 +179,8 @@ glowroot.controller('TransactionCtrl', [
           query.to = Math.ceil($scope.range.chartTo / 60000) * 60000;
         }
         delete query.last;
-      } else if ($scope.range.last !== 4 * 60 * 60 * 1000) {
-        query.last = $scope.range.last;
+      } else if (last !== 4 * 60 * 60 * 1000) {
+        query.last = last;
         delete query.from;
         delete query.to;
       }
@@ -185,23 +189,46 @@ glowroot.controller('TransactionCtrl', [
       } else {
         delete query['summary-sort-order'];
       }
+      if (overlayExtras) {
+        var overlay = angular.copy($location.search());
+        delete overlay['agent-id'];
+        delete overlay['agent-rollup-id'];
+        delete overlay['transaction-type'];
+        delete overlay['transaction-name'];
+        delete overlay.from;
+        delete overlay.to;
+        delete overlay.last;
+        delete overlay['summary-sort-order'];
+        angular.extend(query, overlay);
+      }
       return query;
-    };
+    }
 
     $scope.currentTabUrl = function () {
       return $location.path().substring(1);
     };
 
-    $scope.selectedAgentRollup = $scope.agentRollupId;
+    if ($scope.layout.central) {
 
-    $scope.$watchGroup(['range.chartFrom', 'range.chartTo'], function (newValue, oldValue) {
-      if (newValue !== oldValue) {
-        // need to refresh selectpicker in order to update hrefs of the items
-        $timeout(function () {
-          // timeout is needed so this runs after dom is updated
-          $('#agentRollupDropdown').selectpicker('refresh');
-        });
+      $scope.$watchGroup(['range.chartFrom', 'range.chartTo'], function (newValue, oldValue) {
+        if (newValue !== oldValue) {
+          // need to refresh selectpicker in order to update hrefs of the items
+          $timeout(function () {
+            // timeout is needed so this runs after dom is updated
+            $('#agentRollupDropdown').selectpicker('refresh');
+          });
+        }
+      });
+
+      var refreshAgentRollups = function () {
+        $scope.refreshAgentRollups($scope.range.chartFrom, $scope.range.chartTo, $scope);
+      };
+
+      $('#agentRollupDropdown').on('show.bs.select', refreshAgentRollups);
+
+      if ($scope.agentRollups === undefined) {
+        refreshAgentRollups();
       }
-    });
+    }
   }
 ]);

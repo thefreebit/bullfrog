@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,19 +17,19 @@ package org.glowroot.agent.impl;
 
 import java.util.List;
 
-import javax.annotation.Nullable;
-
 import com.google.common.collect.Lists;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.agent.config.AdvancedConfig;
 import org.glowroot.agent.impl.Transaction.RootTimerCollector;
 import org.glowroot.agent.impl.Transaction.ThreadStatsCollector;
 import org.glowroot.agent.model.CommonTimerImpl;
 import org.glowroot.agent.model.MutableAggregateTimer;
-import org.glowroot.agent.model.ThreadProfile;
 import org.glowroot.agent.model.QueryCollector;
-import org.glowroot.agent.model.QueryCollector.SharedQueryTextCollector;
+import org.glowroot.agent.model.ServiceCallCollector;
+import org.glowroot.agent.model.SharedQueryTextCollection;
+import org.glowroot.agent.model.ThreadProfile;
 import org.glowroot.agent.model.ThreadStats;
 import org.glowroot.common.live.ImmutableOverviewAggregate;
 import org.glowroot.common.live.ImmutablePercentileAggregate;
@@ -43,21 +43,17 @@ import org.glowroot.common.model.MutableProfile;
 import org.glowroot.common.model.OverallErrorSummaryCollector;
 import org.glowroot.common.model.OverallSummaryCollector;
 import org.glowroot.common.model.ProfileCollector;
-import org.glowroot.common.model.ServiceCallCollector;
 import org.glowroot.common.model.TransactionErrorSummaryCollector;
 import org.glowroot.common.model.TransactionSummaryCollector;
 import org.glowroot.common.util.NotAvailableAware;
 import org.glowroot.common.util.Styles;
 import org.glowroot.wire.api.model.AggregateOuterClass.Aggregate;
-import org.glowroot.wire.api.model.Proto.OptionalDouble;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
 // must be used under an appropriate lock
 @Styles.Private
 class AggregateCollector {
-
-    private static final double NANOSECONDS_PER_MILLISECOND = 1000000.0;
 
     private final @Nullable String transactionName;
     // aggregates use double instead of long to avoid (unlikely) 292 year nanosecond rollover
@@ -79,14 +75,14 @@ class AggregateCollector {
     private @MonotonicNonNull MutableProfile mainThreadProfile;
     private @MonotonicNonNull MutableProfile auxThreadProfile;
 
-    private final int maxAggregateQueriesPerType;
-    private final int maxAggregateServiceCallsPerType;
+    private final int maxQueryAggregates;
+    private final int maxServiceCallAggregates;
 
-    AggregateCollector(@Nullable String transactionName, int maxAggregateQueriesPerType,
-            int maxAggregateServiceCallsPerType) {
+    AggregateCollector(@Nullable String transactionName, int maxQueryAggregates,
+            int maxServiceCallAggregates) {
         this.transactionName = transactionName;
-        this.maxAggregateQueriesPerType = maxAggregateQueriesPerType;
-        this.maxAggregateServiceCallsPerType = maxAggregateServiceCallsPerType;
+        this.maxQueryAggregates = maxQueryAggregates;
+        this.maxServiceCallAggregates = maxServiceCallAggregates;
     }
 
     void add(Transaction transaction) {
@@ -132,27 +128,26 @@ class AggregateCollector {
 
     QueryCollector getQueryCollector() {
         if (queries == null) {
-            int queriesHardLimitMultiplierWhileBuilding = transactionName == null
+            int hardLimitMultiplierWhileBuilding = transactionName == null
                     ? AdvancedConfig.OVERALL_AGGREGATE_QUERIES_HARD_LIMIT_MULTIPLIER
                     : AdvancedConfig.TRANSACTION_AGGREGATE_QUERIES_HARD_LIMIT_MULTIPLIER;
-            queries = new QueryCollector(maxAggregateQueriesPerType,
-                    queriesHardLimitMultiplierWhileBuilding);
+            queries = new QueryCollector(maxQueryAggregates, hardLimitMultiplierWhileBuilding);
         }
         return queries;
     }
 
     ServiceCallCollector getServiceCallCollector() {
         if (serviceCalls == null) {
-            int serviceCallsHardLimitMultiplierWhileBuilding = transactionName == null
+            int hardLimitMultiplierWhileBuilding = transactionName == null
                     ? AdvancedConfig.OVERALL_AGGREGATE_SERVICE_CALLS_HARD_LIMIT_MULTIPLIER
                     : AdvancedConfig.TRANSACTION_AGGREGATE_SERVICE_CALLS_HARD_LIMIT_MULTIPLIER;
-            serviceCalls = new ServiceCallCollector(maxAggregateServiceCallsPerType,
-                    serviceCallsHardLimitMultiplierWhileBuilding);
+            serviceCalls = new ServiceCallCollector(maxServiceCallAggregates,
+                    hardLimitMultiplierWhileBuilding);
         }
         return serviceCalls;
     }
 
-    Aggregate build(SharedQueryTextCollector sharedQueryTextCollector,
+    Aggregate build(SharedQueryTextCollection sharedQueryTextCollection,
             ScratchBuffer scratchBuffer) {
         Aggregate.Builder builder = Aggregate.newBuilder()
                 .setTotalDurationNanos(totalDurationNanos)
@@ -162,18 +157,14 @@ class AggregateCollector {
                 .addAllMainThreadRootTimer(mainThreadRootTimers.toProto())
                 .addAllAuxThreadRootTimer(auxThreadRootTimers.toProto())
                 .addAllAsyncTimer(asyncTimers.toProto())
-                .setDurationNanosHistogram(durationNanosHistogram.toProto(scratchBuffer));
-        if (!mainThreadStats.isNA()) {
-            builder.setMainThreadStats(mainThreadStats.toProto());
-        }
-        if (!auxThreadStats.isNA()) {
-            builder.setAuxThreadStats(auxThreadStats.toProto());
-        }
+                .setDurationNanosHistogram(durationNanosHistogram.toProto(scratchBuffer))
+                .setMainThreadStats(mainThreadStats.toProto())
+                .setAuxThreadStats(auxThreadStats.toProto());
         if (queries != null) {
-            builder.addAllQueriesByType(queries.toAggregateProto(sharedQueryTextCollector));
+            builder.addAllQuery(queries.toAggregateProto(sharedQueryTextCollection, false));
         }
         if (serviceCalls != null) {
-            builder.addAllServiceCallsByType(serviceCalls.toProto());
+            builder.addAllServiceCall(serviceCalls.toAggregateProto());
         }
         if (mainThreadProfile != null) {
             builder.setMainThreadProfile(mainThreadProfile.toProto());
@@ -205,21 +196,17 @@ class AggregateCollector {
     }
 
     OverviewAggregate getOverviewAggregate(long captureTime) {
-        ImmutableOverviewAggregate.Builder builder = ImmutableOverviewAggregate.builder()
+        return ImmutableOverviewAggregate.builder()
                 .captureTime(captureTime)
                 .totalDurationNanos(totalDurationNanos)
                 .transactionCount(transactionCount)
                 .asyncTransactions(asyncTransactions)
                 .mainThreadRootTimers(mainThreadRootTimers.toProto())
                 .auxThreadRootTimers(auxThreadRootTimers.toProto())
-                .asyncTimers(asyncTimers.toProto());
-        if (!mainThreadStats.isNA()) {
-            builder.mainThreadStats(mainThreadStats.toProto());
-        }
-        if (!auxThreadStats.isNA()) {
-            builder.auxThreadStats(auxThreadStats.toProto());
-        }
-        return builder.build();
+                .asyncTimers(asyncTimers.toProto())
+                .mainThreadStats(mainThreadStats.toProto())
+                .auxThreadStats(auxThreadStats.toProto())
+                .build();
     }
 
     PercentileAggregate getPercentileAggregate(long captureTime) {
@@ -253,9 +240,9 @@ class AggregateCollector {
         }
     }
 
-    void mergeServiceCallsInto(ServiceCallCollector collector) {
+    void mergeServiceCallsInto(org.glowroot.common.model.ServiceCallCollector collector) {
         if (serviceCalls != null) {
-            collector.mergeServiceCalls(serviceCalls.toProto());
+            serviceCalls.mergeServiceCallsInto(collector);
         }
     }
 
@@ -312,8 +299,6 @@ class AggregateCollector {
         private double totalWaitedMillis;
         private double totalAllocatedBytes;
 
-        private boolean empty = true;
-
         @Override
         public void mergeThreadStats(ThreadStats threadStats) {
             totalCpuNanos = NotAvailableAware.add(totalCpuNanos, threadStats.getTotalCpuNanos());
@@ -323,40 +308,15 @@ class AggregateCollector {
                     NotAvailableAware.add(totalWaitedMillis, threadStats.getTotalWaitedMillis());
             totalAllocatedBytes = NotAvailableAware.add(totalAllocatedBytes,
                     threadStats.getTotalAllocatedBytes());
-            empty = false;
-        }
-
-        private boolean isNA() {
-            if (empty) {
-                return true;
-            }
-            return NotAvailableAware.isNA(totalCpuNanos)
-                    && NotAvailableAware.isNA(totalBlockedMillis)
-                    && NotAvailableAware.isNA(totalWaitedMillis)
-                    && NotAvailableAware.isNA(totalAllocatedBytes);
         }
 
         public Aggregate.ThreadStats toProto() {
-            Aggregate.ThreadStats.Builder builder = Aggregate.ThreadStats.newBuilder();
-            if (!NotAvailableAware.isNA(totalCpuNanos)) {
-                builder.setTotalCpuNanos(toProto(totalCpuNanos));
-            }
-            if (!NotAvailableAware.isNA(totalBlockedMillis)) {
-                builder.setTotalBlockedNanos(
-                        toProto(totalBlockedMillis * NANOSECONDS_PER_MILLISECOND));
-            }
-            if (!NotAvailableAware.isNA(totalWaitedMillis)) {
-                builder.setTotalWaitedNanos(
-                        toProto(totalWaitedMillis * NANOSECONDS_PER_MILLISECOND));
-            }
-            if (!NotAvailableAware.isNA(totalAllocatedBytes)) {
-                builder.setTotalAllocatedBytes(toProto(totalAllocatedBytes));
-            }
-            return builder.build();
-        }
-
-        private static OptionalDouble toProto(double value) {
-            return OptionalDouble.newBuilder().setValue(value).build();
+            return Aggregate.ThreadStats.newBuilder()
+                    .setTotalCpuNanos(totalCpuNanos)
+                    .setTotalBlockedNanos(NotAvailableAware.millisToNanos(totalBlockedMillis))
+                    .setTotalWaitedNanos(NotAvailableAware.millisToNanos(totalWaitedMillis))
+                    .setTotalAllocatedBytes(totalAllocatedBytes)
+                    .build();
         }
     }
 }

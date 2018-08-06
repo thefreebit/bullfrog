@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,33 +15,28 @@
  */
 package org.glowroot.central.repo;
 
+import java.util.ArrayList;
 import java.util.List;
 
-import javax.annotation.Nullable;
-
 import com.datastax.driver.core.BoundStatement;
-import com.datastax.driver.core.KeyspaceMetadata;
 import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.Row;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.central.util.Cache;
 import org.glowroot.central.util.Cache.CacheLoader;
 import org.glowroot.central.util.ClusterManager;
 import org.glowroot.central.util.Session;
-import org.glowroot.common.config.ImmutableRoleConfig;
-import org.glowroot.common.config.RoleConfig;
-import org.glowroot.common.repo.ConfigRepository.DuplicateRoleNameException;
+import org.glowroot.common2.config.ImmutableRoleConfig;
+import org.glowroot.common2.config.RoleConfig;
+import org.glowroot.common2.repo.ConfigRepository.DuplicateRoleNameException;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
 class RoleDao {
-
-    private static final String WITH_LCS =
-            "with compaction = { 'class' : 'LeveledCompactionStrategy' }";
 
     private static final String ALL_ROLES_SINGLE_CACHE_KEY = "x";
 
@@ -57,14 +52,13 @@ class RoleDao {
     private final Cache<String, Optional<RoleConfig>> roleConfigCache;
     private final Cache<String, List<RoleConfig>> allRoleConfigsCache;
 
-    RoleDao(Session session, KeyspaceMetadata keyspaceMetadata, ClusterManager clusterManager)
-            throws Exception {
+    RoleDao(Session session, ClusterManager clusterManager) throws Exception {
         this.session = session;
 
-        boolean createAnonymousRole = keyspaceMetadata.getTable("role") == null;
+        boolean createAnonymousRole = session.getTable("role") == null;
 
-        session.execute("create table if not exists role (name varchar,"
-                + " permissions set<varchar>, primary key (name)) " + WITH_LCS);
+        session.createTableWithLCS("create table if not exists role (name varchar, permissions"
+                + " set<varchar>, primary key (name))");
 
         readPS = session.prepare("select name, permissions from role");
         insertIfNotExistsPS =
@@ -75,7 +69,10 @@ class RoleDao {
         readOnePS = session.prepare("select name, permissions from role where name = ?");
 
         if (createAnonymousRole) {
-            BoundStatement boundStatement = insertIfNotExistsPS.bind();
+            // don't use "if not exists" here since it's not needed and has more chance to fail,
+            // leaving the schema in a bad state (with the role table created, but no Administrator
+            // role)
+            BoundStatement boundStatement = insertPS.bind();
             int i = 0;
             boundStatement.setString(i++, "Administrator");
             boundStatement.setSet(i++,
@@ -108,23 +105,23 @@ class RoleDao {
         allRoleConfigsCache.invalidate(ALL_ROLES_SINGLE_CACHE_KEY);
     }
 
-    void insert(RoleConfig userConfig) throws Exception {
+    void insert(RoleConfig roleConfig) throws Exception {
         BoundStatement boundStatement = insertPS.bind();
-        bindInsert(boundStatement, userConfig);
+        bindInsert(boundStatement, roleConfig);
         session.execute(boundStatement);
-        roleConfigCache.invalidate(userConfig.name());
+        roleConfigCache.invalidate(roleConfig.name());
         allRoleConfigsCache.invalidate(ALL_ROLES_SINGLE_CACHE_KEY);
 
     }
 
-    void insertIfNotExists(RoleConfig userConfig) throws Exception {
+    void insertIfNotExists(RoleConfig roleConfig) throws Exception {
         BoundStatement boundStatement = insertIfNotExistsPS.bind();
-        bindInsert(boundStatement, userConfig);
+        bindInsert(boundStatement, roleConfig);
         ResultSet results = session.execute(boundStatement);
         Row row = checkNotNull(results.one());
         boolean applied = row.getBool("[applied]");
         if (applied) {
-            roleConfigCache.invalidate(userConfig.name());
+            roleConfigCache.invalidate(roleConfig.name());
             allRoleConfigsCache.invalidate(ALL_ROLES_SINGLE_CACHE_KEY);
         } else {
             throw new DuplicateRoleNameException();
@@ -167,7 +164,7 @@ class RoleDao {
         @Override
         public List<RoleConfig> load(String dummy) throws Exception {
             ResultSet results = session.execute(readPS.bind());
-            List<RoleConfig> users = Lists.newArrayList();
+            List<RoleConfig> users = new ArrayList<>();
             for (Row row : results) {
                 users.add(buildRole(row));
             }

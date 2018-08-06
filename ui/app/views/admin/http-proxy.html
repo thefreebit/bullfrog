@@ -1,5 +1,5 @@
 <!--
-  Copyright 2017 the original author or authors.
+  Copyright 2017-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -34,7 +34,6 @@
            gt-width="20em">
         <div class="help-block">
           HTTP Proxy server hostname or IP address.
-          Currently this is only used by the PagerDuty integration.
         </div>
       </div>
       <div gt-form-group
@@ -43,10 +42,9 @@
            gt-number="true"
            gt-pattern="pattern.integer"
            gt-disabled="!layout.adminEdit"
-           gt-width="7em">
-        <div class="help-block">
-          Defaults to port 80.
-        </div>
+           gt-width="7em"
+           gt-placeholder="80"
+           class="gt-form-group-without-help-block">
       </div>
       <div gt-form-group
            gt-label="Username"
@@ -119,3 +117,5 @@
     </div>
   </div>
 </div>
+<!-- each page with confirmation dialog needs its own confirmation dom so that it is deleted on $destroy -->
+<div ng-include="'template/gt-confirmation.html'"></div>

@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -86,16 +86,7 @@ glowroot.controller('ChartRangeCtrl', [
     };
 
     $scope.headerRangeQueryString = function (last) {
-      var query = $scope.buildQueryObject();
-      delete query['trace-chart-from'];
-      delete query['trace-chart-to'];
-      delete query.from;
-      delete query.to;
-      if (last === 4 * 60 * 60 * 1000) {
-        delete query.last;
-      } else {
-        query.last = last;
-      }
+      var query = $scope.buildQueryObjectForChartRange(last);
       return queryStrings.encodeObject(query);
     };
 
@@ -126,12 +117,12 @@ glowroot.controller('ChartRangeCtrl', [
       modals.display('#customDateRangeModal', true);
 
       var icons = {
-        time: 'fa fa-clock-o',
-        date: 'fa fa-calendar',
-        up: 'fa fa-chevron-up',
-        down: 'fa fa-chevron-down',
-        previous: 'fa fa-chevron-left',
-        next: 'fa fa-chevron-right'
+        time: 'fas fa-clock',
+        date: 'fas fa-calendar',
+        up: 'fas fa-chevron-up',
+        down: 'fas fa-chevron-down',
+        previous: 'fas fa-chevron-left',
+        next: 'fas fa-chevron-right'
       };
       var from = $scope.range.chartFrom;
       var to = $scope.range.chartTo;

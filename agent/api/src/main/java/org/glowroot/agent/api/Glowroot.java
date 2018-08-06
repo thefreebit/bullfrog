@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,40 +15,16 @@
  */
 package org.glowroot.agent.api;
 
-import java.lang.reflect.Method;
 import java.util.concurrent.TimeUnit;
 
-import javax.annotation.Nullable;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.agent.api.internal.GlowrootService;
-import org.glowroot.agent.api.internal.NopGlowrootService;
+import org.glowroot.agent.api.internal.GlowrootServiceHolder;
 
 public class Glowroot {
 
-    private static final Logger logger = LoggerFactory.getLogger(Glowroot.class);
-
-    private static final GlowrootService glowrootService;
-
-    static {
-        GlowrootService service;
-        try {
-            Class<?> registryClass = Class.forName("org.glowroot.agent.impl.ServiceRegistryImpl");
-            Method getInstanceMethod = registryClass.getMethod("getGlowrootService");
-            service = (GlowrootService) getInstanceMethod.invoke(null);
-            if (service == null) {
-                service = NopGlowrootService.INSTANCE;
-            }
-        } catch (Exception e) {
-            // this is expected when Glowroot is not running
-            // log exception at debug level
-            logger.debug(e.getMessage(), e);
-            service = NopGlowrootService.INSTANCE;
-        }
-        glowrootService = service;
-    }
+    private static final GlowrootService service = GlowrootServiceHolder.get();
 
     private Glowroot() {}
 
@@ -58,7 +34,7 @@ public class Glowroot {
      * If there is no current transaction then this method does nothing.
      */
     public static void setTransactionType(@Nullable String transactionType) {
-        glowrootService.setTransactionType(transactionType);
+        service.setTransactionType(transactionType);
     }
 
     /**
@@ -67,7 +43,7 @@ public class Glowroot {
      * If there is no current transaction then this method does nothing.
      */
     public static void setTransactionName(@Nullable String transactionName) {
-        glowrootService.setTransactionName(transactionName);
+        service.setTransactionName(transactionName);
     }
 
     /**
@@ -76,7 +52,7 @@ public class Glowroot {
      * If there is no current transaction then this method does nothing.
      */
     public static void setTransactionUser(@Nullable String user) {
-        glowrootService.setTransactionUser(user);
+        service.setTransactionUser(user);
     }
 
     /**
@@ -93,7 +69,7 @@ public class Glowroot {
      * {@code null} values are normalized to the empty string.
      */
     public static void addTransactionAttribute(String name, @Nullable String value) {
-        glowrootService.addTransactionAttribute(name, value);
+        service.addTransactionAttribute(name, value);
     }
 
     /**
@@ -107,7 +83,7 @@ public class Glowroot {
      * If there is no current transaction then this method does nothing.
      */
     public static void setTransactionSlowThreshold(long threshold, TimeUnit unit) {
-        glowrootService.setTransactionSlowThreshold(threshold, unit);
+        service.setTransactionSlowThreshold(threshold, unit);
     }
 
     /**
@@ -121,14 +97,6 @@ public class Glowroot {
      * If there is no current transaction then this method does nothing.
      */
     public static void setTransactionOuter() {
-        glowrootService.setTransactionOuter();
-    }
-
-    /**
-     * @deprecated Replaced by {@link #setTransactionOuter()}.
-     */
-    @Deprecated
-    public static void setOuterTransaction() {
-        setTransactionOuter();
+        service.setTransactionOuter();
     }
 }

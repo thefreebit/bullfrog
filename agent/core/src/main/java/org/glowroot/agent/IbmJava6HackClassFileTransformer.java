@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,7 @@ package org.glowroot.agent;
 import java.lang.instrument.ClassFileTransformer;
 import java.security.ProtectionDomain;
 
-import javax.annotation.Nullable;
-
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
@@ -27,9 +26,9 @@ import org.objectweb.asm.MethodVisitor;
 
 import static org.objectweb.asm.Opcodes.ACONST_NULL;
 import static org.objectweb.asm.Opcodes.ARETURN;
-import static org.objectweb.asm.Opcodes.ASM5;
+import static org.objectweb.asm.Opcodes.ASM6;
 
-public class IbmJava6HackClassFileTransformer implements ClassFileTransformer {
+class IbmJava6HackClassFileTransformer implements ClassFileTransformer {
 
     @Override
     public byte /*@Nullable*/ [] transform(@Nullable ClassLoader loader, @Nullable String className,
@@ -50,7 +49,7 @@ public class IbmJava6HackClassFileTransformer implements ClassFileTransformer {
         private final ClassWriter cw;
 
         private IbmJava6HackClassVisitor(ClassWriter cw) {
-            super(ASM5, cw);
+            super(ASM6, cw);
             this.cw = cw;
         }
 

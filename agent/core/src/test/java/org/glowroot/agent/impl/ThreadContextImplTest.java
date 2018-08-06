@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,11 @@ import com.google.common.base.Ticker;
 import org.junit.Before;
 import org.junit.Test;
 
+import org.glowroot.agent.bytecode.api.ThreadContextThreadLocal;
+import org.glowroot.agent.impl.NopTransactionService.NopTimer;
 import org.glowroot.agent.model.TimerNameImpl;
 import org.glowroot.agent.plugin.api.MessageSupplier;
 import org.glowroot.agent.plugin.api.QueryMessageSupplier;
-import org.glowroot.agent.plugin.api.internal.NopTransactionService;
-import org.glowroot.agent.plugin.api.internal.NopTransactionService.NopTimer;
-import org.glowroot.agent.plugin.api.util.FastThreadLocal.Holder;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,10 +43,10 @@ public class ThreadContextImplTest {
         MessageSupplier messageSupplier = mock(MessageSupplier.class);
         TimerNameImpl rootTimerName = mock(TimerNameImpl.class);
         Ticker ticker = mock(Ticker.class);
-        @SuppressWarnings("unchecked")
-        Holder<ThreadContextImpl> threadContextHolder = mock(Holder.class);
+        ThreadContextThreadLocal.Holder threadContextHolder =
+                mock(ThreadContextThreadLocal.Holder.class);
         threadContext = new ThreadContextImpl(transaction, null, null, messageSupplier,
-                rootTimerName, 0, false, null, false, ticker, threadContextHolder, null);
+                rootTimerName, 0, false, 0, 0, null, false, ticker, threadContextHolder, null);
     }
 
     @Test
@@ -98,15 +97,15 @@ public class ThreadContextImplTest {
 
     @Test
     public void testStartQueryEntryWithExecutionCount() {
-        assertThat(threadContext.startQueryEntry(null, "text", 0, queryMessageSupplier, timerName))
+        assertThat(threadContext.startQueryEntry(null, "text", 1, queryMessageSupplier, timerName))
                 .isEqualTo(NopTransactionService.QUERY_ENTRY);
-        assertThat(threadContext.startQueryEntry("type", null, 0, queryMessageSupplier, timerName))
+        assertThat(threadContext.startQueryEntry("type", null, 1, queryMessageSupplier, timerName))
                 .isEqualTo(NopTransactionService.QUERY_ENTRY);
-        assertThat(threadContext.startQueryEntry("type", "text", 0, null, timerName))
+        assertThat(threadContext.startQueryEntry("type", "text", 1, null, timerName))
                 .isEqualTo(NopTransactionService.QUERY_ENTRY);
-        assertThat(threadContext.startQueryEntry("type", "text", 0, queryMessageSupplier, null))
+        assertThat(threadContext.startQueryEntry("type", "text", 1, queryMessageSupplier, null))
                 .isEqualTo(NopTransactionService.QUERY_ENTRY);
-        assertThat(threadContext.startQueryEntry("type", "text", 0, queryMessageSupplier, timerName)
+        assertThat(threadContext.startQueryEntry("type", "text", 1, queryMessageSupplier, timerName)
                 .getClass().getName()).endsWith("$DummyTraceEntryOrQuery");
     }
 

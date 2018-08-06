@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,7 +55,7 @@ glowroot.controller('TransactionQueriesCtrl', [
     };
 
     $scope.sortQueryString = function (attributeName) {
-      var query = $scope.buildQueryObject({});
+      var query = $scope.buildQueryObject();
       if (attributeName !== 'total-time' || ($scope.sortAttribute === 'total-time' && !$scope.sortAsc)) {
         query['sort-attribute'] = attributeName;
       }
@@ -77,6 +77,13 @@ glowroot.controller('TransactionQueriesCtrl', [
       } else {
         return 'caret';
       }
+    };
+
+    $scope.ngAttrAriaSort = function (sortAttribute) {
+      if (sortAttribute !== $scope.sortAttribute) {
+        return undefined;
+      }
+      return $scope.sortAsc ? 'ascending' : 'descending';
     };
 
     locationChanges.on($scope, function () {
@@ -203,10 +210,9 @@ glowroot.controller('TransactionQueriesCtrl', [
         $unformattedQuery.text($scope.unformattedQuery);
         $unformattedQuery.show();
         $formattedQuery.hide();
+        $('#queryModal').find('.gt-clip').removeClass('hide');
 
         gtClipboard($clipboardIcon, '#queryModal', function () {
-          return $scope.showFormatted ? $formattedQuery[0] : $unformattedQuery[0];
-        }, function () {
           return $scope.showFormatted ? $scope.formattedQuery : $scope.unformattedQuery;
         });
 
@@ -312,7 +318,7 @@ glowroot.controller('TransactionQueriesCtrl', [
             angular.forEach($scope.queries, function (query) {
               query.timePerExecution = query.totalDurationNanos / (1000000 * query.executionCount);
               if (query.totalRows === undefined) {
-                query.rowsPerExecution = -1;
+                query.rowsPerExecution = undefined;
               } else {
                 query.rowsPerExecution = query.totalRows / query.executionCount;
               }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,31 +25,32 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import javax.annotation.Nullable;
-
 import com.google.common.base.Optional;
 import com.google.common.base.Stopwatch;
 import com.google.common.cache.CacheBuilder;
 import io.grpc.stub.StreamObserver;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.serial.Serial;
 import org.immutables.value.Value;
 import org.infinispan.util.function.SerializableFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.glowroot.central.repo.AgentRollupDao;
 import org.glowroot.central.util.ClusterManager;
 import org.glowroot.central.util.DistributedExecutionMap;
 import org.glowroot.common.live.ImmutableEntries;
+import org.glowroot.common.live.ImmutableQueries;
 import org.glowroot.common.live.LiveJvmService.AgentNotConnectedException;
 import org.glowroot.common.live.LiveJvmService.AgentUnsupportedOperationException;
 import org.glowroot.common.live.LiveJvmService.DirectoryDoesNotExistException;
 import org.glowroot.common.live.LiveJvmService.UnavailableDueToRunningInIbmJvmException;
 import org.glowroot.common.live.LiveJvmService.UnavailableDueToRunningInJreException;
 import org.glowroot.common.live.LiveTraceRepository.Entries;
+import org.glowroot.common.live.LiveTraceRepository.Queries;
 import org.glowroot.common.util.OnlyUsedByTests;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig;
+import org.glowroot.wire.api.model.AggregateOuterClass.Aggregate;
 import org.glowroot.wire.api.model.DownstreamServiceGrpc.DownstreamServiceImplBase;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.AgentConfigUpdateRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.AgentResponse;
@@ -62,9 +63,10 @@ import org.glowroot.wire.api.model.DownstreamServiceOuterClass.CapabilitiesReque
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.CentralRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.EntriesRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.EntriesResponse;
+import org.glowroot.wire.api.model.DownstreamServiceOuterClass.ExplicitGcDisabledRequest;
+import org.glowroot.wire.api.model.DownstreamServiceOuterClass.ForceGcRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.FullTraceRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.FullTraceResponse;
-import org.glowroot.wire.api.model.DownstreamServiceOuterClass.GcRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.GlobalMeta;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.GlobalMetaRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.HeaderRequest;
@@ -75,6 +77,7 @@ import org.glowroot.wire.api.model.DownstreamServiceOuterClass.HeapDumpResponse;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.HeapHistogram;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.HeapHistogramRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.HeapHistogramResponse;
+import org.glowroot.wire.api.model.DownstreamServiceOuterClass.Hello;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.HelloAck;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.JstackRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.JstackResponse;
@@ -91,6 +94,8 @@ import org.glowroot.wire.api.model.DownstreamServiceOuterClass.MatchingMethodNam
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.MethodSignature;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.MethodSignaturesRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.PreloadClasspathCacheRequest;
+import org.glowroot.wire.api.model.DownstreamServiceOuterClass.QueriesRequest;
+import org.glowroot.wire.api.model.DownstreamServiceOuterClass.QueriesResponse;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.ReweaveRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.SystemPropertiesRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.ThreadDump;
@@ -100,6 +105,7 @@ import org.glowroot.wire.api.model.TraceOuterClass.Trace;
 
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.concurrent.TimeUnit.HOURS;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
@@ -107,14 +113,14 @@ class DownstreamServiceImpl extends DownstreamServiceImplBase {
 
     private static final Logger logger = LoggerFactory.getLogger(DownstreamServiceImpl.class);
 
-    private final AgentRollupDao agentRollupDao;
+    private final GrpcCommon grpcCommon;
 
     private final DistributedExecutionMap<String, ConnectedAgent> connectedAgents;
 
     private final ReadWriteLock shuttingDownLock = new ReentrantReadWriteLock(true);
 
-    DownstreamServiceImpl(AgentRollupDao agentRollupDao, ClusterManager clusterManager) {
-        this.agentRollupDao = agentRollupDao;
+    DownstreamServiceImpl(GrpcCommon grpcCommon, ClusterManager clusterManager) {
+        this.grpcCommon = grpcCommon;
         connectedAgents = clusterManager.createDistributedExecutionMap("connectedAgents");
     }
 
@@ -152,7 +158,7 @@ class DownstreamServiceImpl extends DownstreamServiceImplBase {
             if (!result.shuttingDown()) {
                 return true;
             }
-            Thread.sleep(100);
+            MILLISECONDS.sleep(100);
         }
         // received shutting-down response for 5+ seconds
         return false;
@@ -217,9 +223,16 @@ class DownstreamServiceImpl extends DownstreamServiceImplBase {
         return response.getHeapHistogram();
     }
 
-    void gc(String agentId) throws Exception {
+    boolean isExplicitGcDisabled(String agentId) throws Exception {
+        AgentResponse responseWrapper = runOnCluster(agentId, CentralRequest.newBuilder()
+                .setExplicitGcDisabledRequest(ExplicitGcDisabledRequest.getDefaultInstance())
+                .build());
+        return responseWrapper.getExplicitGcDisabledResponse().getDisabled();
+    }
+
+    void forceGC(String agentId) throws Exception {
         runOnCluster(agentId, CentralRequest.newBuilder()
-                .setGcRequest(GcRequest.getDefaultInstance())
+                .setForceGcRequest(ForceGcRequest.getDefaultInstance())
                 .build());
     }
 
@@ -317,8 +330,7 @@ class DownstreamServiceImpl extends DownstreamServiceImplBase {
         return responseWrapper.getReweaveResponse().getClassUpdateCount();
     }
 
-    @Nullable
-    Trace.Header getHeader(String agentId, String traceId) throws Exception {
+    Trace. /*@Nullable*/ Header getHeader(String agentId, String traceId) throws Exception {
         AgentResponse responseWrapper = runOnCluster(agentId, CentralRequest.newBuilder()
                 .setHeaderRequest(HeaderRequest.newBuilder()
                         .setTraceId(traceId))
@@ -344,6 +356,24 @@ class DownstreamServiceImpl extends DownstreamServiceImplBase {
         } else {
             return ImmutableEntries.builder()
                     .addAllEntries(entries)
+                    .addAllSharedQueryTexts(response.getSharedQueryTextList())
+                    .build();
+        }
+    }
+
+    @Nullable
+    Queries getQueries(String agentId, String traceId) throws Exception {
+        AgentResponse responseWrapper = runOnCluster(agentId, CentralRequest.newBuilder()
+                .setQueriesRequest(QueriesRequest.newBuilder()
+                        .setTraceId(traceId))
+                .build());
+        QueriesResponse response = responseWrapper.getQueriesResponse();
+        List<Aggregate.Query> queries = response.getQueryList();
+        if (queries.isEmpty()) {
+            return null;
+        } else {
+            return ImmutableQueries.builder()
+                    .addAllQueries(queries)
                     .addAllSharedQueryTexts(response.getSharedQueryTextList())
                     .build();
         }
@@ -423,7 +453,7 @@ class DownstreamServiceImpl extends DownstreamServiceImplBase {
             }
             // only other case is shutting-down response
             checkState(result.shuttingDown());
-            Thread.sleep(100);
+            MILLISECONDS.sleep(100);
         }
         // received shutting-down response for 5+ seconds
         throw new AgentNotConnectedException();
@@ -450,7 +480,15 @@ class DownstreamServiceImpl extends DownstreamServiceImplBase {
         @Override
         public void onNext(AgentResponse value) {
             if (value.getMessageCase() == AgentResponse.MessageCase.HELLO) {
-                agentId = value.getHello().getAgentId();
+                Hello hello = value.getHello();
+                try {
+                    agentId = grpcCommon.getAgentId(hello.getAgentId(), hello.getPostV09());
+                } catch (Exception e) {
+                    logger.error("{} - {}",
+                            getDisplayForLogging(hello.getAgentId(), hello.getPostV09()),
+                            e.getMessage(), e);
+                    return;
+                }
                 connectedAgents.put(agentId, ConnectedAgent.this);
                 synchronized (requestObserver) {
                     requestObserver.onNext(CentralRequest.newBuilder()
@@ -536,9 +574,20 @@ class DownstreamServiceImpl extends DownstreamServiceImplBase {
                 synchronized (requestObserver) {
                     requestObserver.onNext(request);
                 }
-                int timeoutSeconds = 60;
-                if (request.getMessageCase() == CentralRequest.MessageCase.HEAP_DUMP_REQUEST) {
-                    timeoutSeconds = 180;
+                int timeoutSeconds;
+                switch (request.getMessageCase()) {
+                    case HEADER_REQUEST:
+                    case ENTRIES_REQUEST:
+                    case MAIN_THREAD_PROFILE_REQUEST:
+                    case AUX_THREAD_PROFILE_REQUEST:
+                    case FULL_TRACE_REQUEST:
+                        timeoutSeconds = 5;
+                        break;
+                    case HEAP_DUMP_REQUEST:
+                        timeoutSeconds = 180;
+                        break;
+                    default:
+                        timeoutSeconds = 60;
                 }
                 // timeout is in case agent never responds
                 // passing AgentResponse.getDefaultInstance() is just dummy (non-null) value
@@ -561,13 +610,12 @@ class DownstreamServiceImpl extends DownstreamServiceImplBase {
             }
         }
 
-        private String getDisplayForLogging(String agentRollupId) {
-            try {
-                return agentRollupDao.readAgentRollupDisplay(agentRollupId);
-            } catch (Exception e) {
-                logger.error("{} - {}", agentRollupId, e.getMessage(), e);
-                return "id:" + agentRollupId;
-            }
+        private String getDisplayForLogging(String agentId, boolean postV09) {
+            return grpcCommon.getDisplayForLogging(agentId, postV09);
+        }
+
+        private String getDisplayForLogging(String agentId) {
+            return grpcCommon.getDisplayForLogging(agentId);
         }
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,7 +56,45 @@ glowroot.config([
                     if (response.data.message) {
                       $rootScope.navbarErrorMessage += ': ' + response.data.message;
                     }
-                    var unregisterListener = $rootScope.$on('$stateChangeSuccess', function () {
+                    var unregisterListener = $rootScope.$on('gtStateChangeSuccess', function () {
+                      $rootScope.navbarErrorMessage = '';
+                      unregisterListener();
+                    });
+                  });
+            }
+            var agentRollupLayoutVersion = response.headers('Glowroot-Agent-Rollup-Layout-Version');
+            if (agentRollupLayoutVersion && $rootScope.agentRollup
+                && agentRollupLayoutVersion !== $rootScope.agentRollup.version) {
+              var agentRollupId = $rootScope.agentRollup.id;
+              $injector.get('$http').get('backend/agent-rollup-layout?agent-rollup-id=' + encodeURIComponent(agentRollupId))
+                  .then(function (response) {
+                    if ($rootScope.agentRollup && $rootScope.agentRollup.id === agentRollupId) {
+                      var oldAgentRollupDisplay = $rootScope.agentRollup.display;
+                      $rootScope.agentRollup = response.data;
+                      var newAgentRollupDisplay = $rootScope.agentRollup.display;
+                      if (newAgentRollupDisplay !== oldAgentRollupDisplay) {
+                        // hack to update agent dropdown title when display is changed
+                        var agentRollups = angular.copy($rootScope.agentRollups);
+                        angular.forEach(agentRollups, function (agentRollup) {
+                          if (agentRollup.id === agentRollupId) {
+                            agentRollup.display = response.data.display;
+                          }
+                        });
+                        // call setAgentRollups() in order to recalculate indentedDisplay
+                        $rootScope.setAgentRollups(agentRollups);
+                        $('#agentRollupDropdown > option.bs-title-option').text($rootScope.agentRollup.display);
+                        $timeout(function () {
+                          // timeout is needed so this runs after dom is updated
+                          $('#agentRollupDropdown').selectpicker('refresh');
+                        }, 100);
+                      }
+                    }
+                  }, function (response) {
+                    $rootScope.navbarErrorMessage = 'An error occurred getting agent rollup layout';
+                    if (response.data.message) {
+                      $rootScope.navbarErrorMessage += ': ' + response.data.message;
+                    }
+                    var unregisterListener = $rootScope.$on('gtStateChangeSuccess', function () {
                       $rootScope.navbarErrorMessage = '';
                       unregisterListener();
                     });
@@ -105,27 +143,17 @@ glowroot.run([
   '$rootScope',
   '$http',
   '$location',
+  '$transitions',
   '$window',
   '$state',
   '$timeout',
   'login',
   'queryStrings',
-  function ($rootScope, $http, $location, $window, $state, $timeout, login, queryStrings) {
+  'httpErrors',
+  function ($rootScope, $http, $location, $transitions, $window, $state, $timeout, login, queryStrings, httpErrors) {
 
-    $rootScope.agentId = '';
-
-    $rootScope.$on('$locationChangeSuccess', function () {
-      $rootScope.agentId = $location.search()['agent-id'] || '';
-      $rootScope.agentRollupId = $location.search()['agent-rollup-id'] || $rootScope.agentId;
-      if ($rootScope.layout) {
-        // layout doesn't exist on first page load when running under grunt serve
-        if (!$rootScope.layout.central || $rootScope.agentRollupId) {
-          var agentRollup = $rootScope.layout.agentRollups[$rootScope.agentRollupId];
-          $rootScope.agentPermissions = agentRollup ? agentRollup.permissions : undefined;
-        } else {
-          delete $rootScope.agentPermissions;
-        }
-      }
+    $transitions.onSuccess({}, function () {
+      $rootScope.$broadcast('gtStateChangeSuccess');
     });
 
     $rootScope.agentQueryString = function () {
@@ -141,34 +169,36 @@ glowroot.run([
       }
     };
 
-    $rootScope.agentRollupUrl = function (agentRollup) {
-      var query = $rootScope.agentRollupQuery(agentRollup);
+    $rootScope.agentRollupUrl = function (agentRollupId) {
+      var query = $rootScope.agentRollupQuery(agentRollupId);
       return $location.path().substring(1) + queryStrings.encodeObject(query);
     };
 
-    $rootScope.agentRollupQuery = function (agentRollup) {
+    $rootScope.isRollup = function (agentRollupId) {
+      return agentRollupId.length > 2 && agentRollupId.lastIndexOf('::') === agentRollupId.length - 2;
+    };
+
+    $rootScope.agentRollupQuery = function (agentRollupId) {
       // preserve existing query string
       var search = angular.copy($location.search());
       delete search['agent-rollup-id'];
       delete search['agent-id'];
       var query = {};
-      if (agentRollup.agent) {
-        query['agent-id'] = agentRollup.id;
+      if ($rootScope.isRollup(agentRollupId)) {
+        query['agent-rollup-id'] = agentRollupId;
       } else {
-        query['agent-rollup-id'] = agentRollup.id;
+        query['agent-id'] = agentRollupId;
       }
       angular.merge(query, search);
       return query;
     };
 
+    $rootScope.isAgentRollup = function () {
+      return $rootScope.agentRollup && $rootScope.isRollup($rootScope.agentRollup.id);
+    };
+
     $rootScope.transactionTypes = function () {
-      if (!$rootScope.layout) {
-        return [];
-      }
-      if (!$rootScope.layout.agentRollups) {
-        return [];
-      }
-      var agentRollup = $rootScope.layout.agentRollups[$rootScope.agentRollupId];
+      var agentRollup = $rootScope.agentRollup;
       if (!agentRollup) {
         return [];
       }
@@ -176,22 +206,11 @@ glowroot.run([
     };
 
     $rootScope.defaultTransactionType = function () {
-      if (!$rootScope.layout) {
-        return '';
-      }
-      if (!$rootScope.layout.agentRollups) {
-        // login page, not yet authenticated
-        return '';
-      }
-      // can't use $rootScope.agentRollupId here because this function is called from waitForLayout() function in
-      // routes.js before $rootScope.agentRollupId is set (note for testing, this is only a problem when not under grunt
-      // serve)
-      var agentRollupId = $location.search()['agent-rollup-id'] || $location.search()['agent-id'] || '';
-      var agentRollup = $rootScope.layout.agentRollups[agentRollupId];
+      var agentRollup = $rootScope.agentRollup;
       if (!agentRollup) {
         return '';
       }
-      return agentRollup.defaultDisplayedTransactionType;
+      return agentRollup.defaultTransactionType;
     };
 
     $rootScope.goToLogin = function (event) {
@@ -222,7 +241,7 @@ glowroot.run([
             if (response.data.message) {
               $rootScope.navbarErrorMessage += ': ' + response.data.message;
             }
-            var unregisterListener = $rootScope.$on('$stateChangeSuccess', function () {
+            var unregisterListener = $rootScope.$on('gtStateChangeSuccess', function () {
               $rootScope.navbarErrorMessage = '';
               unregisterListener();
             });
@@ -253,9 +272,14 @@ glowroot.run([
     // check layout every 60 seconds, this will notice when session expires and sending user to /login
     function scheduleNextCheckLayout() {
       $timeout(function () {
-        $http.get('backend/check-layout')
+        var queryString = '';
+        if ($rootScope.layout.central && $rootScope.agentRollupId) {
+          queryString = '?agent-rollup-id' + encodeURIComponent($rootScope.agentRollupId);
+        }
+        $http.get('backend/check-layout' + queryString)
             .then(function () {
-              // Glowroot-Layout-Version is returned and the http interceptor will notice and take appropriate action
+              // Glowroot-Layout-Version and Glowroot-Agent-Rollup-Layout-Version http headers are returned and the http
+              // interceptor will notice and take appropriate action
               scheduleNextCheckLayout();
             }, function () {
               // ok to ignore, e.g. temporary network disconnect
@@ -269,36 +293,6 @@ glowroot.run([
     var glowrootVersion;
 
     $rootScope.initLayout = function () {
-      var priorAgentRollupValues = $rootScope.layout.agentRollupValues;
-      // agentRollupValues is needed when using angular ng-repeat over agentRollups in case there are
-      // any agent rollup ids that start with '$', because angular silently ignores object keys starting with '$'
-      // see https://docs.angularjs.org/api/ng/directive/ngRepeat
-      $rootScope.layout.agentRollupValues = [];
-      angular.forEach($rootScope.layout.agentRollups, function (agentRollup, agentRollupId) {
-        var indent = '';
-        for (var i = 0; i < agentRollup.depth; i++) {
-          indent += '\u00a0\u00a0\u00a0\u00a0';
-        }
-        agentRollup.indentedDisplay = indent + agentRollup.display;
-        agentRollup.id = agentRollupId;
-        $rootScope.layout.agentRollupValues.push(agentRollup);
-      });
-      if (!angular.equals($rootScope.layout.agentRollupValues, priorAgentRollupValues)) {
-        // this is kinda hacky
-        var $agentRollupDropdown = $('#agentRollupDropdown');
-        if ($agentRollupDropdown.length) {
-          // need to delay a bit to give a chance for option ng-repeat to be updated
-          $timeout(function () {
-            $agentRollupDropdown.selectpicker('refresh');
-          }, 1000);
-        }
-      }
-      if (!$rootScope.layout.central || $rootScope.agentRollupId) {
-        var agentRollup = $rootScope.layout.agentRollups[$rootScope.agentRollupId];
-        $rootScope.agentPermissions = agentRollup ? agentRollup.permissions : undefined;
-      } else {
-        delete $rootScope.agentPermissions;
-      }
       var timeZoneIdMap = {};
       angular.forEach(moment.tz.names(), function (timeZoneId) {
         timeZoneIdMap[timeZoneId] = true;
@@ -323,10 +317,76 @@ glowroot.run([
         }
       }
 
+      if (!$rootScope.layout.central) {
+        $rootScope.agentId = '';
+        $rootScope.agentRollupId = '';
+        $rootScope.agentRollup = $rootScope.layout.embeddedAgentRollup;
+      }
+
       if (glowrootVersion && glowrootVersion !== $rootScope.layout.glowrootVersion) {
         forceRefreshDueToNewVersion(10);
       }
       glowrootVersion = $rootScope.layout.glowrootVersion;
+    };
+
+    $rootScope.setAgentRollups = function (agentRollups) {
+      if ($rootScope.agentRollups === undefined) {
+        $rootScope.agentRollups = [];
+      }
+      $rootScope.agentRollups.length = 0;
+      angular.forEach(agentRollups, function (agentRollup) {
+        var indent = '';
+        for (var i = 0; i < agentRollup.depth; i++) {
+          indent += '\u00a0\u00a0\u00a0\u00a0';
+        }
+        agentRollup.indentedDisplay = indent + agentRollup.lastDisplayPart;
+        $rootScope.agentRollups.push(agentRollup);
+      });
+    };
+
+    $rootScope.showRefreshAgentRollupSpinner = 0;
+    var refreshAgentRollupSpinner;
+
+    $rootScope.refreshAgentRollups = function (from, to, $scope, message) {
+      $rootScope.showRefreshAgentRollupSpinner++;
+      var $selector = $('a.gt-agent-rollup-dropdown-spinner');
+      if ($rootScope.showRefreshAgentRollupSpinner && !refreshAgentRollupSpinner && $selector.length) {
+        refreshAgentRollupSpinner = Glowroot.showSpinner($selector, null, 0.4);
+        $('a.gt-agent-rollup-dropdown-message').addClass('hide');
+      }
+      $http.get('backend/agent-rollups?from=' + from + '&to=' + to)
+          .then(function (response) {
+            $rootScope.showRefreshAgentRollupSpinner--;
+            if (!$rootScope.showRefreshAgentRollupSpinner && refreshAgentRollupSpinner) {
+              refreshAgentRollupSpinner.stop();
+              refreshAgentRollupSpinner = undefined;
+            }
+            $rootScope.setAgentRollups(response.data);
+
+            $timeout(function () {
+              // timeout is needed so this runs after dom is updated
+              $('#agentRollupDropdown').selectpicker('refresh');
+              if ($rootScope.showRefreshAgentRollupSpinner) {
+                if (refreshAgentRollupSpinner) {
+                  refreshAgentRollupSpinner.stop();
+                }
+                var $selector = $('a.gt-agent-rollup-dropdown-spinner');
+                refreshAgentRollupSpinner = Glowroot.showSpinner($selector, null, 0.4, true);
+              } else {
+                $('a.gt-agent-rollup-dropdown-message').removeClass('hide');
+                if (message) {
+                  $('a.gt-agent-rollup-dropdown-message').text(message);
+                }
+              }
+            });
+          }, function (response) {
+            $rootScope.showRefreshAgentRollupSpinner--;
+            if (!$rootScope.showRefreshAgentRollupSpinner && refreshAgentRollupSpinner) {
+              refreshAgentRollupSpinner.stop();
+              refreshAgentRollupSpinner = undefined;
+            }
+            httpErrors.handle(response, $scope);
+          });
     };
 
     $rootScope.setLayout = function (data) {
@@ -352,14 +412,14 @@ glowroot.run([
             if (response.data.message) {
               $rootScope.navbarErrorMessage += ': ' + response.data.message;
             }
-            var unregisterListener = $rootScope.$on('$stateChangeSuccess', function () {
+            var unregisterListener = $rootScope.$on('gtStateChangeSuccess', function () {
               $rootScope.navbarErrorMessage = '';
               unregisterListener();
             });
           });
     }
 
-    $rootScope.$on('$stateChangeSuccess', function () {
+    $transitions.onSuccess({}, function () {
       // google analytics is enabled on https://demo.glowroot.org using the
       // system property glowroot.internal.googleAnalyticsTrackingId
       if (window.ga) {
@@ -376,6 +436,74 @@ glowroot.run([
       // tolerant of missing whole (.2) and missing decimal (2.)
       double: /^(0|[1-9][0-9]*)?(\.[0-9]*)?$/
     };
+
+    $rootScope.METRICS = [
+      {
+        id: 'transaction',
+        display: 'Transactions',
+        heading: true,
+        disabled: true
+      },
+      {
+        id: 'transaction:average',
+        display: 'Response time (average)'
+      },
+      {
+        id: 'transaction:x-percentile',
+        display: 'Response time (X\u1d57\u02b0 percentile)'
+      },
+      // TODO
+      // {
+      //   id: 'transaction:timer-inclusive',
+      //   display: 'Breakdown metric time (inclusive)'
+      // },
+      // {
+      //   id: 'transaction:timer-exclusive',
+      //   display: 'Breakdown metric time (exclusive)'
+      // },
+      // {
+      //   id: 'transaction:timer-count',
+      //   display: 'Breakdown metric count'
+      // },
+      // {
+      //   id: 'transaction:profile-sample-count',
+      //   display: 'Profile sample count'
+      // },
+      {
+        id: 'transaction:count',
+        display: 'Count'
+      },
+      {
+        id: '-empty1-',
+        display: '',
+        disabled: true
+      },
+      {
+        id: 'error',
+        display: 'Errors',
+        heading: true,
+        disabled: true
+      },
+      {
+        id: 'error:rate',
+        display: 'Error rate (%)'
+      },
+      {
+        id: 'error:count',
+        display: 'Count'
+      },
+      {
+        id: '-empty2-',
+        display: '',
+        disabled: true
+      },
+      {
+        id: 'gauge',
+        display: 'JVM Gauges',
+        heading: true,
+        disabled: true
+      }
+    ];
 
     // don't close dropdown menus on ctrl click (e.g. for ctrl clicking and opening multiple tabs)
     $(document).on('click', '.gt-header-page-name .dropdown-menu', function (event) {
@@ -424,19 +552,35 @@ Glowroot = (function () {
     });
   }
 
-  function showSpinner(selector, callbackOnStart) {
+  function showSpinner(selector, callbackOnStart, scale, noDelay) {
     var element = $(selector)[0];
-    // z-index should be less than navbar (which is 1030)
-    var spinner = new Spinner({lines: 9, radius: 8, width: 5, zIndex: 1020});
+    var options = {
+      lines: 9,
+      radius: 8,
+      width: 5,
+      zIndex: 1020 // z-index should be less than navbar (which is 1030)
+    };
+    if (scale) {
+      options.scale = scale;
+    }
+    var spinner = new Spinner(options);
 
-    // small delay so that if there is an immediate response the spinner doesn't blink
-    var timer = setTimeout(function () {
+    if (noDelay) {
       $(element).removeClass('hide');
       spinner.spin(element);
       if (callbackOnStart) {
         callbackOnStart();
       }
-    }, 100);
+    } else {
+      // small delay so that if there is an immediate response the spinner doesn't blink
+      var timer = setTimeout(function () {
+        $(element).removeClass('hide');
+        spinner.spin(element);
+        if (callbackOnStart) {
+          callbackOnStart();
+        }
+      }, 100);
+    }
 
     return {
       stop: function () {

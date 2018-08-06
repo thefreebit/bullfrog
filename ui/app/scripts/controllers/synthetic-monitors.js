@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,6 +36,8 @@ glowroot.controller('SyntheticMonitorsCtrl', [
 
     var yvalMaps = {};
 
+    var executionCounts = {};
+
     $scope.chartNoData = true;
 
     // this is needed by nested controller chart-range.js
@@ -45,36 +47,43 @@ glowroot.controller('SyntheticMonitorsCtrl', [
 
     $scope.range = {};
 
-    $scope.agentRollupUrl = function (agentRollup) {
-      var query = $scope.agentRollupQuery(agentRollup);
+    $scope.agentRollupUrl = function (agentRollupId) {
+      var query = $scope.agentRollupQuery(agentRollupId);
       delete query['synthetic-monitor-id'];
       return $location.path().substring(1) + queryStrings.encodeObject(query);
     };
 
-    $scope.buildQueryObject = function (baseQuery) {
-      var query = baseQuery || angular.copy($location.search());
+    $scope.buildQueryObjectForChartRange = function (last) {
+      return buildQueryObject(last);
+    };
+
+    function buildQueryObject (last) {
+      var query = {};
       if ($scope.layout.central) {
-        var agentRollup = $scope.layout.agentRollups[$scope.agentRollupId];
-        if (agentRollup) {
-          if (agentRollup.agent) {
-            query['agent-id'] = $scope.agentRollupId;
-          } else {
-            query['agent-rollup-id'] = $scope.agentRollupId;
-          }
+        var agentId = $location.search()['agent-id'];
+        if (agentId) {
+          query['agent-id'] = agentId;
+        } else {
+          query['agent-rollup-id'] = $location.search()['agent-rollup-id'];
         }
       }
-      query['synthetic-monitor-id'] = $scope.syntheticMonitorIds;
-      if (!$scope.range.last) {
+      var allSyntheticMonitorIds = [];
+      angular.forEach($scope.allSyntheticMonitors, function (syntheticMonitor) {
+        allSyntheticMonitorIds.push(syntheticMonitor.id);
+      });
+      if (angular.equals($scope.syntheticMonitorIds, allSyntheticMonitorIds)) {
+        delete query['synthetic-monitor-id'];
+      } else {
+        query['synthetic-monitor-id'] = $scope.syntheticMonitorIds;
+      }
+      if (!last) {
         query.from = $scope.range.chartFrom;
         query.to = $scope.range.chartTo;
-        delete query.last;
-      } else if ($scope.range.last !== 4 * 60 * 60 * 1000) {
-        query.last = $scope.range.last;
-        delete query.from;
-        delete query.to;
+      } else if (last !== 4 * 60 * 60 * 1000) {
+        query.last = last;
       }
       return query;
-    };
+    }
 
     $scope.hideMainContent = function () {
       return !$scope.agentRollupId && !$scope.agentId;
@@ -86,8 +95,7 @@ glowroot.controller('SyntheticMonitorsCtrl', [
     }
 
     function watchListener(autoRefresh) {
-      var query = $scope.buildQueryObject({});
-      $location.search(query);
+      $location.search(buildQueryObject($scope.range.last));
       if ($scope.syntheticMonitorIds.length) {
         refreshData(autoRefresh);
       } else {
@@ -99,7 +107,7 @@ glowroot.controller('SyntheticMonitorsCtrl', [
     }
 
     function onRefreshData(data) {
-      $scope.transactionCounts = data.transactionCounts;
+      executionCounts = data.executionCounts;
       yvalMaps = {};
       var i;
       var dataSeries;
@@ -122,42 +130,22 @@ glowroot.controller('SyntheticMonitorsCtrl', [
       yvalMaps[label] = map;
     }
 
-    // using $watch instead of $watchGroup because $watchGroup has confusing behavior regarding oldValues
-    // (see https://github.com/angular/angular.js/pull/12643)
-    $scope.$watch('[range.chartFrom, range.chartTo, range.chartRefresh, range.chartAutoRefresh]',
-        function (newValues, oldValues) {
-          if (newValues !== oldValues) {
-            watchListener(newValues[3] !== oldValues[3]);
-          }
-        });
+    if (!$scope.hideMainContent()) {
+      // using $watch instead of $watchGroup because $watchGroup has confusing behavior regarding oldValues
+      // (see https://github.com/angular/angular.js/pull/12643)
+      $scope.$watch('[range.chartFrom, range.chartTo, range.chartRefresh, range.chartAutoRefresh]',
+          function (newValues, oldValues) {
+            if (newValues !== oldValues) {
+              watchListener(newValues[3] !== oldValues[3]);
+            }
+          });
 
-    $scope.$watchCollection('syntheticMonitorIds', function (newValue, oldValue) {
-      if (newValue !== oldValue || newValue.length) {
-        watchListener(false);
-      }
-    });
-
-    // TODO this is exact duplicate of same function in transaction.js
-    $scope.applyLast = function () {
-      if (!$scope.range.last) {
-        return;
-      }
-      var now = moment().startOf('second').valueOf();
-      var from = now - $scope.range.last;
-      var to = now + $scope.range.last / 10;
-      var dataPointIntervalMillis = charts.getDataPointIntervalMillis(from, to, true);
-      var revisedFrom = Math.floor(from / dataPointIntervalMillis) * dataPointIntervalMillis;
-      var revisedTo = Math.ceil(to / dataPointIntervalMillis) * dataPointIntervalMillis;
-      var revisedDataPointIntervalMillis = charts.getDataPointIntervalMillis(revisedFrom, revisedTo, true);
-      if (revisedDataPointIntervalMillis !== dataPointIntervalMillis) {
-        // expanded out to larger rollup threshold so need to re-adjust
-        // ok to use original from/to instead of revisedFrom/revisedTo
-        revisedFrom = Math.floor(from / revisedDataPointIntervalMillis) * revisedDataPointIntervalMillis;
-        revisedTo = Math.ceil(to / revisedDataPointIntervalMillis) * revisedDataPointIntervalMillis;
-      }
-      $scope.range.chartFrom = revisedFrom;
-      $scope.range.chartTo = revisedTo;
-    };
+      $scope.$watchCollection('syntheticMonitorIds', function (newValue, oldValue) {
+        if (newValue !== oldValue || newValue.length) {
+          watchListener(false);
+        }
+      });
+    }
 
     var location;
 
@@ -178,7 +166,13 @@ glowroot.controller('SyntheticMonitorsCtrl', [
       } else if (!location.last) {
         location.last = 4 * 60 * 60 * 1000;
       }
-      location.syntheticMonitorIds = $location.search()['synthetic-monitor-id'] || [];
+      location.syntheticMonitorIds = $location.search()['synthetic-monitor-id'];
+      if (!location.syntheticMonitorIds) {
+        location.syntheticMonitorIds = [];
+        angular.forEach($scope.allSyntheticMonitors, function (syntheticMonitor) {
+          location.syntheticMonitorIds.push(syntheticMonitor.id);
+        });
+      }
       if (!angular.isArray(location.syntheticMonitorIds)) {
         location.syntheticMonitorIds = [location.syntheticMonitorIds];
       }
@@ -188,7 +182,7 @@ glowroot.controller('SyntheticMonitorsCtrl', [
         $scope.range.last = location.last;
         $scope.range.chartFrom = location.chartFrom;
         $scope.range.chartTo = location.chartTo;
-        $scope.applyLast();
+        charts.applyLast($scope);
       }
     });
 
@@ -197,6 +191,11 @@ glowroot.controller('SyntheticMonitorsCtrl', [
           .then(function (response) {
             $scope.loaded = true;
             $scope.allSyntheticMonitors = response.data;
+            if (!$scope.syntheticMonitorIds.length) {
+              angular.forEach($scope.allSyntheticMonitors, function (syntheticMonitor) {
+                $scope.syntheticMonitorIds.push(syntheticMonitor.id);
+              });
+            }
           }, function (response) {
             httpErrors.handle(response, $scope);
           });
@@ -234,8 +233,7 @@ glowroot.controller('SyntheticMonitorsCtrl', [
       tooltipOpts: {
         content: function (label, xval, yval, flotItem) {
           var rollupConfig0 = $scope.layout.rollupConfigs[0];
-          var dataPointIntervalMillis = charts.getDataPointIntervalMillis($scope.range.chartFrom, $scope.range.chartTo);
-          if (dataPointIntervalMillis === rollupConfig0.intervalMillis) {
+          if (chartState.dataPointIntervalMillis === rollupConfig0.intervalMillis) {
             var tooltip = '<table class="gt-chart-tooltip">';
             tooltip += '<tr><td colspan="2" style="font-weight: 600;">' + label;
             tooltip += '</td></tr><tr><td style="padding-right: 10px;">Time:</td><td style="font-weight: 400;">';
@@ -255,9 +253,55 @@ glowroot.controller('SyntheticMonitorsCtrl', [
                 if (yval === undefined) {
                   return 'no data';
                 }
-                return $filter('gtMillis')(yval) + ' milliseconds';
+                return $filter('gtMillis')(yval) + ' milliseconds over ' + executionCounts[flotItem.seriesIndex][xval]
+                    + ' executions';
               }, ' (average value over this interval)', true);
 
+        },
+        markingContent: function (marking) {
+
+          function smartFormat(millis) {
+            var date = moment(millis);
+            if (date.valueOf() % 60000 === 0) {
+              return date.format('LT');
+            } else {
+              return date.format('LTS');
+            }
+          }
+
+          function getDisplay(syntheticMonitorId) {
+            var display;
+            angular.forEach($scope.allSyntheticMonitors, function (syntheticMonitor) {
+              if (syntheticMonitor.id === syntheticMonitorId) {
+                display = syntheticMonitor.display;
+              }
+            });
+            if (display === undefined) {
+              display = syntheticMonitorId;
+            }
+            return display;
+          }
+
+          var data = marking.data;
+          var html = '<table class="gt-chart-tooltip"><thead><tr><td colspan="2" style="font-weight: 600;">'
+              + smartFormat(data.from) + ' to ' + smartFormat(data.to) + '</td></tr></thead><tbody>';
+
+          angular.forEach(data.intervals, function (intervals, syntheticMonitorId) {
+            if ($scope.syntheticMonitorIds.length > 1) {
+              html += '<tr><td colspan="2">' + getDisplay(syntheticMonitorId) + '</td></tr>';
+            }
+            if ($scope.syntheticMonitorIds.length === 1 && intervals.length === 1) {
+              html += '<tr><td colspan="2">' + intervals[0].message + ' (' + intervals[0].count + ' results)</td></tr>';
+            } else {
+              angular.forEach(intervals, function (interval) {
+                html += '<tr><td style="padding-right: 10px;">' + smartFormat(interval.from) + ' to '
+                    + smartFormat(interval.to) + '</td><td><span style="font-weight: 600;">' + interval.message
+                    + '</span> (' + interval.count + ' results)</td></tr>';
+              });
+            }
+          });
+          html += '</tbody></table>';
+          return html;
         }
       }
     };
@@ -267,16 +311,27 @@ glowroot.controller('SyntheticMonitorsCtrl', [
     charts.initResize(chartState.plot, $scope);
     charts.startAutoRefresh($scope, 60000);
 
-    $scope.selectedAgentRollup = $scope.agentRollupId;
+    if ($scope.layout.central) {
 
-    $scope.$watchGroup(['range.chartFrom', 'range.chartTo'], function (newValue, oldValue) {
-      if (newValue !== oldValue) {
-        // need to refresh selectpicker in order to update hrefs of the items
-        $timeout(function () {
-          // timeout is needed so this runs after dom is updated
-          $('#agentRollupDropdown').selectpicker('refresh');
-        });
+      $scope.$watchGroup(['range.chartFrom', 'range.chartTo'], function (newValue, oldValue) {
+        if (newValue !== oldValue) {
+          // need to refresh selectpicker in order to update hrefs of the items
+          $timeout(function () {
+            // timeout is needed so this runs after dom is updated
+            $('#agentRollupDropdown').selectpicker('refresh');
+          });
+        }
+      });
+
+      var refreshAgentRollups = function () {
+        $scope.refreshAgentRollups($scope.range.chartFrom, $scope.range.chartTo, $scope);
+      };
+
+      $('#agentRollupDropdown').on('show.bs.select', refreshAgentRollups);
+
+      if ($scope.agentRollups === undefined) {
+        refreshAgentRollups();
       }
-    });
+    }
   }
 ]);

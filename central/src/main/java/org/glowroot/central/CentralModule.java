@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,54 +15,80 @@
  */
 package org.glowroot.central;
 
-import com.datastax.driver.core.*;
-import com.datastax.driver.core.exceptions.NoHostAvailableException;
-import com.datastax.driver.core.policies.ConstantReconnectionPolicy;
-import com.datastax.driver.core.policies.Policies;
-import com.google.common.base.*;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Maps;
-import com.google.common.io.BaseEncoding;
-import com.google.common.io.Files;
-import com.google.common.util.concurrent.RateLimiter;
-import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
-import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
-import org.checkerframework.checker.nullness.qual.RequiresNonNull;
-import org.glowroot.central.repo.CentralRepoModule;
-import org.glowroot.central.repo.ConfigRepositoryImpl.AgentConfigListener;
-import org.glowroot.central.repo.SchemaUpgrade;
-import org.glowroot.central.util.ClusterManager;
-import org.glowroot.central.util.Session;
-import org.glowroot.common.live.LiveAggregateRepository.LiveAggregateRepositoryNop;
-import org.glowroot.common.repo.RepoAdmin;
-import org.glowroot.common.repo.util.AlertingService;
-import org.glowroot.common.repo.util.HttpClient;
-import org.glowroot.common.repo.util.MailService;
-import org.glowroot.common.repo.util.RollupLevelService;
-import org.glowroot.common.util.Clock;
-import org.glowroot.common.util.PropertiesFiles;
-import org.glowroot.common.util.Version;
-import org.glowroot.ui.CommonHandler;
-import org.glowroot.ui.CreateUiModuleBuilder;
-import org.glowroot.ui.SessionMapFactory;
-import org.glowroot.ui.UiModule;
-import org.immutables.value.Value;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.Serializable;
+import java.io.Writer;
+import java.net.URISyntaxException;
+import java.nio.file.Files;
+import java.security.CodeSource;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Pattern;
 
+import com.datastax.driver.core.Cluster;
+import com.datastax.driver.core.ConsistencyLevel;
+import com.datastax.driver.core.HostDistance;
+import com.datastax.driver.core.KeyspaceMetadata;
+import com.datastax.driver.core.PoolingOptions;
+import com.datastax.driver.core.QueryOptions;
+import com.datastax.driver.core.ResultSet;
+import com.datastax.driver.core.Row;
+import com.datastax.driver.core.TimestampGenerator;
+import com.datastax.driver.core.exceptions.NoHostAvailableException;
+import com.datastax.driver.core.policies.ConstantReconnectionPolicy;
+import com.datastax.driver.core.policies.Policies;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Joiner;
+import com.google.common.base.Splitter;
+import com.google.common.base.StandardSystemProperty;
+import com.google.common.base.Stopwatch;
+import com.google.common.base.Strings;
+import com.google.common.base.Ticker;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Maps;
+import com.google.common.io.BaseEncoding;
+import com.google.common.util.concurrent.RateLimiter;
+import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
+import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.checkerframework.checker.nullness.qual.RequiresNonNull;
+import org.immutables.value.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.bridge.SLF4JBridgeHandler;
+
+import org.glowroot.central.repo.CentralRepoModule;
+import org.glowroot.central.repo.ConfigRepositoryImpl.AgentConfigListener;
+import org.glowroot.central.repo.RepoAdminImpl;
+import org.glowroot.central.repo.SchemaUpgrade;
+import org.glowroot.central.repo.Tools;
+import org.glowroot.central.util.ClusterManager;
+import org.glowroot.central.util.Session;
+import org.glowroot.common.live.LiveAggregateRepository.LiveAggregateRepositoryNop;
+import org.glowroot.common.util.Clock;
+import org.glowroot.common.util.PropertiesFiles;
+import org.glowroot.common.util.Version;
+import org.glowroot.common2.repo.util.AlertingService;
+import org.glowroot.common2.repo.util.AlertingService.IncidentKey;
+import org.glowroot.common2.repo.util.HttpClient;
+import org.glowroot.common2.repo.util.LockSet;
+import org.glowroot.common2.repo.util.MailService;
+import org.glowroot.ui.CommonHandler;
+import org.glowroot.ui.CreateUiModuleBuilder;
+import org.glowroot.ui.SessionMapFactory;
+import org.glowroot.ui.UiModule;
+
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.nio.file.StandardOpenOption.APPEND;
+import static java.nio.file.StandardOpenOption.CREATE;
 import static java.util.concurrent.TimeUnit.MINUTES;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class CentralModule {
 
@@ -72,15 +98,21 @@ public class CentralModule {
     private final ClusterManager clusterManager;
     private final Cluster cluster;
     private final Session session;
+    private final AlertingService alertingService;
     private final CentralAlertingService centralAlertingService;
-    private final RollupService rollupService;
-    private final SyntheticMonitorService syntheticMonitorService;
     private final GrpcServer grpcServer;
     private final UpdateAgentConfigIfNeededService updateAgentConfigIfNeededService;
+    private final RollupService rollupService;
+    private final SyntheticMonitorService syntheticMonitorService;
     private final UiModule uiModule;
 
     public static CentralModule create() throws Exception {
-        return new CentralModule(new File("."), false);
+        return create(getCentralDir());
+    }
+
+    @VisibleForTesting
+    public static CentralModule create(File centralDir) throws Exception {
+        return new CentralModule(centralDir, false);
     }
 
     static CentralModule createForServletContainer(File centralDir) throws Exception {
@@ -93,14 +125,15 @@ public class CentralModule {
         Session session = null;
         AlertingService alertingService = null;
         CentralAlertingService centralAlertingService = null;
-        RollupService rollupService = null;
-        SyntheticMonitorService syntheticMonitorService = null;
         GrpcServer grpcServer = null;
         UpdateAgentConfigIfNeededService updateAgentConfigIfNeededService = null;
+        RollupService rollupService = null;
+        SyntheticMonitorService syntheticMonitorService = null;
         UiModule uiModule = null;
         try {
+            Directories directories = new Directories(centralDir);
             // init logger as early as possible
-            initLogging(centralDir);
+            initLogging(directories.getConfDir(), directories.getLogDir());
             Clock clock = Clock.systemClock();
             Ticker ticker = Ticker.systemTicker();
             String version = Version.getVersion(CentralModule.class);
@@ -112,30 +145,27 @@ public class CentralModule {
                     extra = ", this can be changed by adding the JVM arg -Dglowroot.central.dir=..."
                             + " to your servlet container startup";
                 }
-                startupLogger.info("Glowroot home: {} (location for bullfrog.properties file{})",
-                        centralDir.getAbsolutePath(), extra);
+                startupLogger.info("Glowroot home: {}", centralDir.getAbsolutePath(), extra);
             }
 
-            CentralConfiguration centralConfig = getCentralConfiguration(centralDir);
-            clusterManager = ClusterManager.create(centralDir, centralConfig.jgroupsProperties());
+            CentralConfiguration centralConfig = getCentralConfiguration(directories.getConfDir());
+            clusterManager = ClusterManager.create(directories.getConfDir(),
+                    centralConfig.jgroupsProperties());
             session = connect(centralConfig);
             cluster = session.getCluster();
-            String keyspace = centralConfig.cassandraKeyspace();
 
-            KeyspaceMetadata keyspaceMetadata =
-                    checkNotNull(cluster.getMetadata().getKeyspace(keyspace));
-            SchemaUpgrade schemaUpgrade = new SchemaUpgrade(session, keyspaceMetadata, servlet);
+            SchemaUpgrade schemaUpgrade = new SchemaUpgrade(session, clock, servlet);
             Integer initialSchemaVersion = schemaUpgrade.getInitialSchemaVersion();
             if (initialSchemaVersion == null) {
-                startupLogger.info("creating glowroot central schema ...");
+                startupLogger.info("creating glowroot central schema...");
             } else {
                 schemaUpgrade.upgrade();
             }
             if (schemaUpgrade.reloadCentralConfiguration()) {
-                centralConfig = getCentralConfiguration(centralDir);
+                centralConfig = getCentralConfiguration(directories.getConfDir());
             }
             CentralRepoModule repos = new CentralRepoModule(clusterManager, session,
-                    keyspaceMetadata, centralConfig.cassandraSymmetricEncryptionKey(), clock);
+                    centralConfig.cassandraSymmetricEncryptionKey(), clock);
 
             if (initialSchemaVersion == null) {
                 schemaUpgrade.updateSchemaVersionToCurent();
@@ -145,22 +175,30 @@ public class CentralModule {
                         repos.getConfigRepository().getCentralStorageConfig());
             }
 
-            RollupLevelService rollupLevelService =
-                    new RollupLevelService(repos.getConfigRepository(), clock);
             HttpClient httpClient = new HttpClient(repos.getConfigRepository());
+            LockSet<IncidentKey> openingIncidentLockSet =
+                    clusterManager.createReplicatedLockSet("openingIncidentLockSet", 60, SECONDS);
+            LockSet<IncidentKey> resolvingIncidentLockSet =
+                    clusterManager.createReplicatedLockSet("resolvingIncidentLockSet", 60, SECONDS);
             alertingService = new AlertingService(repos.getConfigRepository(),
                     repos.getIncidentDao(), repos.getAggregateDao(), repos.getGaugeValueDao(),
-                    rollupLevelService, new MailService(), httpClient, clock);
+                    repos.getRollupLevelService(), new MailService(), httpClient,
+                    openingIncidentLockSet, resolvingIncidentLockSet, clock);
+            HeartbeatAlertingService heartbeatAlertingService = new HeartbeatAlertingService(
+                    repos.getHeartbeatDao(), repos.getIncidentDao(), alertingService,
+                    repos.getConfigRepository());
             centralAlertingService = new CentralAlertingService(repos.getConfigRepository(),
-                    repos.getHeartbeatDao(), alertingService);
+                    alertingService, heartbeatAlertingService);
 
-            grpcServer = new GrpcServer(centralConfig.grpcBindAddress(), centralConfig.grpcPort(),
-                    repos.getAgentRollupDao(), repos.getAgentConfigDao(), repos.getAggregateDao(),
-                    repos.getGaugeValueDao(), repos.getEnvironmentDao(), repos.getHeartbeatDao(),
-                    repos.getTraceDao(), centralAlertingService, clusterManager, clock, version);
+            grpcServer = new GrpcServer(centralConfig.grpcBindAddress(),
+                    centralConfig.grpcHttpPort(), centralConfig.grpcHttpsPort(),
+                    directories.getConfDir(), repos.getAgentConfigDao(), repos.getActiveAgentDao(),
+                    repos.getEnvironmentDao(), repos.getHeartbeatDao(), repos.getAggregateDao(),
+                    repos.getGaugeValueDao(), repos.getTraceDao(), repos.getV09AgentRollupDao(),
+                    centralAlertingService, clusterManager, clock, version);
             DownstreamServiceImpl downstreamService = grpcServer.getDownstreamService();
             updateAgentConfigIfNeededService = new UpdateAgentConfigIfNeededService(
-                    repos.getAgentRollupDao(), repos.getAgentConfigDao(), downstreamService, clock);
+                    repos.getActiveAgentDao(), repos.getAgentConfigDao(), downstreamService, clock);
             UpdateAgentConfigIfNeededService updateAgentConfigIfNeededServiceEffectivelyFinal =
                     updateAgentConfigIfNeededService;
             repos.getConfigRepository().addAgentConfigListener(new AgentConfigListener() {
@@ -171,29 +209,29 @@ public class CentralModule {
                             .updateAgentConfigIfNeededAndConnected(agentId);
                 }
             });
-            rollupService = new RollupService(repos.getAgentRollupDao(), repos.getAggregateDao(),
+            rollupService = new RollupService(repos.getActiveAgentDao(), repos.getAggregateDao(),
                     repos.getGaugeValueDao(), repos.getSyntheticResultDao(), centralAlertingService,
                     clock);
-            syntheticMonitorService = new SyntheticMonitorService(repos.getAgentRollupDao(),
+            syntheticMonitorService = new SyntheticMonitorService(repos.getActiveAgentDao(),
                     repos.getConfigRepository(), repos.getIncidentDao(), alertingService,
-                    repos.getSyntheticResultDao(), ticker, clock);
+                    repos.getSyntheticResultDao(), clusterManager, ticker, clock, version);
 
             ClusterManager clusterManagerEffectivelyFinal = clusterManager;
             uiModule = new CreateUiModuleBuilder()
                     .central(true)
                     .servlet(servlet)
-                    .offline(false)
+                    .offlineViewer(false)
                     .bindAddress(centralConfig.uiBindAddress())
                     .port(centralConfig.uiPort())
                     .https(centralConfig.uiHttps())
                     .contextPath(centralConfig.uiContextPath())
-                    .confDir(centralDir)
-                    .logDir(centralDir)
+                    .confDir(directories.getConfDir())
+                    .logDir(directories.getLogDir())
                     .logFileNamePattern(Pattern.compile("glowroot-central.*\\.log"))
                     .clock(clock)
                     .liveJvmService(new LiveJvmServiceImpl(downstreamService))
                     .configRepository(repos.getConfigRepository())
-                    .agentRollupRepository(repos.getAgentRollupDao())
+                    .activeAgentRepository(repos.getActiveAgentDao())
                     .environmentRepository(repos.getEnvironmentDao())
                     .transactionTypeRepository(repos.getTransactionTypeDao())
                     .traceAttributeNameRepository(repos.getTraceAttributeNameDao())
@@ -202,10 +240,10 @@ public class CentralModule {
                     .gaugeValueRepository(repos.getGaugeValueDao())
                     .syntheticResultRepository(repos.getSyntheticResultDao())
                     .incidentRepository(repos.getIncidentDao())
-                    .repoAdmin(new NopRepoAdmin())
-                    .rollupLevelService(rollupLevelService)
-                    .liveTraceRepository(new LiveTraceRepositoryImpl(downstreamService,
-                            repos.getAgentRollupDao()))
+                    .repoAdmin(new RepoAdminImpl(session, repos.getActiveAgentDao(),
+                            repos.getConfigRepository(), session.getCassandraWriteMetrics(), clock))
+                    .rollupLevelService(repos.getRollupLevelService())
+                    .liveTraceRepository(new LiveTraceRepositoryImpl(downstreamService))
                     .liveAggregateRepository(new LiveAggregateRepositoryNop())
                     .liveWeavingService(new LiveWeavingServiceImpl(downstreamService))
                     .sessionMapFactory(new SessionMapFactory() {
@@ -230,17 +268,17 @@ public class CentralModule {
             if (uiModule != null) {
                 uiModule.close();
             }
-            if (updateAgentConfigIfNeededService != null) {
-                updateAgentConfigIfNeededService.close();
-            }
-            if (grpcServer != null) {
-                grpcServer.close();
-            }
             if (syntheticMonitorService != null) {
                 syntheticMonitorService.close();
             }
             if (rollupService != null) {
                 rollupService.close();
+            }
+            if (updateAgentConfigIfNeededService != null) {
+                updateAgentConfigIfNeededService.close();
+            }
+            if (grpcServer != null) {
+                grpcServer.close();
             }
             if (centralAlertingService != null) {
                 centralAlertingService.close();
@@ -262,11 +300,12 @@ public class CentralModule {
         this.clusterManager = clusterManager;
         this.cluster = cluster;
         this.session = session;
+        this.alertingService = alertingService;
         this.centralAlertingService = centralAlertingService;
-        this.rollupService = rollupService;
-        this.syntheticMonitorService = syntheticMonitorService;
         this.grpcServer = grpcServer;
         this.updateAgentConfigIfNeededService = updateAgentConfigIfNeededService;
+        this.rollupService = rollupService;
+        this.syntheticMonitorService = syntheticMonitorService;
         this.uiModule = uiModule;
     }
 
@@ -276,23 +315,34 @@ public class CentralModule {
 
     public void shutdown() {
         if (startupLogger != null) {
-            startupLogger.info("shutting down ...");
+            startupLogger.info("shutting down...");
         }
         try {
             // close down external inputs first (ui and grpc)
             uiModule.close();
+            syntheticMonitorService.close();
+            rollupService.close();
             // updateAgentConfigIfNeededService depends on grpc downstream, so must be shutdown
             // before grpc
             updateAgentConfigIfNeededService.close();
             grpcServer.close();
-            syntheticMonitorService.close();
-            rollupService.close();
             centralAlertingService.close();
+            alertingService.close();
             session.close();
             cluster.close();
             clusterManager.close();
             if (startupLogger != null) {
                 startupLogger.info("shutdown complete");
+                for (Map.Entry<Thread, StackTraceElement[]> entry : Thread.getAllStackTraces()
+                        .entrySet()) {
+                    Thread thread = entry.getKey();
+                    StackTraceElement[] stackTrace = entry.getValue();
+                    if (!thread.isDaemon() && thread != Thread.currentThread()
+                            && stackTrace.length != 0) {
+                        startupLogger.info("Found non-daemon thread after shutdown: {}\n    {}",
+                                thread.getName(), Joiner.on("\n    ").join(stackTrace));
+                    }
+                }
             }
         } catch (Throwable t) {
             if (startupLogger == null) {
@@ -304,34 +354,26 @@ public class CentralModule {
     }
 
     static void createSchema() throws Exception {
-        File centralDir = new File(".");
-        initLogging(centralDir);
+        Directories directories = new Directories(getCentralDir());
+        initLogging(directories.getConfDir(), directories.getLogDir());
         String version = Version.getVersion(CentralModule.class);
         startupLogger.info("running create-schema command");
         startupLogger.info("Glowroot version: {}", version);
         startupLogger.info("Java version: {}", StandardSystemProperty.JAVA_VERSION.value());
 
-        File propFile = new File(centralDir, "bullfrog-central.properties");
-        Properties props = PropertiesFiles.load(propFile);
-        CentralConfiguration centralConfig = getCentralConfiguration(props);
-
+        CentralConfiguration centralConfig = getCentralConfiguration(directories.getConfDir());
         Session session = null;
         Cluster cluster = null;
-        String keyspace;
         try {
             session = connect(centralConfig);
             cluster = session.getCluster();
-            keyspace = centralConfig.cassandraKeyspace();
-
-            KeyspaceMetadata keyspaceMetadata =
-                    checkNotNull(cluster.getMetadata().getKeyspace(keyspace));
-            SchemaUpgrade schemaUpgrade = new SchemaUpgrade(session, keyspaceMetadata, false);
+            SchemaUpgrade schemaUpgrade = new SchemaUpgrade(session, Clock.systemClock(), false);
             if (schemaUpgrade.getInitialSchemaVersion() != null) {
                 startupLogger.error("glowroot central schema already exists, exiting");
                 return;
             }
-            startupLogger.info("creating glowroot central schema ...");
-            new CentralRepoModule(ClusterManager.create(), session, keyspaceMetadata,
+            startupLogger.info("creating glowroot central schema...");
+            new CentralRepoModule(ClusterManager.create(), session,
                     centralConfig.cassandraSymmetricEncryptionKey(), Clock.systemClock());
             schemaUpgrade.updateSchemaVersionToCurent();
         } finally {
@@ -346,8 +388,8 @@ public class CentralModule {
     }
 
     static void runCommand(String commandName, List<String> args) throws Exception {
-        File centralDir = new File(".");
-        initLogging(centralDir);
+        Directories directories = new Directories(getCentralDir());
+        initLogging(directories.getConfDir(), directories.getLogDir());
         Command command;
         if (commandName.equals("setup-admin-user")) {
             if (args.size() != 2) {
@@ -355,36 +397,47 @@ public class CentralModule {
                         "setup-admin-user requires two args (username and password), exiting");
                 return;
             }
-            command = CentralRepoModule::setupAdminUser;
+            command = Tools::setupAdminUser;
+        } else if (commandName.equals("truncate-all-data")) {
+            if (!args.isEmpty()) {
+                startupLogger.error("truncate-all-data does not accept any args, exiting");
+                return;
+            }
+            command = Tools::truncateAllData;
+        } else if (commandName.equals("execute-range-deletes")) {
+            if (args.size() != 2) {
+                startupLogger.error("execute-range-deletes requires two args (partial table name"
+                        + " and rollup level), exiting");
+                return;
+            }
+            String partialTableName = args.get(0);
+            if (!partialTableName.equals("query") && !partialTableName.equals("service_call")
+                    && !partialTableName.equals("profile")) {
+                startupLogger.error("partial table name must be one of \"query\", \"service_call\""
+                        + " or \"profile\", exiting");
+                return;
+            }
+            command = Tools::executeDeletes;
         } else {
             startupLogger.error("unexpected command '{}', exiting", commandName);
             return;
         }
-        startupLogger.info("running {}", commandName);
 
         String version = Version.getVersion(CentralModule.class);
         startupLogger.info("Glowroot version: {}", version);
         startupLogger.info("Java version: {}", StandardSystemProperty.JAVA_VERSION.value());
 
-        File propFile = new File(centralDir, "bullfrog-central.properties");
-        Properties props = PropertiesFiles.load(propFile);
-        CentralConfiguration centralConfig = getCentralConfiguration(props);
-
+        CentralConfiguration centralConfig = getCentralConfiguration(directories.getConfDir());
         Session session = null;
         Cluster cluster = null;
         boolean success;
         try {
             session = connect(centralConfig);
             cluster = session.getCluster();
-            String keyspace = centralConfig.cassandraKeyspace();
-
-            KeyspaceMetadata keyspaceMetadata =
-                    checkNotNull(cluster.getMetadata().getKeyspace(keyspace));
-            SchemaUpgrade schemaUpgrade = new SchemaUpgrade(session, keyspaceMetadata, false);
+            SchemaUpgrade schemaUpgrade = new SchemaUpgrade(session, Clock.systemClock(), false);
             Integer initialSchemaVersion = schemaUpgrade.getInitialSchemaVersion();
             if (initialSchemaVersion == null) {
-                startupLogger.info("creating glowroot central schema ...",
-                        keyspace);
+                startupLogger.info("creating glowroot central schema...");
             } else if (initialSchemaVersion != schemaUpgrade.getCurrentSchemaVersion()) {
                 startupLogger.warn("running a version of glowroot central that does not match the"
                         + " glowroot central schema version (expecting glowroot central schema"
@@ -392,14 +445,14 @@ public class CentralModule {
                         schemaUpgrade.getCurrentSchemaVersion(), initialSchemaVersion);
                 return;
             }
-            CentralRepoModule repos =
-                    new CentralRepoModule(ClusterManager.create(), session, keyspaceMetadata,
-                            centralConfig.cassandraSymmetricEncryptionKey(), Clock.systemClock());
+            CentralRepoModule repos = new CentralRepoModule(ClusterManager.create(), session,
+                    centralConfig.cassandraSymmetricEncryptionKey(), Clock.systemClock());
             if (initialSchemaVersion == null) {
                 schemaUpgrade.updateSchemaVersionToCurent();
                 startupLogger.info("glowroot central schema created");
             }
-            success = command.run(repos, args);
+            startupLogger.info("running {}", commandName);
+            success = command.run(new Tools(session, repos), args);
         } finally {
             if (session != null) {
                 session.close();
@@ -413,20 +466,118 @@ public class CentralModule {
         }
     }
 
-    private static CentralConfiguration getCentralConfiguration(File centralDir)
+    private static CentralConfiguration getCentralConfiguration(File confDir) throws IOException {
+        Map<String, String> properties = getPropertiesFromConfigFile(confDir);
+        properties = overlayAnySystemProperties(properties);
+        ImmutableCentralConfiguration.Builder builder = ImmutableCentralConfiguration.builder();
+        String cassandraContactPoints = properties.get("glowroot.cassandra.contactPoints");
+        if (!Strings.isNullOrEmpty(cassandraContactPoints)) {
+            builder.cassandraContactPoint(Splitter.on(',').trimResults().omitEmptyStrings()
+                    .splitToList(cassandraContactPoints));
+        }
+        String cassandraUsername = properties.get("glowroot.cassandra.username");
+        if (!Strings.isNullOrEmpty(cassandraUsername)) {
+            builder.cassandraUsername(cassandraUsername);
+        }
+        String cassandraPassword = properties.get("glowroot.cassandra.password");
+        if (!Strings.isNullOrEmpty(cassandraPassword)) {
+            builder.cassandraPassword(cassandraPassword);
+        }
+        String cassandraKeyspace = properties.get("glowroot.cassandra.keyspace");
+        if (!Strings.isNullOrEmpty(cassandraKeyspace)) {
+            builder.cassandraKeyspace(cassandraKeyspace);
+        }
+        String cassandraConsistencyLevel = properties.get("glowroot.cassandra.consistencyLevel");
+        if (!Strings.isNullOrEmpty(cassandraConsistencyLevel)) {
+            ConsistencyLevel consistencyLevel = ConsistencyLevel.valueOf(cassandraConsistencyLevel);
+            builder.cassandraConsistencyLevel(consistencyLevel);
+        }
+        String cassandraSymmetricEncryptionKey =
+                properties.get("glowroot.cassandra.symmetricEncryptionKey");
+        if (!Strings.isNullOrEmpty(cassandraSymmetricEncryptionKey)) {
+            if (!cassandraSymmetricEncryptionKey.matches("[0-9a-fA-F]{32}")) {
+                throw new IllegalStateException("Invalid cassandra.symmetricEncryptionKey value,"
+                        + " it must be a 32 character hex string");
+            }
+            builder.cassandraSymmetricEncryptionKey(cassandraSymmetricEncryptionKey);
+        }
+        String cassandraPoolMaxRequestsPerConnection =
+                properties.get("glowroot.cassandra.pool.maxRequestsPerConnection");
+        if (!Strings.isNullOrEmpty(cassandraPoolMaxRequestsPerConnection)) {
+            builder.cassandraPoolMaxRequestsPerConnection(
+                    Integer.parseInt(cassandraPoolMaxRequestsPerConnection));
+        }
+        String cassandraPoolMaxQueueSize = properties.get("glowroot.cassandra.pool.maxQueueSize");
+        if (!Strings.isNullOrEmpty(cassandraPoolMaxQueueSize)) {
+            builder.cassandraPoolMaxQueueSize(Integer.parseInt(cassandraPoolMaxQueueSize));
+        }
+        String cassandraPoolTimeoutMillis = properties.get("glowroot.cassandra.pool.timeoutMillis");
+        if (!Strings.isNullOrEmpty(cassandraPoolTimeoutMillis)) {
+            builder.cassandraPoolTimeoutMillis(Integer.parseInt(cassandraPoolTimeoutMillis));
+        }
+        String grpcBindAddress = properties.get("glowroot.grpc.bindAddress");
+        if (!Strings.isNullOrEmpty(grpcBindAddress)) {
+            builder.grpcBindAddress(grpcBindAddress);
+        }
+        String grpcHttpPortText = properties.get("glowroot.grpc.httpPort");
+        if (!Strings.isNullOrEmpty(grpcHttpPortText)) {
+            if (grpcHttpPortText.trim().equalsIgnoreCase("none")) {
+                builder.grpcHttpPort(null);
+            } else {
+                builder.grpcHttpPort(Integer.parseInt(grpcHttpPortText));
+            }
+        }
+        String grpcHttpsPortText = properties.get("glowroot.grpc.httpsPort");
+        if (!Strings.isNullOrEmpty(grpcHttpsPortText)) {
+            if (grpcHttpsPortText.trim().equalsIgnoreCase("none")) {
+                builder.grpcHttpsPort(null);
+            } else {
+                builder.grpcHttpsPort(Integer.parseInt(grpcHttpsPortText));
+            }
+        }
+        String uiBindAddress = properties.get("glowroot.ui.bindAddress");
+        if (!Strings.isNullOrEmpty(uiBindAddress)) {
+            builder.uiBindAddress(uiBindAddress);
+        }
+        String uiPortText = properties.get("glowroot.ui.port");
+        if (!Strings.isNullOrEmpty(uiPortText)) {
+            builder.uiPort(Integer.parseInt(uiPortText));
+        }
+        String uiHttpsText = properties.get("glowroot.ui.https");
+        if (!Strings.isNullOrEmpty(uiHttpsText)) {
+            builder.uiHttps(Boolean.parseBoolean(uiHttpsText));
+        }
+        String uiContextPath = properties.get("glowroot.ui.contextPath");
+        if (!Strings.isNullOrEmpty(uiContextPath)) {
+            builder.uiContextPath(uiContextPath);
+        }
+        for (Map.Entry<String, String> entry : properties.entrySet()) {
+            String propertyName = entry.getKey();
+            if (propertyName.startsWith("glowroot.jgroups.")) {
+                String propertyValue = entry.getValue();
+                if (!Strings.isNullOrEmpty(propertyValue)) {
+                    builder.putJgroupsProperties(propertyName.substring("glowroot.".length()),
+                            propertyValue);
+                }
+            }
+        }
+        return builder.build();
+    }
+
+    private static Map<String, String> getPropertiesFromConfigFile(File confDir)
             throws IOException {
-        File propFile = new File(centralDir, "bullfrog-central.properties");
+        File propFile = new File(confDir, "bullfrog-central.properties");
         if (!propFile.exists()) {
             // upgrade from 0.9.5 to 0.9.6
-            File oldPropFile = new File(centralDir, "bullfrog-server.properties");
+            File oldPropFile = new File(confDir, "bullfrog-server.properties");
             if (!oldPropFile.exists()) {
-                return ImmutableCentralConfiguration.builder().build();
+                return ImmutableMap.of();
             }
-            java.nio.file.Files.copy(oldPropFile.toPath(), propFile.toPath());
+            Files.copy(oldPropFile.toPath(), propFile.toPath());
         }
         Properties props = PropertiesFiles.load(propFile);
 
-        Map<String, String> upgradePropertyNames = Maps.newHashMap();
+        Map<String, String> upgradePropertyNames = new HashMap<>();
         // upgrade from 0.9.4 to 0.9.5
         if (props.containsKey("cassandra.contact.points")) {
             upgradePropertyNames.put("cassandra.contact.points=", "cassandra.contactPoints=");
@@ -435,7 +586,7 @@ public class CentralModule {
         String jgroupsConfigurationFile = props.getProperty("jgroups.configurationFile");
         if (("default-jgroups-udp.xml".equals(jgroupsConfigurationFile)
                 || "default-jgroups-tcp.xml".equals(jgroupsConfigurationFile))
-                && !new File(centralDir, jgroupsConfigurationFile).exists()) {
+                && !new File(confDir, jgroupsConfigurationFile).exists()) {
             // using one of the included jgroups xml files prior to 0.9.16
             upgradePropertyNames.put("jgroups.configurationFile=default-jgroups-udp.xml",
                     "jgroups.configurationFile=jgroups-udp.xml");
@@ -463,14 +614,15 @@ public class CentralModule {
             props = PropertiesFiles.load(propFile);
         }
         // upgrade from 0.9.15 to 0.9.16
-        File secretFile = new File(centralDir, "secret");
+        File secretFile = new File(confDir, "secret");
         if (secretFile.exists()) {
             String existingValue = props.getProperty("cassandra.symmetricEncryptionKey");
             if (Strings.isNullOrEmpty(existingValue)) {
-                byte[] bytes = Files.toByteArray(secretFile);
+                byte[] bytes = Files.readAllBytes(secretFile.toPath());
                 String newValue = BaseEncoding.base16().lowerCase().encode(bytes);
                 if (existingValue == null) {
-                    try (FileWriter out = new FileWriter(propFile, true)) {
+                    try (Writer out =
+                            Files.newBufferedWriter(propFile.toPath(), UTF_8, CREATE, APPEND)) {
                         out.write("\ncassandra.symmetricEncryptionKey=");
                         out.write(newValue);
                         out.write("\n");
@@ -488,75 +640,26 @@ public class CentralModule {
                 }
             }
         }
-        return getCentralConfiguration(props);
+        Map<String, String> properties = new HashMap<>();
+        for (String key : props.stringPropertyNames()) {
+            String value = props.getProperty(key);
+            if (value != null) {
+                properties.put("glowroot." + key, value);
+            }
+        }
+        return properties;
     }
 
-    private static CentralConfiguration getCentralConfiguration(Properties props) {
-        ImmutableCentralConfiguration.Builder builder = ImmutableCentralConfiguration.builder();
-        String cassandraContactPoints = props.getProperty("cassandra.contactPoints");
-        if (!Strings.isNullOrEmpty(cassandraContactPoints)) {
-            builder.cassandraContactPoint(Splitter.on(',').trimResults().omitEmptyStrings()
-                    .splitToList(cassandraContactPoints));
-        }
-        String cassandraKeyspace = props.getProperty("cassandra.keyspace");
-        if (!Strings.isNullOrEmpty(cassandraKeyspace)) {
-            builder.cassandraKeyspace(cassandraKeyspace);
-        }
-        String cassandraConsistencyLevel = props.getProperty("cassandra.consistencyLevel");
-        if (!Strings.isNullOrEmpty(cassandraConsistencyLevel)) {
-            ConsistencyLevel consistencyLevel = ConsistencyLevel.valueOf(cassandraConsistencyLevel);
-            builder.cassandraConsistencyLevel(consistencyLevel);
-        }
-        String cassandraSymmetricEncryptionKey =
-                props.getProperty("cassandra.symmetricEncryptionKey");
-        if (!Strings.isNullOrEmpty(cassandraSymmetricEncryptionKey)) {
-            if (!cassandraSymmetricEncryptionKey.matches("[0-9a-fA-F]{32}")) {
-                throw new IllegalStateException("Invalid cassandra.symmetricEncryptionKey value,"
-                        + " it must be a 32 character hex string");
-            }
-            builder.cassandraSymmetricEncryptionKey(cassandraSymmetricEncryptionKey);
-        }
-        String cassandraUsername = props.getProperty("cassandra.username");
-        if (!Strings.isNullOrEmpty(cassandraUsername)) {
-            builder.cassandraUsername(cassandraUsername);
-        }
-        String cassandraPassword = props.getProperty("cassandra.password");
-        if (!Strings.isNullOrEmpty(cassandraPassword)) {
-            builder.cassandraPassword(cassandraPassword);
-        }
-        String grpcBindAddress = props.getProperty("grpc.bindAddress");
-        if (!Strings.isNullOrEmpty(grpcBindAddress)) {
-            builder.grpcBindAddress(grpcBindAddress);
-        }
-        String grpcPortText = props.getProperty("grpc.port");
-        if (!Strings.isNullOrEmpty(grpcPortText)) {
-            builder.grpcPort(Integer.parseInt(grpcPortText));
-        }
-        String uiBindAddress = props.getProperty("ui.bindAddress");
-        if (!Strings.isNullOrEmpty(uiBindAddress)) {
-            builder.uiBindAddress(uiBindAddress);
-        }
-        String uiPortText = props.getProperty("ui.port");
-        if (!Strings.isNullOrEmpty(uiPortText)) {
-            builder.uiPort(Integer.parseInt(uiPortText));
-        }
-        String uiHttpsText = props.getProperty("ui.https");
-        if (!Strings.isNullOrEmpty(uiHttpsText)) {
-            builder.uiHttps(Boolean.parseBoolean(uiHttpsText));
-        }
-        String uiContextPath = props.getProperty("ui.contextPath");
-        if (!Strings.isNullOrEmpty(uiContextPath)) {
-            builder.uiContextPath(uiContextPath);
-        }
-        for (String propName : props.stringPropertyNames()) {
-            if (propName.startsWith("jgroups.")) {
-                String propValue = props.getProperty(propName);
-                if (!Strings.isNullOrEmpty(propValue)) {
-                    builder.putJgroupsProperties(propName, propValue);
-                }
+    private static Map<String, String> overlayAnySystemProperties(Map<String, String> props) {
+        Map<String, String> properties = Maps.newHashMap(props);
+        for (Map.Entry<Object, Object> entry : System.getProperties().entrySet()) {
+            if (entry.getKey() instanceof String && entry.getValue() instanceof String
+                    && ((String) entry.getKey()).startsWith("glowroot.")) {
+                String key = (String) entry.getKey();
+                properties.put(key, (String) entry.getValue());
             }
         }
-        return builder.build();
+        return properties;
     }
 
     @RequiresNonNull("startupLogger")
@@ -577,14 +680,13 @@ public class CentralModule {
         NoHostAvailableException lastException = null;
         while (stopwatch.elapsed(MINUTES) < 30) {
             try {
+                String keyspace = centralConfig.cassandraKeyspace();
                 if (session == null) {
                     session = new Session(
-                            createCluster(centralConfig, defaultTimestampGenerator).connect());
+                            createCluster(centralConfig, defaultTimestampGenerator).connect(),
+                            keyspace);
                 }
                 String cassandraVersion = verifyCassandraVersion(session);
-                String keyspace = centralConfig.cassandraKeyspace();
-                session.createKeyspaceIfNotExists(keyspace);
-                session.execute("use " + keyspace);
                 KeyspaceMetadata keyspaceMetadata =
                         checkNotNull(session.getCluster().getMetadata().getKeyspace(keyspace));
                 String replicationFactor =
@@ -600,26 +702,26 @@ public class CentralModule {
                 startupLogger.debug(e.getMessage(), e);
                 lastException = e;
                 if (session == null) {
-                    waitingForCassandraLogger.info("waiting for Cassandra ({}) ...",
+                    waitingForCassandraLogger.info("waiting for Cassandra ({})...",
                             Joiner.on(",").join(centralConfig.cassandraContactPoint()));
                 } else {
                     waitingForCassandraReplicasLogger.info("waiting for enough Cassandra replicas"
-                            + " to run queries at consistency level {} ({}) ...",
+                            + " to run queries at consistency level {} ({})...",
                             centralConfig.cassandraConsistencyLevel(),
                             Joiner.on(",").join(centralConfig.cassandraContactPoint()));
                 }
-                Thread.sleep(1000);
+                SECONDS.sleep(1);
             } catch (RuntimeException e) {
                 // clean up
                 if (session != null) {
-                    session.close();
+                    session.getCluster().close();
                 }
                 throw e;
             }
         }
         // clean up
         if (session != null) {
-            session.close();
+            session.getCluster().close();
         }
         checkNotNull(lastException);
         throw lastException;
@@ -632,15 +734,17 @@ public class CentralModule {
                         centralConfig.cassandraContactPoint().toArray(new String[0]))
                 // aggressive reconnect policy seems ok since not many clients
                 .withReconnectionPolicy(new ConstantReconnectionPolicy(1000))
-                // let driver know that only idempotent queries are used so it will retry on
-                // timeout
+                // let driver know that only idempotent queries are used so it will retry on timeout
                 .withQueryOptions(new QueryOptions()
                         .setDefaultIdempotence(true)
                         .setConsistencyLevel(centralConfig.cassandraConsistencyLevel()))
-                // central runs lots of parallel async queries and is very spiky since all
-                // aggregates come in right after each minute marker
-                .withPoolingOptions(
-                        new PoolingOptions().setMaxQueueSize(Session.MAX_CONCURRENT_QUERIES))
+                .withPoolingOptions(new PoolingOptions()
+                        .setMaxRequestsPerConnection(HostDistance.LOCAL,
+                                centralConfig.cassandraPoolMaxRequestsPerConnection())
+                        .setMaxRequestsPerConnection(HostDistance.REMOTE,
+                                centralConfig.cassandraPoolMaxRequestsPerConnection())
+                        .setMaxQueueSize(centralConfig.cassandraPoolMaxQueueSize())
+                        .setPoolTimeoutMillis(centralConfig.cassandraPoolTimeoutMillis()))
                 .withTimestampGenerator(defaultTimestampGenerator);
         String cassandraUsername = centralConfig.cassandraUsername();
         if (!cassandraUsername.isEmpty()) {
@@ -664,35 +768,49 @@ public class CentralModule {
         return cassandraVersion;
     }
 
+    private static File getCentralDir() throws URISyntaxException {
+        CodeSource codeSource = CentralModule.class.getProtectionDomain().getCodeSource();
+        if (codeSource == null) {
+            // this should only happen under test
+            return new File(".");
+        }
+        File codeSourceFile = new File(codeSource.getLocation().toURI());
+        if (codeSourceFile.getName().endsWith(".jar")) {
+            File centralDir = codeSourceFile.getParentFile();
+            if (centralDir == null) {
+                return new File(".");
+            } else {
+                return centralDir;
+            }
+        } else {
+            // this should only happen under test
+            return new File(".");
+        }
+    }
+
     // TODO report checker framework issue that occurs without this suppression
     @EnsuresNonNull("startupLogger")
     @SuppressWarnings("contracts.postcondition.not.satisfied")
-    private static void initLogging(File centralDir) throws IOException {
-        File logbackXmlOverride = new File(centralDir, "logback.xml");
+    private static void initLogging(File confDir, File logDir) {
+        File logbackXmlOverride = new File(confDir, "logback.xml");
         if (logbackXmlOverride.exists()) {
             System.setProperty("logback.configurationFile", logbackXmlOverride.getAbsolutePath());
         }
-        String explicitLogDirPath = System.getProperty("glowroot.log.dir");
+        String prior = System.getProperty("glowroot.log.dir");
+        System.setProperty("glowroot.log.dir", logDir.getPath());
         try {
-            if (Strings.isNullOrEmpty(explicitLogDirPath)) {
-                System.setProperty("glowroot.log.dir", centralDir.getPath());
-            } else {
-                File explicitLogDir = new File(explicitLogDirPath);
-                explicitLogDir.mkdirs();
-                if (!explicitLogDir.isDirectory()) {
-                    throw new IOException(
-                            "Could not create log directory: " + explicitLogDir.getAbsolutePath());
-                }
-            }
             startupLogger = LoggerFactory.getLogger("org.glowroot");
         } finally {
             System.clearProperty("logback.configurationFile");
-            if (explicitLogDirPath == null) {
+            if (prior == null) {
                 System.clearProperty("glowroot.log.dir");
-            } else if (explicitLogDirPath.isEmpty()) {
-                System.setProperty("glowroot.log.dir", "");
+            } else {
+                System.setProperty("glowroot.log.dir", prior);
             }
         }
+        // install jul-to-slf4j bridge for guava/grpc/protobuf which log to jul
+        SLF4JBridgeHandler.removeHandlersForRootLogger();
+        SLF4JBridgeHandler.install();
     }
 
     @Value.Immutable
@@ -729,13 +847,39 @@ public class CentralModule {
         }
 
         @Value.Default
+        int cassandraPoolMaxRequestsPerConnection() {
+            return 1024;
+        }
+
+        @Value.Default
+        int cassandraPoolMaxQueueSize() {
+            // central runs lots of parallel async queries and is very spiky since all aggregates
+            // come in right after each minute marker
+            return 10000;
+        }
+
+        @Value.Default
+        int cassandraPoolTimeoutMillis() {
+            // central runs lots of parallel async queries and is very spiky since all aggregates
+            // come in right after each minute marker
+            return 10000;
+        }
+
+        @Value.Default
         String grpcBindAddress() {
             return "0.0.0.0";
         }
 
         @Value.Default
-        int grpcPort() {
+        @Nullable
+        Integer grpcHttpPort() {
             return 8181;
+        }
+
+        @Value.Default
+        @Nullable
+        Integer grpcHttpsPort() {
+            return null;
         }
 
         @Value.Default
@@ -761,15 +905,6 @@ public class CentralModule {
         abstract Map<String, String> jgroupsProperties();
     }
 
-    private static class NopRepoAdmin implements RepoAdmin {
-        @Override
-        public void deleteAllData() throws Exception {}
-        @Override
-        public void defrag() throws Exception {}
-        @Override
-        public void resizeIfNeeded() throws Exception {}
-    }
-
     private static class RateLimitedLogger {
 
         private final Logger logger;
@@ -790,6 +925,6 @@ public class CentralModule {
     }
 
     private interface Command {
-        boolean run(CentralRepoModule repos, List<String> args) throws Exception;
+        boolean run(Tools tools, List<String> args) throws Exception;
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2016 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,21 +17,22 @@ package org.glowroot.agent.weaving;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
-
-import javax.annotation.Nullable;
 
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
+import com.google.common.collect.Lists;
 import com.google.common.collect.MapMaker;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.glowroot.agent.util.Reflections;
 
-class Beans {
+public class Beans {
 
     private static final Logger logger = LoggerFactory.getLogger(Beans.class);
 
@@ -68,21 +69,38 @@ class Beans {
 
     private Beans() {}
 
-    static @Nullable Object value(@Nullable Object obj, String[] path) throws Exception {
+    public static @Nullable Object value(@Nullable Object obj, List<String> path) throws Exception {
         return value(obj, path, 0);
     }
 
-    private static @Nullable Object value(@Nullable Object obj, String[] path, int currIndex)
+    private static @Nullable Object value(@Nullable Object obj, List<String> path, int currIndex)
             throws Exception {
         if (obj == null) {
             return null;
         }
-        if (currIndex == path.length) {
+        if (currIndex == path.size()) {
             return obj;
         }
-        String curr = path[currIndex];
+        String curr = path.get(currIndex);
         if (obj instanceof Map) {
-            return value(((Map<?, ?>) obj).get(curr), path, currIndex + 1);
+            if (curr.equals("size")) {
+                // special case
+                return ((Map<?, ?>) obj).size();
+            } else {
+                return value(((Map<?, ?>) obj).get(curr), path, currIndex + 1);
+            }
+        }
+        if (obj instanceof List) {
+            if (curr.equals("size")) {
+                // special case
+                return ((List<?>) obj).size();
+            } else {
+                List</*@Nullable*/ Object> values = Lists.newArrayList();
+                for (Object val : (List<?>) obj) {
+                    values.add(value(val, path, currIndex));
+                }
+                return values;
+            }
         }
         Accessor accessor = getAccessor(obj.getClass(), curr);
         if (accessor.equals(SENTINEL_ACCESSOR)) {

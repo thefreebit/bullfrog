@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-/* global glowroot */
+/* global glowroot, moment, $ */
 
 glowroot.controller('NavbarCtrl', [
   '$scope',
@@ -22,65 +22,87 @@ glowroot.controller('NavbarCtrl', [
   'queryStrings',
   function ($scope, $location, queryStrings) {
 
-    $scope.queryString = function (preserveAgentSelection, preserveTransactionType) {
+    $scope.queryString = function (preserveAgentRollup, preserveTransactionType, addDefaultGaugeNames) {
       var query = {};
-      var onReportPage = $location.path().substr(0, '/report/'.length) === '/report/';
-      if (preserveAgentSelection && !onReportPage) {
-        query['agent-rollup-id'] = $location.search()['agent-rollup-id'];
-        query['agent-id'] = $location.search()['agent-id'];
-      }
-      if (preserveTransactionType && !onReportPage) {
-        var transactionType = $location.search()['transaction-type'];
-        if (!transactionType) {
-          transactionType = $scope.defaultTransactionType();
+      if (preserveAgentRollup && $scope.agentRollup) {
+        if ($scope.layout.central) {
+          if ($scope.isAgentRollup()) {
+            query['agent-rollup-id'] = $scope.agentRollupId;
+          } else {
+            query['agent-id'] = $scope.agentId;
+          }
         }
-        if (transactionType) {
-          query['transaction-type'] = transactionType;
+        if (preserveTransactionType) {
+          var onReportPage = $location.path().substr(0, '/report/'.length) === '/report/';
+          if (!onReportPage) {
+            var transactionType = $location.search()['transaction-type'];
+            if (transactionType) {
+              query['transaction-type'] = transactionType;
+            }
+          }
+        }
+        if (addDefaultGaugeNames && $location.path() === '/jvm/gauges') {
+          query['gauge-name'] = $scope.agentRollup.defaultGaugeNames;
         }
       }
       var last = $location.search().last;
       if (last) {
         query.last = last;
+      } else {
+        var from = $location.search().from;
+        var to = $location.search().to;
+        if (from !== undefined && to !== undefined) {
+          // need floor/ceil when on trace point chart which allows second granularity
+          query.from = Math.floor(from / 60000) * 60000;
+          query.to = Math.ceil(to / 60000) * 60000;
+        }
       }
-      var from = $location.search().from;
-      var to = $location.search().to;
-      if (from !== undefined && to !== undefined) {
-        // need floor/ceil when on trace point chart which allows second granularity
-        query.from = Math.floor(from / 60000) * 60000;
-        query.to = Math.ceil(to / 60000) * 60000;
+      return queryStrings.encodeObject(query);
+    };
+
+    $scope.reportQueryString = function () {
+      var query = {};
+      var last = $location.search().last;
+      var from, to;
+      if (last) {
+        to = moment();
+        from = moment(to).subtract(last, 'ms');
+        query.fromDate = from.format('YYYYMMDD');
+        query.toDate = to.format('YYYYMMDD');
+      } else {
+        from = $location.search().from;
+        to = $location.search().to;
+        if (from !== undefined && to !== undefined) {
+          query.fromDate = moment(Number(from)).format('YYYYMMDD');
+          query.toDate = moment(Number(to)).format('YYYYMMDD');
+        }
       }
       return queryStrings.encodeObject(query);
     };
 
     $scope.configUrl = function () {
-      if ($scope.layout.central && $scope.agentPermissions && $scope.agentPermissions.config.view) {
-        // using query string instead of layout.agentRollups[agentRollupId].agent in case agentRollupId doesn't exist
-        if ($location.search()['agent-rollup-id']) {
-          return 'config/synthetic-monitor-list?agent-rollup-id=' + encodeURIComponent($scope.agentRollupId);
+      if ($scope.layout.central && $scope.agentRollup && $scope.agentRollup.permissions.config.view) {
+        if ($scope.isAgentRollup()) {
+          return 'config/general?agent-rollup-id=' + encodeURIComponent($scope.agentRollupId);
         } else {
-          return 'config/transaction?agent-id=' + encodeURIComponent($scope.agentRollupId);
+          return 'config/general?agent-id=' + encodeURIComponent($scope.agentRollupId);
         }
+      } else if ($scope.layout.central) {
+        return 'config/general';
       } else {
         return 'config/transaction';
       }
+    };
+
+    $scope.collapseIfNeeded = function () {
+      // need to collapse the navbar in mobile view
+      var $navbarCollapse = $('.navbar-collapse');
+      $navbarCollapse.removeClass('in');
+      $navbarCollapse.addClass('collapse');
     };
 
     $scope.isAnonymous = function () {
       return $scope.layout && $scope.layout.username && $scope.layout.username.toLowerCase() === 'anonymous';
-    };
-
-    $scope.gearIconUrl = function () {
-      if (!$scope.layout) {
-        return '';
-      }
-      if ($scope.layout.central && $scope.layout.adminView) {
-        return 'admin/agent-list';
-      } else if (!$scope.layout.central
-          && ($scope.agentPermissions && $scope.agentPermissions.config.view || $scope.layout.adminView)) {
-        return 'config/transaction';
-      } else {
-        return 'change-password';
-      }
     };
 
     $scope.gearIconNavbarTitle = function () {
@@ -88,7 +110,7 @@ glowroot.controller('NavbarCtrl', [
         return '';
       }
       if (!$scope.layout.central
-          && ($scope.agentPermissions && $scope.agentPermissions.config.view || $scope.layout.adminView)) {
+          && ($scope.agentRollup && $scope.agentRollup.permissions.config.view || $scope.layout.adminView)) {
         return 'Configuration';
       } else if ($scope.layout.central && $scope.layout.adminView) {
         return 'Administration';

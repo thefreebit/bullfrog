@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ import java.util.Hashtable;
 import java.util.List;
 import java.util.Set;
 
-import javax.annotation.Nullable;
 import javax.naming.Context;
 import javax.naming.NamingEnumeration;
 import javax.naming.NamingException;
@@ -29,12 +28,13 @@ import javax.naming.ldap.InitialLdapContext;
 import javax.naming.ldap.LdapContext;
 
 import com.google.common.collect.Sets;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 
 import org.glowroot.agent.api.Instrumentation;
-import org.glowroot.common.config.LdapConfig;
-import org.glowroot.common.repo.util.Encryption;
-import org.glowroot.common.repo.util.LazySecretKey;
+import org.glowroot.common2.config.LdapConfig;
+import org.glowroot.common2.repo.util.Encryption;
+import org.glowroot.common2.repo.util.LazySecretKey;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 

@@ -1,5 +1,5 @@
 <!--
-  Copyright 2012-2017 the original author or authors.
+  Copyright 2012-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -37,14 +37,14 @@
           </a>
         </div>
         <div style="margin: 20px 60px 0 0;" ng-if="dirty">
-          <strong>Restart the JVM to apply changes.</strong>
-          <span style="font-style: italic;" ng-if="jvmRetransformClassesSupported">
-            Feeling lucky? Try the red button.
-          </span>
+          <strong>
+            Restart the JVM to apply changes<span ng-if="showApplyChangesButton()">, or use the
+            "Apply changes without restart" button below.</span><span ng-if="!showApplyChangesButton()">.</span>
+          </strong>
         </div>
         <!-- ng-if="loaded" is used to prevent jitter of seeing this section very briefly
              before it gets pushed down by existing instrumentation -->
-        <div ng-if="loaded && agentPermissions.config.edit.instrumentation"
+        <div ng-if="loaded && agentRollup.permissions.config.edit.instrumentation"
              style="font-size: 16px; margin-top: 30px;">
           <!-- using gt-button-group even though only a single gt-button because otherwise the success message will be
                tied to the gt-button which will then get hidden due to ng-show="dirty" -->
@@ -65,15 +65,15 @@
             </button>
             <button ng-click="displayDeleteAllConfirmationModal()"
                     ng-if="configs.length"
-                    class="btn btn-warning gt-button-spacing">
+                    class="btn gt-btn-danger gt-button-spacing">
               Delete all
             </button>
             <div gt-button
-                 gt-btn-class="btn-danger"
-                 gt-label="Apply changes to running JVM"
+                 gt-btn-class="gt-btn-warning"
+                 gt-label="Apply changes without restart"
                  gt-click="retransformClasses(deferred)"
-                 gt-confirm-header="Apply changes to running JVM?"
-                 gt-confirm-body="Important: Do not use this in production as it has chance of crashing the JVM."
+                 gt-confirm-header="Apply changes without restart?"
+                 gt-confirm-body="Warning: This has chance of crashing the JVM (especially on older JVMs)."
                  ng-if="dirty && jvmRetransformClassesSupported"
                  class="gt-inline-block">
             </div>
@@ -127,7 +127,7 @@
       <div class="modal-header gt-with-clip">
         <h3>
           Instrumentation JSON
-          <span class="fa fa-clipboard gt-clip"
+          <span class="fas fa-clipboard gt-clip"
                 style="font-size: 14px; position: inherit; margin-left: 5px;"></span>
         </h3>
       </div>
@@ -157,9 +157,11 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-default" ng-click="deleteAll()">Yes</button>
+        <button class="btn gt-btn-danger" ng-click="deleteAll()">Yes</button>
         <button class="btn btn-primary" data-dismiss="modal">Cancel</button>
       </div>
     </div>
   </div>
 </div>
+<!-- each page with confirmation dialog needs its own confirmation dom so that it is deleted on $destroy -->
+<div ng-include="'template/gt-confirmation.html'"></div>

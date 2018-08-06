@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,42 +18,51 @@ package org.glowroot.agent.init;
 import java.io.File;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
+import java.lang.instrument.UnmodifiableClassException;
 import java.lang.management.ManagementFactory;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.jar.JarFile;
 
-import javax.annotation.Nullable;
-
 import com.google.common.base.Joiner;
-import com.google.common.base.Supplier;
 import com.google.common.base.Ticker;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.glowroot.agent.api.internal.GlowrootService;
+import org.glowroot.agent.api.internal.GlowrootServiceHolder;
+import org.glowroot.agent.bytecode.api.BytecodeServiceHolder;
 import org.glowroot.agent.collector.Collector;
 import org.glowroot.agent.config.ConfigService;
 import org.glowroot.agent.config.PluginCache;
 import org.glowroot.agent.config.PluginDescriptor;
 import org.glowroot.agent.impl.Aggregator;
+import org.glowroot.agent.impl.BytecodeServiceImpl;
+import org.glowroot.agent.impl.BytecodeServiceImpl.OnEnteringMain;
 import org.glowroot.agent.impl.ConfigServiceImpl;
 import org.glowroot.agent.impl.GlowrootServiceImpl;
-import org.glowroot.agent.impl.ServiceRegistryImpl;
-import org.glowroot.agent.impl.ServiceRegistryImpl.ConfigServiceFactory;
+import org.glowroot.agent.impl.PluginServiceImpl;
+import org.glowroot.agent.impl.PluginServiceImpl.ConfigServiceFactory;
 import org.glowroot.agent.impl.StackTraceCollector;
 import org.glowroot.agent.impl.TimerNameCache;
 import org.glowroot.agent.impl.TransactionCollector;
 import org.glowroot.agent.impl.TransactionRegistry;
-import org.glowroot.agent.impl.TransactionServiceImpl;
+import org.glowroot.agent.impl.TransactionService;
 import org.glowroot.agent.impl.UserProfileScheduler;
+import org.glowroot.agent.init.PreCheckLoadedClasses.PreCheckClassFileTransformer;
 import org.glowroot.agent.live.LiveAggregateRepositoryImpl;
 import org.glowroot.agent.live.LiveJvmServiceImpl;
 import org.glowroot.agent.live.LiveTraceRepositoryImpl;
 import org.glowroot.agent.live.LiveWeavingServiceImpl;
+import org.glowroot.agent.plugin.api.internal.PluginService;
+import org.glowroot.agent.plugin.api.internal.PluginServiceHolder;
+import org.glowroot.agent.util.JavaVersion;
 import org.glowroot.agent.util.LazyPlatformMBeanServer;
 import org.glowroot.agent.util.OptionalService;
 import org.glowroot.agent.util.ThreadAllocatedBytes;
@@ -61,6 +70,7 @@ import org.glowroot.agent.util.Tickers;
 import org.glowroot.agent.weaving.AdviceCache;
 import org.glowroot.agent.weaving.AnalyzedWorld;
 import org.glowroot.agent.weaving.IsolatedWeavingClassLoader;
+import org.glowroot.agent.weaving.PointcutClassFileTransformer;
 import org.glowroot.agent.weaving.PreInitializeWeavingClasses;
 import org.glowroot.agent.weaving.Weaver;
 import org.glowroot.agent.weaving.WeavingClassFileTransformer;
@@ -84,72 +94,101 @@ public class AgentModule {
     private static final long ROLLUP_0_INTERVAL_MILLIS =
             Long.getLong("glowroot.internal.rollup.0.intervalMillis", MINUTES.toMillis(1));
 
-    // java.util.logging is shaded to org.glowroot.agent.jul
-    private static final String SHADE_PROOF_JUL_LOGGER_CLASS_NAME =
-            "_java.util.logging.Logger".substring(1);
-
-    @OnlyUsedByTests
-    public static final ThreadLocal</*@Nullable*/ IsolatedWeavingClassLoader> isolatedWeavingClassLoader =
-            new ThreadLocal</*@Nullable*/ IsolatedWeavingClassLoader>();
+    private final Clock clock;
+    private final Ticker ticker;
 
     private final ConfigService configService;
-    private final AnalyzedWorld analyzedWorld;
     private final TransactionRegistry transactionRegistry;
     private final AdviceCache adviceCache;
+    private final AnalyzedWorld analyzedWorld;
+    private final Weaver weaver;
+    private final Random random;
 
-    private final DeadlockedActiveWeavingRunnable deadlockedActiveWeavingRunnable;
-    private final Aggregator aggregator;
-    private final TransactionCollector transactionCollector;
+    private final UserProfileScheduler userProfileScheduler;
+    private final TransactionService transactionService;
+    private final BytecodeServiceImpl bytecodeService;
 
-    private final LazyPlatformMBeanServer lazyPlatformMBeanServer;
+    private volatile @MonotonicNonNull DeadlockedActiveWeavingRunnable deadlockedActiveWeavingRunnable;
+    private volatile @MonotonicNonNull Aggregator aggregator;
+    private volatile @MonotonicNonNull TransactionCollector transactionCollector;
 
-    private final GaugeCollector gaugeCollector;
-    private final StackTraceCollector stackTraceCollector;
+    private volatile @MonotonicNonNull LazyPlatformMBeanServer lazyPlatformMBeanServer;
 
-    private final ImmediateTraceStoreWatcher immedateTraceStoreWatcher;
+    private volatile @MonotonicNonNull GaugeCollector gaugeCollector;
+    private volatile @MonotonicNonNull StackTraceCollector stackTraceCollector;
+
+    private volatile @MonotonicNonNull ImmediateTraceStoreWatcher immedateTraceStoreWatcher;
 
     private final boolean jvmRetransformClassesSupported;
 
-    private final LiveTraceRepositoryImpl liveTraceRepository;
-    private final LiveAggregateRepositoryImpl liveAggregateRepository;
-    private final LiveWeavingServiceImpl liveWeavingService;
-    private final LiveJvmServiceImpl liveJvmService;
+    private volatile @MonotonicNonNull LiveTraceRepositoryImpl liveTraceRepository;
+    private volatile @MonotonicNonNull LiveAggregateRepositoryImpl liveAggregateRepository;
+    private volatile @MonotonicNonNull LiveWeavingServiceImpl liveWeavingService;
+    private volatile @MonotonicNonNull LiveJvmServiceImpl liveJvmService;
 
     // accepts @Nullable Ticker to deal with shading issues when called from GlowrootModule
     public AgentModule(Clock clock, @Nullable Ticker nullableTicker, final PluginCache pluginCache,
-            final ConfigService configService,
-            Supplier<ScheduledExecutorService> backgroundExecutorSupplier, Collector collector,
-            @Nullable Instrumentation instrumentation, File tmpDir) throws Exception {
+            final ConfigService configService, @Nullable Instrumentation instrumentation,
+            @Nullable File glowrootJarFile, File tmpDir,
+            @Nullable PreCheckClassFileTransformer preCheckClassFileTransformer) throws Exception {
 
-        Ticker ticker = nullableTicker == null ? Tickers.getTicker() : nullableTicker;
+        this.clock = clock;
+        this.ticker = nullableTicker == null ? Tickers.getTicker() : nullableTicker;
         this.configService = configService;
         transactionRegistry = new TransactionRegistry();
 
+        ClassFileTransformer pointcutClassFileTransformer = null;
         if (instrumentation != null) {
             for (File pluginJar : pluginCache.pluginJars()) {
                 instrumentation.appendToBootstrapClassLoaderSearch(new JarFile(pluginJar));
             }
+            pointcutClassFileTransformer = new PointcutClassFileTransformer();
+            instrumentation.addTransformer(pointcutClassFileTransformer);
         }
-        adviceCache = new AdviceCache(pluginCache.pluginDescriptors(), pluginCache.pluginJars(),
+        adviceCache = new AdviceCache(pluginCache.pluginDescriptors(),
                 configService.getInstrumentationConfigs(), instrumentation, tmpDir);
+        if (pointcutClassFileTransformer != null) {
+            checkNotNull(instrumentation).removeTransformer(pointcutClassFileTransformer);
+        }
         analyzedWorld = new AnalyzedWorld(adviceCache.getAdvisorsSupplier(),
                 adviceCache.getShimTypes(), adviceCache.getMixinTypes());
-        final TimerNameCache timerNameCache = new TimerNameCache();
+        TimerNameCache timerNameCache = new TimerNameCache();
 
-        final Weaver weaver = new Weaver(adviceCache.getAdvisorsSupplier(),
-                adviceCache.getShimTypes(), adviceCache.getMixinTypes(), analyzedWorld,
-                transactionRegistry, ticker, timerNameCache, configService);
+        weaver = new Weaver(adviceCache.getAdvisorsSupplier(), adviceCache.getShimTypes(),
+                adviceCache.getMixinTypes(), analyzedWorld, transactionRegistry, ticker,
+                timerNameCache, configService);
+
+        // need to initialize glowroot-agent-api, glowroot-agent-plugin-api and glowroot-weaving-api
+        // services before enabling instrumentation
+        GlowrootService glowrootService = new GlowrootServiceImpl(transactionRegistry);
+        GlowrootServiceHolder.set(glowrootService);
+        ConfigServiceFactory configServiceFactory = new ConfigServiceFactory() {
+            @Override
+            public org.glowroot.agent.plugin.api.config.ConfigService create(String pluginId) {
+                return ConfigServiceImpl.create(configService, pluginCache.pluginDescriptors(),
+                        pluginId);
+            }
+        };
+        PluginService pluginService = new PluginServiceImpl(timerNameCache, configServiceFactory);
+        PluginServiceHolder.set(pluginService);
+        random = new Random();
+        userProfileScheduler = new UserProfileScheduler(configService, random);
+        transactionService = TransactionService.create(transactionRegistry, configService,
+                timerNameCache, userProfileScheduler, ticker, clock);
+        bytecodeService = new BytecodeServiceImpl(transactionRegistry, transactionService);
+        BytecodeServiceHolder.set(bytecodeService);
 
         if (instrumentation == null) {
             // instrumentation is null when debugging with LocalContainer
             IsolatedWeavingClassLoader isolatedWeavingClassLoader =
-                    AgentModule.isolatedWeavingClassLoader.get();
+                    (IsolatedWeavingClassLoader) Thread.currentThread().getContextClassLoader();
             checkNotNull(isolatedWeavingClassLoader);
             isolatedWeavingClassLoader.setWeaver(weaver);
             jvmRetransformClassesSupported = false;
         } else {
             PreInitializeWeavingClasses.preInitializeClasses();
-            ClassFileTransformer transformer = new WeavingClassFileTransformer(weaver);
+            ClassFileTransformer transformer =
+                    new WeavingClassFileTransformer(weaver, instrumentation);
             if (instrumentation.isRetransformClassesSupported()) {
                 instrumentation.addTransformer(transformer, true);
                 jvmRetransformClassesSupported = true;
@@ -157,39 +196,92 @@ public class AgentModule {
                 instrumentation.addTransformer(transformer);
                 jvmRetransformClassesSupported = false;
             }
-            logJavaClassAlreadyLoadedWarningIfNeeded(instrumentation);
+            if (preCheckClassFileTransformer != null) {
+                for (Map.Entry<String, Exception> entry : preCheckClassFileTransformer
+                        .getImportantClassLoadingPoints().entrySet()) {
+                    logger.warn("important class loaded before Glowroot instrumentation could be"
+                            + " applied to it: {}", entry.getKey(), entry.getValue());
+                }
+                instrumentation.removeTransformer(preCheckClassFileTransformer);
+            }
+            logJavaClassAlreadyLoadedWarningIfNeeded(instrumentation.getAllLoadedClasses(),
+                    glowrootJarFile, false);
+            if (instrumentation.isRetransformClassesSupported()
+                    && instrumentation.isModifiableClass(Thread.class)) {
+                try {
+                    instrumentation.retransformClasses(Thread.class);
+                } catch (UnmodifiableClassException e) {
+                    // IBM JDK 6 throws UnmodifiableClassException even though isModifiableClass()
+                    // above returns true
+                    logger.debug(e.getMessage(), e);
+                }
+            }
         }
 
-        // now that instrumentation is set up, it is safe to create scheduled executor
-        ScheduledExecutorService backgroundExecutor = backgroundExecutorSupplier.get();
+        ManagementFactory.getThreadMXBean().setThreadCpuTimeEnabled(true);
+        ManagementFactory.getThreadMXBean().setThreadContentionMonitoringEnabled(true);
+
+        // need to initialize some classes while still single threaded in order to prevent possible
+        // deadlock later on
+        try {
+            Class.forName("sun.net.www.protocol.ftp.Handler");
+            Class.forName("sun.net.www.protocol.ftp.FtpURLConnection");
+        } catch (ClassNotFoundException e) {
+            logger.debug(e.getMessage(), e);
+        }
+
+        // verify initialization of glowroot-agent-api, glowroot-agent-plugin-api and
+        // glowroot-weaving-api services
+        Exception getterCalledTooEarlyLocation =
+                GlowrootServiceHolder.getRetrievedTooEarlyLocation();
+        if (getterCalledTooEarlyLocation != null) {
+            logger.error("Glowroot Agent API was called too early", getterCalledTooEarlyLocation);
+        }
+
+        initPlugins(pluginCache.pluginDescriptors());
+
+        List<PluginDescriptor> pluginDescriptors = pluginCache.pluginDescriptors();
+        List<String> pluginNames = Lists.newArrayList();
+        for (PluginDescriptor pluginDescriptor : pluginDescriptors) {
+            pluginNames.add(pluginDescriptor.name());
+        }
+        if (!pluginNames.isEmpty()) {
+            startupLogger.info("plugins loaded: {}", Joiner.on(", ").join(pluginNames));
+        }
+    }
+
+    public void setOnEnteringMain(OnEnteringMain onEnteringMain) {
+        bytecodeService.setOnEnteringMain(onEnteringMain);
+    }
+
+    public void onEnteringMain(ScheduledExecutorService backgroundExecutor, Collector collector,
+            @Nullable Instrumentation instrumentation, @Nullable File glowrootJarFile,
+            @Nullable String mainClass) throws Exception {
+
+        weaver.setNoLongerNeedToWeaveMainMethods();
+
         deadlockedActiveWeavingRunnable = new DeadlockedActiveWeavingRunnable(weaver);
         deadlockedActiveWeavingRunnable.scheduleWithFixedDelay(backgroundExecutor, 5, 5, SECONDS);
 
+        // complete initialization of glowroot-agent-api, glowroot-agent-plugin-api and
+        // glowroot-weaving-api services
+        userProfileScheduler.setBackgroundExecutor(backgroundExecutor);
+        OptionalService<ThreadAllocatedBytes> threadAllocatedBytes = ThreadAllocatedBytes.create();
+        transactionService.setThreadAllocatedBytes(threadAllocatedBytes.getService());
         aggregator = new Aggregator(collector, configService, ROLLUP_0_INTERVAL_MILLIS, clock);
         transactionCollector =
                 new TransactionCollector(configService, collector, aggregator, clock, ticker);
+        transactionService.setTransactionCollector(transactionCollector);
 
-        OptionalService<ThreadAllocatedBytes> threadAllocatedBytes = ThreadAllocatedBytes.create();
-
-        Random random = new Random();
-        UserProfileScheduler userProfileScheduler =
-                new UserProfileScheduler(backgroundExecutor, configService, random);
-        GlowrootService glowrootService = new GlowrootServiceImpl(transactionRegistry);
-        TransactionServiceImpl.createSingleton(transactionRegistry, transactionCollector,
-                configService, timerNameCache, threadAllocatedBytes.getService(),
-                userProfileScheduler, ticker, clock);
-        ConfigServiceFactory configServiceFactory = new ConfigServiceFactory() {
+        lazyPlatformMBeanServer = LazyPlatformMBeanServer.create(mainClass);
+        bytecodeService.setOnExitingGetPlatformMBeanServer(new Runnable() {
             @Override
-            public org.glowroot.agent.plugin.api.config.ConfigService create(String pluginId) {
-                checkNotNull(configService);
-                checkNotNull(pluginCache);
-                return ConfigServiceImpl.create(configService, pluginCache.pluginDescriptors(),
-                        pluginId);
+            public void run() {
+                // TODO report checker framework issue that occurs without checkNotNull
+                checkNotNull(lazyPlatformMBeanServer);
+                lazyPlatformMBeanServer.setPlatformMBeanServerAvailable();
             }
-        };
-        ServiceRegistryImpl.init(glowrootService, timerNameCache, configServiceFactory);
-
-        lazyPlatformMBeanServer = LazyPlatformMBeanServer.create();
+        });
         File[] roots = File.listRoots();
         if (roots != null) {
             for (File root : roots) {
@@ -203,7 +295,7 @@ public class AgentModule {
             }
         }
         gaugeCollector = new GaugeCollector(configService, collector, lazyPlatformMBeanServer,
-                clock, ticker);
+                instrumentation, clock, ticker);
         // using fixed rate to keep gauge collections close to on the second mark
         long gaugeCollectionIntervalMillis = configService.getGaugeCollectionIntervalMillis();
         gaugeCollector.scheduleWithFixedDelay(gaugeCollectionIntervalMillis, MILLISECONDS);
@@ -220,18 +312,8 @@ public class AgentModule {
         liveWeavingService = new LiveWeavingServiceImpl(analyzedWorld, instrumentation,
                 configService, adviceCache, jvmRetransformClassesSupported);
         liveJvmService = new LiveJvmServiceImpl(lazyPlatformMBeanServer, transactionRegistry,
-                transactionCollector, threadAllocatedBytes.getAvailability());
-
-        initPlugins(pluginCache.pluginDescriptors());
-
-        List<PluginDescriptor> pluginDescriptors = pluginCache.pluginDescriptors();
-        List<String> pluginNames = Lists.newArrayList();
-        for (PluginDescriptor pluginDescriptor : pluginDescriptors) {
-            pluginNames.add(pluginDescriptor.name());
-        }
-        if (!pluginNames.isEmpty()) {
-            startupLogger.info("plugins loaded: {}", Joiner.on(", ").join(pluginNames));
-        }
+                transactionCollector, threadAllocatedBytes.getAvailability(), configService,
+                glowrootJarFile);
     }
 
     public ConfigService getConfigService() {
@@ -239,80 +321,119 @@ public class AgentModule {
     }
 
     public LazyPlatformMBeanServer getLazyPlatformMBeanServer() {
+        if (lazyPlatformMBeanServer == null) {
+            throw new IllegalStateException("onEnteringMain() was never called");
+        }
         return lazyPlatformMBeanServer;
     }
 
     public LiveTraceRepositoryImpl getLiveTraceRepository() {
+        if (liveTraceRepository == null) {
+            throw new IllegalStateException("onEnteringMain() was never called");
+        }
         return liveTraceRepository;
     }
 
     public LiveAggregateRepositoryImpl getLiveAggregateRepository() {
+        if (liveAggregateRepository == null) {
+            throw new IllegalStateException("onEnteringMain() was never called");
+        }
         return liveAggregateRepository;
     }
 
     public LiveWeavingServiceImpl getLiveWeavingService() {
+        if (liveWeavingService == null) {
+            throw new IllegalStateException("onEnteringMain() was never called");
+        }
         return liveWeavingService;
     }
 
     public LiveJvmServiceImpl getLiveJvmService() {
+        if (liveJvmService == null) {
+            throw new IllegalStateException("onEnteringMain() was never called");
+        }
         return liveJvmService;
     }
 
-    private static void logJavaClassAlreadyLoadedWarningIfNeeded(Instrumentation instrumentation) {
-        List<String> runnableCallableClasses = Lists.newArrayList();
-        boolean julLoggerLoaded = false;
-        for (Class<?> clazz : instrumentation.getAllLoadedClasses()) {
-            if (clazz.isInterface()) {
-                continue;
-            }
+    public static boolean logJavaClassAlreadyLoadedWarningIfNeeded(Class<?>[] allLoadedClasses,
+            @Nullable File glowrootJarFile, boolean preCheck) {
+        List<String> loadedImportantClassNames = Lists.newArrayList();
+        for (Class<?> clazz : allLoadedClasses) {
             String className = clazz.getName();
-            if (className.startsWith("java.util.concurrent.")
-                    && (Runnable.class.isAssignableFrom(clazz)
-                            || Callable.class.isAssignableFrom(clazz))) {
-                runnableCallableClasses.add(clazz.getName());
-            }
-            if (className.equals(SHADE_PROOF_JUL_LOGGER_CLASS_NAME)) {
-                julLoggerLoaded = true;
+            if (PreCheckLoadedClasses.isImportantClass(className, clazz)) {
+                loadedImportantClassNames.add(className);
             }
         }
-        if (!runnableCallableClasses.isEmpty()) {
-            logRunnableCallableClassWarning(runnableCallableClasses);
-        }
-        if (julLoggerLoaded && isShaded()) {
-            logger.warn("java.util.logging.Logger was loaded before Glowroot instrumentation could"
-                    + " be applied to it. This may prevent Glowroot from capturing JUL logging.");
+        if (loadedImportantClassNames.isEmpty()) {
+            return false;
+        } else {
+            logLoadedImportantClassWarning(loadedImportantClassNames, glowrootJarFile, preCheck);
+            return true;
         }
     }
 
-    private static void logRunnableCallableClassWarning(List<String> runnableCallableClasses) {
-        List<String> nonGlowrootAgents = Lists.newArrayList();
+    private static void logLoadedImportantClassWarning(List<String> loadedImportantClassNames,
+            @Nullable File glowrootJarFile, boolean preCheck) {
+        if (preCheck) {
+            // this is only logged with -Dglowroot.debug.preCheckLoadedClasses=true
+            startupLogger.warn("PRE-CHECK: one or more important classes were loaded before"
+                    + " Glowroot startup: {}", Joiner.on(", ").join(loadedImportantClassNames));
+            return;
+        }
+        List<String> javaAgentArgsBeforeGlowroot = getJavaAgentArgsBeforeGlowroot(glowrootJarFile);
+        if (!javaAgentArgsBeforeGlowroot.isEmpty()) {
+            startupLogger.warn("one or more important classes were loaded before Glowroot"
+                    + " instrumentation could be applied to them: {}. This likely occurred because"
+                    + " one or more other javaagents are listed in the JVM args prior to the"
+                    + " Glowroot agent ({}) which gives them a higher loading precedence.",
+                    Joiner.on(", ").join(loadedImportantClassNames),
+                    Joiner.on(" ").join(javaAgentArgsBeforeGlowroot));
+            return;
+        }
+        List<String> nativeAgentArgs = getNativeAgentArgs();
+        if (!nativeAgentArgs.isEmpty()) {
+            startupLogger.warn("one or more important classes were loaded before Glowroot"
+                    + " instrumentation could be applied to them: {}. This likely occurred because"
+                    + " there are one or more native agents listed in the JVM args ({}), and native"
+                    + " agents have higher loading precedence than java agents.",
+                    Joiner.on(", ").join(loadedImportantClassNames),
+                    Joiner.on(" ").join(nativeAgentArgs));
+            return;
+        }
+        startupLogger.warn("one or more important classes were loaded before Glowroot"
+                + " instrumentation could be applied to them: {}",
+                Joiner.on(", ").join(loadedImportantClassNames));
+    }
+
+    private static List<String> getNativeAgentArgs() {
+        List<String> nativeAgentArgs = Lists.newArrayList();
         for (String jvmArg : ManagementFactory.getRuntimeMXBean().getInputArguments()) {
-            if (jvmArg.startsWith("-javaagent:") && !jvmArg.endsWith("glowroot.jar")
-                    || jvmArg.startsWith("-agentpath:")) {
-                nonGlowrootAgents.add(jvmArg);
+            if (jvmArg.startsWith("-agentpath:") || jvmArg.startsWith("-agentlib:")) {
+                nativeAgentArgs.add(jvmArg);
             }
         }
-        String extraExplanation = "";
-        if (!nonGlowrootAgents.isEmpty()) {
-            extraExplanation = "This likely occurred because there";
-            if (nonGlowrootAgents.size() == 1) {
-                extraExplanation += " is another agent";
-            } else {
-                extraExplanation += " are other agents";
-            }
-            extraExplanation += " listed in the JVM args prior to the Glowroot agent ("
-                    + Joiner.on(" ").join(nonGlowrootAgents)
-                    + ") which gives the other agent";
-            if (nonGlowrootAgents.size() != 1) {
-                extraExplanation += "s";
-            }
-            extraExplanation += " higher loading precedence. ";
+        return nativeAgentArgs;
+    }
+
+    private static List<String> getJavaAgentArgsBeforeGlowroot(@Nullable File glowrootJarFile) {
+        if (glowrootJarFile == null) {
+            return ImmutableList.of();
         }
-        logger.warn("one or more java.lang.Runnable or java.util.concurrent.Callable"
-                + " implementations were loaded before Glowroot instrumentation could be applied to"
-                + " them: {}. {}This may prevent Glowroot from capturing async requests that span"
-                + " multiple threads.", Joiner.on(", ").join(runnableCallableClasses),
-                extraExplanation);
+        List<String> javaAgentArgsBeforeGlowroot = Lists.newArrayList();
+        for (String jvmArg : ManagementFactory.getRuntimeMXBean().getInputArguments()) {
+            if (jvmArg.startsWith("-javaagent:") && jvmArg.endsWith(glowrootJarFile.getName())) {
+                break;
+            }
+            if (jvmArg.startsWith("-javaagent:") || isIbmHealthcenterArg(jvmArg)) {
+                javaAgentArgsBeforeGlowroot.add(jvmArg);
+            }
+        }
+        return javaAgentArgsBeforeGlowroot;
+    }
+
+    private static boolean isIbmHealthcenterArg(String jvmArg) {
+        return JavaVersion.isIbmJvm()
+                && (jvmArg.equals("-Xhealthcenter") || jvmArg.startsWith("-Xhealthcenter:"));
     }
 
     // now init plugins to give them a chance to do something in their static initializer
@@ -330,26 +451,29 @@ public class AgentModule {
         }
     }
 
-    private static boolean isShaded() {
-        try {
-            Class.forName("org.glowroot.agent.shaded.slf4j.Logger");
-            return true;
-        } catch (ClassNotFoundException e) {
-            // log exception at trace level
-            logger.trace(e.getMessage(), e);
-            return false;
-        }
-    }
-
     @OnlyUsedByTests
     public void close() throws Exception {
-        immedateTraceStoreWatcher.cancel();
-        stackTraceCollector.close();
-        gaugeCollector.close();
-        lazyPlatformMBeanServer.close();
-        transactionCollector.close();
-        aggregator.close();
-        deadlockedActiveWeavingRunnable.cancel();
+        if (immedateTraceStoreWatcher != null) {
+            immedateTraceStoreWatcher.cancel();
+        }
+        if (stackTraceCollector != null) {
+            stackTraceCollector.close();
+        }
+        if (gaugeCollector != null) {
+            gaugeCollector.close();
+        }
+        if (lazyPlatformMBeanServer != null) {
+            lazyPlatformMBeanServer.close();
+        }
+        if (transactionCollector != null) {
+            transactionCollector.close();
+        }
+        if (aggregator != null) {
+            aggregator.close();
+        }
+        if (deadlockedActiveWeavingRunnable != null) {
+            deadlockedActiveWeavingRunnable.cancel();
+        }
     }
 
     private static class DeadlockedActiveWeavingRunnable extends ScheduledRunnable {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,24 +15,21 @@
  */
 package org.glowroot.agent.model;
 
-import org.glowroot.agent.model.QueryCollector.SharedQueryTextCollector;
 import org.glowroot.wire.api.model.AggregateOuterClass.Aggregate;
 import org.glowroot.wire.api.model.Proto.OptionalInt64;
 
 class MutableQuery {
 
-    private MutableDouble totalDurationNanos;
+    private double totalDurationNanos;
     private long executionCount;
 
     private boolean hasTotalRows;
     private long totalRows;
 
-    MutableQuery() {
-        totalDurationNanos = new MutableDouble();
-    }
+    private boolean active;
 
     double getTotalDurationNanos() {
-        return totalDurationNanos.getValue();
+        return totalDurationNanos;
     }
 
     long getExecutionCount() {
@@ -47,8 +44,12 @@ class MutableQuery {
         return totalRows;
     }
 
-    void addToTotalDurationNanos(long totalDurationNanos) {
-        this.totalDurationNanos.add(totalDurationNanos);
+    boolean isActive() {
+        return active;
+    }
+
+    void addToTotalDurationNanos(double totalDurationNanos) {
+        this.totalDurationNanos += totalDurationNanos;
     }
 
     void addToExecutionCount(long executionCount) {
@@ -62,29 +63,42 @@ class MutableQuery {
         }
     }
 
-    Aggregate.Query toAggregateProto(String queryText,
-            SharedQueryTextCollector sharedQueryTextCollector) {
-        int sharedQueryTextIndex = sharedQueryTextCollector.getIndex(queryText);
+    void setActive(boolean active) {
+        this.active = active;
+    }
+
+    void add(MutableQuery query) {
+        addToTotalDurationNanos(query.totalDurationNanos);
+        addToExecutionCount(query.executionCount);
+        addToTotalRows(query.hasTotalRows, query.totalRows);
+        if (query.active) {
+            setActive(true);
+        }
+    }
+
+    void add(Aggregate.Query query) {
+        addToTotalDurationNanos(query.getTotalDurationNanos());
+        addToExecutionCount(query.getExecutionCount());
+        addToTotalRows(query.hasTotalRows(), query.getTotalRows().getValue());
+        if (query.getActive()) {
+            setActive(true);
+        }
+    }
+
+    Aggregate.Query toAggregateProto(String queryType, String queryText,
+            SharedQueryTextCollection sharedQueryTextCollection, boolean includeActive) {
+        int sharedQueryTextIndex = sharedQueryTextCollection.getSharedQueryTextIndex(queryText);
         Aggregate.Query.Builder builder = Aggregate.Query.newBuilder()
+                .setType(queryType)
                 .setSharedQueryTextIndex(sharedQueryTextIndex)
-                .setTotalDurationNanos(totalDurationNanos.getValue())
+                .setTotalDurationNanos(totalDurationNanos)
                 .setExecutionCount(executionCount);
         if (hasTotalRows) {
             builder.setTotalRows(OptionalInt64.newBuilder().setValue(totalRows));
         }
+        if (includeActive) {
+            builder.setActive(active);
+        }
         return builder.build();
-    }
-
-    private static class MutableDouble {
-
-        private double value;
-
-        public void add(long value) {
-            this.value += value;
-        }
-
-        public double getValue() {
-            return value;
-        }
     }
 }

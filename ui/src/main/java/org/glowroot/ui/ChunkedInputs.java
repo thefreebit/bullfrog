@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2016 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,6 @@ import java.io.Writer;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import javax.annotation.Nullable;
-
-import com.google.common.base.Charsets;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufOutputStream;
@@ -33,8 +30,11 @@ import io.netty.handler.codec.http.DefaultHttpContent;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.stream.ChunkedInput;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.ui.ChunkSource.ChunkCopier;
+
+import static com.google.common.base.Charsets.UTF_8;
 
 class ChunkedInputs {
 
@@ -104,7 +104,7 @@ class ChunkedInputs {
 
         private ChunkSourceChunkedInput(ChunkSource chunkSource) throws IOException {
             byteBuf = Unpooled.buffer();
-            writer = new OutputStreamWriter(new ByteBufOutputStream(byteBuf), Charsets.UTF_8);
+            writer = new OutputStreamWriter(new ByteBufOutputStream(byteBuf), UTF_8);
             chunkCopier = chunkSource.getCopier(writer);
         }
 
@@ -149,7 +149,7 @@ class ChunkedInputs {
             bbos = new ByteBufOutputStream(byteBuf);
             ZipOutputStream zipOut = new ZipOutputStream(bbos);
             zipOut.putNextEntry(new ZipEntry(fileName + ".html"));
-            zipWriter = new OutputStreamWriter(zipOut, Charsets.UTF_8);
+            zipWriter = new OutputStreamWriter(zipOut, UTF_8);
             chunkCopier = chunkSource.getCopier(zipWriter);
         }
 

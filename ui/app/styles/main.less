@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 // fontawesome is used for gear and sign out icons in top right of navbar and also for help icon
-@import "../../bower_components/fontawesome/less/variables";
-@import "../../bower_components/fontawesome/less/mixins";
-@import "../../bower_components/fontawesome/less/core";
-@import "../../bower_components/fontawesome/less/icons";
+@import "../../bower_components/fontawesome/web-fonts-with-css/less/_variables";
+@import "../../bower_components/fontawesome/web-fonts-with-css/less/_mixins";
+@import "../../bower_components/fontawesome/web-fonts-with-css/less/_core";
+@import "../../bower_components/fontawesome/web-fonts-with-css/less/_icons";
 @import "../../bower_components/bootstrap/less/variables";
 @import "../../bower_components/bootstrap/less/mixins";
 @import "../../bower_components/bootstrap/less/alerts";
@@ -73,13 +73,13 @@
 @import "variables";
 
 @navbar-height: 50px;
-@navbar-inverse-bg: @gt-primary-color;
+@navbar-inverse-bg: darken(@gt-primary-color, 5%);
 @navbar-inverse-link-active-bg: darken(@navbar-inverse-bg, 5%);
-@navbar-inverse-link-color: #e8e8e8;
+@navbar-inverse-link-color: #fff;
 
 @input-border-focus: @gt-blue;
 
-@btn-primary-color: #f8f8f8;
+@btn-primary-color: #fff;
 
 @brand-primary: @gt-blue;
 
@@ -127,11 +127,30 @@
 // (see index.html) in sync when new font-awesome versions are released, and the urls are revved during grunt build
 // already so the versioned url is not needed
 @font-face {
-  font-family: FontAwesome;
-  src: url('../fonts/fontawesome-webfont.woff2') format('woff2'),
-  url('../fonts/fontawesome-webfont.woff') format('woff');
-  font-weight: normal;
+  font-family: 'Font Awesome 5 Free';
+  src: url('../fonts/fa-regular-400.woff2') format('woff2'),
+  url('../fonts/fa-regular-400.woff') format('woff');
+  font-weight: 400;
   font-style: normal;
+}
+
+@font-face {
+  font-family: 'Font Awesome 5 Free';
+  src: url('../fonts/fa-solid-900.woff2') format('woff2'),
+  url('../fonts/fa-solid-900.woff') format('woff');
+  font-weight: 900;
+  font-style: normal;
+}
+
+.far {
+  font-family: 'Font Awesome 5 Free';
+  font-weight: 400;
+}
+
+.fa,
+.fas {
+  font-family: 'Font Awesome 5 Free';
+  font-weight: 900;
 }
 
 body {
@@ -152,10 +171,12 @@ body {
   padding: 27px 0 40px;
 }
 
-.gt-header-page-name {
+.gt-header-page-name h1, .gt-header-page-name {
   font-size: 36px;
   color: @gt-page-title-color;
   font-weight: 700;
+  line-height: inherit; // override h1
+  margin: 0; // override h1
 }
 
 .gt-header-page-name li a {
@@ -163,6 +184,23 @@ body {
   cursor: pointer;
   // padding to align left side with dropdown header
   padding: 3px 12px;
+}
+
+// this is for "Custom range..." button in range dropdown
+.gt-header-page-name li button {
+  display: block;
+  text-align: left;
+  width: 100%;
+  padding: 3px 12px;
+  color: #333333;
+  text-decoration: none !important;
+  font-size: 22px !important;
+  border: none;
+}
+
+.gt-header-page-name li button:focus {
+  color: @dropdown-link-hover-color;
+  background-color: @dropdown-link-hover-bg;
 }
 
 .gt-header-menu {
@@ -173,6 +211,10 @@ body {
 
 .gt-header-page-name li a:hover, ul.nav li.dropdown > ul.dropdown-menu > li a:hover {
   background-color: #fff;
+}
+
+.gt-header-page-name li button:hover {
+  background-color: #edeae4;
 }
 
 .gt-sidebar .bootstrap-select .dropdown-menu {
@@ -204,8 +246,6 @@ body {
 
 .gt-header-page-name .dropdown-toggle.btn-flat {
   border: none !important;
-  outline: none !important;
-  box-shadow: none !important;
 }
 
 .gt-header-page-name .gt-separator {
@@ -243,6 +283,30 @@ body {
   right: 15px !important;
 }
 
+// this brings back focus ring for accessibility (overriding bootstrap's .dropdown-toggle:focus {"outline": 0"})
+body .dropdown-toggle:focus {
+  .tab-focus();
+}
+
+// need more contrast on btn-danger to meet accessibility contrast ratio
+@gt-btn-danger-color: #fff;
+@gt-btn-danger-bg: #c1514d;
+@gt-btn-danger-border: darken(@gt-btn-danger-bg, 5%);
+
+.gt-btn-danger {
+  .button-variant(@gt-btn-danger-color; @gt-btn-danger-bg; @gt-btn-danger-border);
+}
+
+// TODO
+// need more contrast on btn-warning to meet accessibility contrast ratio
+@gt-btn-warning-color: #fff;
+@gt-btn-warning-bg: @btn-warning-bg;
+@gt-btn-warning-border: darken(@gt-btn-warning-bg, 5%);
+
+.gt-btn-warning {
+  .button-variant(@gt-btn-warning-color; @gt-btn-warning-bg; @gt-btn-warning-border);
+}
+
 .navbar-brand {
   font-size: 24px;
   color: #fff !important;
@@ -253,19 +317,55 @@ body {
   margin-bottom: 1px;
 }
 
-.nav.navbar-nav a {
+ul.nav.navbar-nav > li > a {
   font-size: 16px;
+  font-weight: 600;
 }
 
-.navbar-inverse .navbar-nav > .open > a, .navbar-inverse .navbar-nav > .open > a:hover, .navbar-inverse .navbar-nav > .open > a:focus {
-  // overriding default darken(@navbar-inverse-bg, 5%)
-  background-color: darken(@navbar-inverse-bg, 2%);
+ul.nav.navbar-nav > li > a:hover {
+  text-shadow: 0px 0px 4px #fff;
 }
 
-.navbar-inverse .navbar-nav > .active.open > a, .navbar-inverse .navbar-nav > .active.open > a:hover, .navbar-inverse .navbar-nav > .active.open > a:focus {
-  // re-overriding above back to default darken(@navbar-inverse-bg, 5%)
-  // so that when clicking on navbar dropdown (gear icon) when it is already active will not change background color
-  background-color: darken(@navbar-inverse-bg, 5%);
+.gt-gears-btn {
+  .btn-link;
+  color: #fff;
+  text-decoration: inherit !important;
+  font-size: 16px;
+  border: none;
+  display: block; // needed for mobile navbar
+  width: 100%; // needed for mobile navbar
+  text-align: left; // needed for mobile navbar
+}
+
+.gt-gears-btn:hover, .gt-gears-btn:focus {
+  color: #fff;
+}
+
+.gt-gears-btn:hover {
+  text-shadow: 0px 0px 10px #fff;
+}
+
+.gt-gears-btn {
+  padding: 10px 15px;
+}
+
+@media (min-width: 768px) {
+  .gt-gears-btn {
+    padding-top: 14px;
+    padding-bottom: 14px;
+  }
+}
+
+@media (min-width: 768px) {
+  .navbar-right {
+    margin-right: 0 !important;
+  }
+  // don't want gear icon to have highlighted background in mobile navbar
+  .navbar-inverse .navbar-nav > .active > button,
+  .navbar-inverse .navbar-nav > .active > button:hover,
+  .navbar-inverse .navbar-nav > .active > button:focus {
+    background-color: @navbar-inverse-link-active-bg;
+  }
 }
 
 .container {
@@ -383,14 +483,9 @@ hr.soften {
   border-color: @gt-red;
 }
 
-.gt-transaction-tabs li.active > a:hover {
-  // keep default (pointer) cursor to indicate active tab can be clicked to refresh tab
-  cursor: inherit;
-}
-
-.gt-transaction-tabs a {
-  // outline covers up tab, plus the tabs already have focus indicator (gray background)
-  outline: none;
+.gt-transaction-tabs li > a:focus {
+  // override background color
+  background-color: inherit;
 }
 
 .list-group-item:focus {
@@ -455,11 +550,6 @@ hr.soften {
 .gt-flame-graph-link {
   margin-top: -10px;
   margin-bottom: 10px;
-}
-
-.caret.gt-caret-sort-ascending {
-  border-top-width: 0;
-  border-bottom: 4px solid;
 }
 
 .gt-visibility-hidden {

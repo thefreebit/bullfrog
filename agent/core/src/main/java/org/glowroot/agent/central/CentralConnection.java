@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package org.glowroot.agent.central;
 
+import java.io.File;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.URI;
@@ -26,8 +27,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
+import javax.net.ssl.SSLException;
 
 import com.google.common.base.Splitter;
 import com.google.common.base.Stopwatch;
@@ -36,11 +37,15 @@ import io.grpc.Attributes;
 import io.grpc.EquivalentAddressGroup;
 import io.grpc.ManagedChannel;
 import io.grpc.NameResolver;
+import io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.NegotiationType;
 import io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.StreamObserver;
 import io.grpc.util.RoundRobinLoadBalancerFactory;
 import io.netty.channel.EventLoopGroup;
+import io.netty.handler.ssl.SslContextBuilder;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.immutables.value.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -94,23 +99,47 @@ class CentralConnection {
     private volatile boolean initCallSucceeded;
     private volatile boolean closed;
 
-    CentralConnection(String collectorAddress, AtomicBoolean inConnectionFailure) {
-        List<SocketAddress> collectorAddresses = toSocketAddresses(collectorAddress);
+    CentralConnection(String collectorAddress, @Nullable String collectorAuthority, File confDir,
+            @Nullable File sharedConfDir, AtomicBoolean inConnectionFailure) throws SSLException {
+        ParsedCollectorAddress parsedCollectorAddress = parseCollectorAddress(collectorAddress);
         eventLoopGroup = EventLoopGroups.create("Glowroot-GRPC-Worker-ELG");
         channelExecutor =
                 Executors.newSingleThreadExecutor(ThreadFactories.create("Glowroot-GRPC-Executor"));
-        channel = NettyChannelBuilder
-                .forTarget("dummy")
-                .nameResolverFactory(new SimpleNameResolverFactory(collectorAddresses))
+        String authority;
+        if (collectorAuthority != null) {
+            authority = collectorAuthority;
+        } else if (parsedCollectorAddress.addresses().size() == 1) {
+            authority = parsedCollectorAddress.addresses().get(0).getHostName();
+        } else if (!parsedCollectorAddress.https()) {
+            authority = "dummy-service-authority";
+        } else {
+            throw new IllegalStateException("collector.authority is required when using client"
+                    + " side load balancing to connect to a glowroot central cluster over HTTPS");
+        }
+        NettyChannelBuilder builder = NettyChannelBuilder
+                .forTarget("dummy-target")
+                .nameResolverFactory(new SimpleNameResolverFactory(
+                        parsedCollectorAddress.addresses(), authority))
                 .loadBalancerFactory(RoundRobinLoadBalancerFactory.getInstance())
                 .eventLoopGroup(eventLoopGroup)
                 .executor(channelExecutor)
-                .negotiationType(NegotiationType.PLAINTEXT)
                 // aggressive keep alive, shouldn't even be used since gauge data is sent every
                 // 5 seconds and keep alive will only kick in after 30 seconds of not hearing back
                 // from the server
-                .keepAliveTime(30, SECONDS)
-                .build();
+                .keepAliveTime(30, SECONDS);
+        if (parsedCollectorAddress.https()) {
+            SslContextBuilder sslContext = GrpcSslContexts.forClient();
+            File trustCertCollectionFile = getTrustCertCollectionFile(confDir, sharedConfDir);
+            if (trustCertCollectionFile != null) {
+                sslContext.trustManager(trustCertCollectionFile);
+            }
+            channel = builder.sslContext(sslContext.build())
+                    .negotiationType(NegotiationType.TLS)
+                    .build();
+        } else {
+            channel = builder.negotiationType(NegotiationType.PLAINTEXT)
+                    .build();
+        }
         retryExecutor = Executors.newSingleThreadScheduledExecutor(
                 ThreadFactories.create("Glowroot-Collector-Retry"));
         this.inConnectionFailure = inConnectionFailure;
@@ -238,10 +267,27 @@ class CentralConnection {
         }
     }
 
-    private static List<SocketAddress> toSocketAddresses(String collectorAddress) {
-        List<SocketAddress> collectorAddresses = Lists.newArrayList();
+    private static ParsedCollectorAddress parseCollectorAddress(String collectorAddress) {
+        boolean https = false;
+        List<InetSocketAddress> collectorAddresses = Lists.newArrayList();
         for (String addr : Splitter.on(',').trimResults().omitEmptyStrings()
                 .split(collectorAddress)) {
+            if (addr.startsWith("https://")) {
+                if (!collectorAddresses.isEmpty() && !https) {
+                    throw new IllegalStateException("Cannot mix http and https addresses when using"
+                            + " client side load balancing: " + collectorAddress);
+                }
+                addr = addr.substring("https://".length());
+                https = true;
+            } else {
+                if (https) {
+                    throw new IllegalStateException("Cannot mix http and https addresses when using"
+                            + " client side load balancing: " + collectorAddress);
+                }
+                if (addr.startsWith("http://")) {
+                    addr = addr.substring("http://".length());
+                }
+            }
             int index = addr.indexOf(':');
             if (index == -1) {
                 throw new IllegalStateException(
@@ -258,7 +304,26 @@ class CentralConnection {
             }
             collectorAddresses.add(new InetSocketAddress(host, port));
         }
-        return collectorAddresses;
+        return ImmutableParsedCollectorAddress.builder()
+                .https(https)
+                .addAllAddresses(collectorAddresses)
+                .build();
+    }
+
+    private static @Nullable File getTrustCertCollectionFile(File confDir,
+            @Nullable File sharedConfDir) {
+        File confFile = new File(confDir, "grpc-trusted-root-certs.pem");
+        if (confFile.exists()) {
+            return confFile;
+        }
+        if (sharedConfDir == null) {
+            return null;
+        }
+        File sharedConfFile = new File(sharedConfDir, "grpc-trusted-root-certs.pem");
+        if (sharedConfFile.exists()) {
+            return sharedConfFile;
+        }
+        return null;
     }
 
     private static @Nullable String getRootCauseMessage(Throwable t) {
@@ -268,6 +333,12 @@ class CentralConnection {
         } else {
             return getRootCauseMessage(cause);
         }
+    }
+
+    @Value.Immutable
+    interface ParsedCollectorAddress {
+        boolean https();
+        List<InetSocketAddress> addresses();
     }
 
     abstract static class GrpcCall<T extends /*@NonNull*/ Object> {
@@ -386,15 +457,18 @@ class CentralConnection {
 
     private static class SimpleNameResolverFactory extends NameResolver.Factory {
 
-        private final List<SocketAddress> collectorAddresses;
+        private final List<InetSocketAddress> collectorAddresses;
+        private final String collectorAuthority;
 
-        private SimpleNameResolverFactory(List<SocketAddress> collectorAddresses) {
+        private SimpleNameResolverFactory(List<InetSocketAddress> collectorAddresses,
+                String collectorAuthority) {
             this.collectorAddresses = collectorAddresses;
+            this.collectorAuthority = collectorAuthority;
         }
 
         @Override
         public NameResolver newNameResolver(URI targetUri, Attributes params) {
-            return new SimpleNameResolver(collectorAddresses);
+            return new SimpleNameResolver(collectorAddresses, collectorAuthority);
         }
 
         @Override
@@ -405,15 +479,18 @@ class CentralConnection {
 
     private static class SimpleNameResolver extends NameResolver {
 
-        private final List<SocketAddress> collectorAddresses;
+        private final List<InetSocketAddress> collectorAddresses;
+        private final String collectorAuthority;
 
-        private SimpleNameResolver(List<SocketAddress> collectorAddresses) {
+        private SimpleNameResolver(List<InetSocketAddress> collectorAddresses,
+                String collectorAuthority) {
             this.collectorAddresses = collectorAddresses;
+            this.collectorAuthority = collectorAuthority;
         }
 
         @Override
         public String getServiceAuthority() {
-            return "dummy-service-authority";
+            return collectorAuthority;
         }
 
         @Override

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -81,7 +81,7 @@ glowroot.directive('gtButtonGroup', [
       + '<div class="clearfix">'
       + '  <span ng-transclude style="margin-right: 15px;"></span>'
       + '  <div class="gt-button-spinner hide"></div>'
-      + '  <div class="gt-button-message hide" style="padding-top: 5px;"></div>'
+      + '  <div class="gt-button-message hide" style="padding-top: 4px;"></div>'
       + '</div>',
       controller: [
         '$element',
@@ -232,11 +232,6 @@ glowroot.directive('gtInputGroupDropdown', function () {
           }
         });
       });
-      if (scope.gtClass) {
-        scope.classes = 'input-group-btn ' + scope.gtClass;
-      } else {
-        scope.classes = 'input-group-btn';
-      }
     }
   };
 });
@@ -247,7 +242,8 @@ glowroot.directive('gtNavbarItem', [
       scope: {
         gtDisplay: '@',
         gtItemName: '@',
-        gtUrl: '@'
+        gtUrl: '@',
+        gtClick: '&'
       },
       // replace is needed in order to not mess up bootstrap css hierarchical selectors
       replace: true,
@@ -256,12 +252,6 @@ glowroot.directive('gtNavbarItem', [
       link: function (scope) {
         scope.isActive = function () {
           return scope.$parent.activeNavbarItem === scope.gtItemName;
-        };
-        scope.ngClick = function () {
-          // need to collapse the navbar in mobile view
-          var $navbarCollapse = $('.navbar-collapse');
-          $navbarCollapse.removeClass('in');
-          $navbarCollapse.addClass('collapse');
         };
       }
     };
@@ -370,10 +360,9 @@ glowroot.directive('gtFormAutofocusOnFirstInput', [
   function ($timeout) {
     return function (scope, iElement) {
       $timeout(function () {
-        // don't focus on selects because then back button won't work (at least in chrome)
-        var selector = 'input:not(.gt-autofocus-ignore)';
+        var selector = 'input:not(.gt-autofocus-ignore),select';
         var unregisterWatch = scope.$watch(function () {
-          return iElement.find(selector).length && iElement.find('input').first().is(':visible');
+          return iElement.find(selector).length && iElement.find('input,select').first().is(':visible');
         }, function (newValue) {
           if (newValue) {
             iElement.find(selector).first().focus();
@@ -421,7 +410,7 @@ glowroot.directive('gtSelectpicker', [
       link: function (scope, iElement) {
         // need to set title before initializing selectpicker in order to avoid flicker of 'None selected' text
         // when going back and forth between two different transaction types
-        iElement.attr('title', scope.gtTitle);
+        iElement.attr('title', scope.gtTitle());
         // set style outside of $timeout to avoid style flicker on loading
         iElement.selectpicker(scope.gtSelectpickerOptions());
         scope.$watch('gtModel', function () {
@@ -451,12 +440,12 @@ glowroot.directive('gtDatePicker', [
       link: function (scope, iElement) {
         var dateElement = iElement.find('.date');
         var icons = {
-          time: 'fa fa-clock-o',
-          date: 'fa fa-calendar',
-          up: 'fa fa-chevron-up',
-          down: 'fa fa-chevron-down',
-          previous: 'fa fa-chevron-left',
-          next: 'fa fa-chevron-right'
+          time: 'fas fa-clock',
+          date: 'fas fa-calendar',
+          up: 'fas fa-chevron-up',
+          down: 'fas fa-chevron-down',
+          previous: 'fas fa-chevron-left',
+          next: 'fas fa-chevron-right'
         };
         var dateElementPicker = dateElement.datetimepicker({
           icons: icons,

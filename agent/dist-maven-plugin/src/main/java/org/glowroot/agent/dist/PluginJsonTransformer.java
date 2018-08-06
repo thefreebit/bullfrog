@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ package org.glowroot.agent.dist;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.List;
@@ -25,9 +24,6 @@ import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarInputStream;
 
-import javax.annotation.Nullable;
-
-import com.google.common.base.Charsets;
 import com.google.common.base.Objects;
 import com.google.common.collect.Lists;
 import com.google.common.io.CharStreams;
@@ -35,6 +31,7 @@ import com.google.common.io.Files;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.project.MavenProject;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.agent.config.ImmutablePluginDescriptor;
 import org.glowroot.agent.config.ImmutablePropertyDescriptor;
@@ -42,6 +39,8 @@ import org.glowroot.agent.config.PluginDescriptor;
 import org.glowroot.agent.config.PropertyDescriptor;
 import org.glowroot.agent.config.PropertyValue;
 import org.glowroot.agent.dist.PluginConfig.PropertyConfig;
+
+import static com.google.common.base.Charsets.UTF_8;
 
 class PluginJsonTransformer {
 
@@ -70,7 +69,7 @@ class PluginJsonTransformer {
         if (!metaInfDir.exists() && !metaInfDir.mkdirs()) {
             throw new IOException("Could not create directory: " + metaInfDir.getAbsolutePath());
         }
-        Files.write(pluginsJson, file, Charsets.UTF_8);
+        Files.write(pluginsJson, file, UTF_8);
     }
 
     private static List<PluginDescriptor> getPluginDescriptors(Set<Artifact> artifacts)
@@ -89,17 +88,15 @@ class PluginJsonTransformer {
 
     private static @Nullable String getGlowrootPluginJson(Artifact artifact) throws IOException {
         File artifactFile = artifact.getFile();
+        if (!artifactFile.exists()) {
+            return null;
+        }
         if (artifactFile.isDirectory()) {
             File jsonFile = new File(artifactFile, "META-INF/glowroot.plugin.json");
             if (!jsonFile.exists()) {
                 return null;
             }
-            FileReader reader = new FileReader(jsonFile);
-            try {
-                return CharStreams.toString(reader);
-            } finally {
-                reader.close();
-            }
+            return Files.toString(jsonFile, UTF_8);
         }
         JarInputStream jarIn = new JarInputStream(new FileInputStream(artifact.getFile()));
         try {
@@ -112,7 +109,7 @@ class PluginJsonTransformer {
                 if (!name.equals("META-INF/glowroot.plugin.json")) {
                     continue;
                 }
-                InputStreamReader in = new InputStreamReader(jarIn, Charsets.UTF_8);
+                InputStreamReader in = new InputStreamReader(jarIn, UTF_8);
                 String content = CharStreams.toString(in);
                 in.close();
                 return content;

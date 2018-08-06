@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,26 +17,33 @@ package org.glowroot.ui;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Ordering;
 import com.google.common.io.CharStreams;
 import org.immutables.value.Value;
 
-import org.glowroot.common.repo.ConfigRepository;
-import org.glowroot.common.repo.ImmutableSyntheticResult;
-import org.glowroot.common.repo.SyntheticResultRepository;
-import org.glowroot.common.repo.SyntheticResultRepository.SyntheticResult;
-import org.glowroot.common.repo.Utils;
-import org.glowroot.common.repo.util.RollupLevelService;
+import org.glowroot.common.util.CaptureTimes;
 import org.glowroot.common.util.ObjectMappers;
 import org.glowroot.common.util.Styles;
+import org.glowroot.common2.config.MoreConfigDefaults;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.ErrorIntervalCollector;
+import org.glowroot.common2.repo.ImmutableSyntheticResult;
+import org.glowroot.common2.repo.SyntheticResult;
+import org.glowroot.common2.repo.SyntheticResult.ErrorInterval;
+import org.glowroot.common2.repo.SyntheticResultRepository;
+import org.glowroot.common2.repo.util.RollupLevelService;
+import org.glowroot.common2.repo.util.RollupLevelService.DataKind;
+import org.glowroot.ui.ChartMarking.ChartMarkingInterval;
+import org.glowroot.ui.MultiErrorIntervalCollector.MultiErrorInterval;
+import org.glowroot.ui.MultiErrorIntervalMerger.GroupedMultiErrorInterval;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.SyntheticMonitorConfig;
 
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -62,11 +69,13 @@ class SyntheticResultJsonService {
     @GET(path = "/backend/synthetic-monitor/results", permission = "agent:syntheticMonitor")
     String getSyntheticResults(@BindAgentRollupId String agentRollupId,
             @BindRequest SyntheticResultRequest request) throws Exception {
-        int rollupLevel = rollupLevelService.getRollupLevelForView(request.from(), request.to());
-        long intervalMillis = configRepository.getRollupConfigs().get(rollupLevel).intervalMillis();
-        double gapMillis = intervalMillis * 1.5;
-        long revisedFrom = request.from() - intervalMillis;
-        long revisedTo = request.to() + intervalMillis;
+        int rollupLevel = rollupLevelService.getRollupLevelForView(request.from(), request.to(),
+                DataKind.GENERAL);
+        long dataPointIntervalMillis =
+                configRepository.getRollupConfigs().get(rollupLevel).intervalMillis();
+        double gapMillis = dataPointIntervalMillis * 1.5;
+        long revisedFrom = request.from() - dataPointIntervalMillis;
+        long revisedTo = request.to() + dataPointIntervalMillis;
 
         Map<String, List<SyntheticResult>> map = Maps.newLinkedHashMap();
         for (String syntheticMonitorId : request.syntheticMonitorId()) {
@@ -77,7 +86,9 @@ class SyntheticResultJsonService {
             syncManualRollupCaptureTimes(map, rollupLevel);
         }
         List<DataSeries> dataSeriesList = Lists.newArrayList();
-        for (Entry<String, List<SyntheticResult>> entry : map.entrySet()) {
+        List<Map<Long, Long>> executionCountsList = Lists.newArrayList();
+        List<List<MultiErrorInterval>> multiErrorIntervalsList = Lists.newArrayList();
+        for (Map.Entry<String, List<SyntheticResult>> entry : map.entrySet()) {
             String syntheticMonitorId = entry.getKey();
             SyntheticMonitorConfig config =
                     configRepository.getSyntheticMonitorConfig(agentRollupId, syntheticMonitorId);
@@ -85,14 +96,40 @@ class SyntheticResultJsonService {
                 throw new IllegalStateException(
                         "Synthetic monitor not found: " + syntheticMonitorId);
             }
-            dataSeriesList.add(
-                    convertToDataSeriesWithGaps(config.getDisplay(), entry.getValue(), gapMillis));
+            List<SyntheticResult> syntheticResults = entry.getValue();
+            dataSeriesList.add(convertToDataSeriesWithGaps(
+                    MoreConfigDefaults.getDisplayOrDefault(config), syntheticResults, gapMillis));
+            Map<Long, Long> executionCounts = Maps.newHashMap();
+            executionCountsList.add(executionCounts);
+            for (SyntheticResult syntheticResult : syntheticResults) {
+                executionCounts.put(syntheticResult.captureTime(),
+                        syntheticResult.executionCount());
+            }
+            ErrorIntervalCollector errorIntervalCollector = new ErrorIntervalCollector();
+            for (SyntheticResult syntheticResult : syntheticResults) {
+                List<ErrorInterval> errorIntervals = syntheticResult.errorIntervals();
+                if (errorIntervals.isEmpty()) {
+                    errorIntervalCollector.addGap();
+                } else {
+                    errorIntervalCollector.addErrorIntervals(errorIntervals);
+                }
+            }
+            MultiErrorIntervalCollector multiErrorIntervalCollector =
+                    new MultiErrorIntervalCollector();
+            multiErrorIntervalCollector
+                    .addErrorIntervals(errorIntervalCollector.getMergedErrorIntervals());
+            multiErrorIntervalsList.add(multiErrorIntervalCollector.getMergedMultiErrorIntervals());
         }
+        List<ChartMarking> markings =
+                toChartMarkings(multiErrorIntervalsList, request.syntheticMonitorId());
         StringBuilder sb = new StringBuilder();
         JsonGenerator jg = mapper.getFactory().createGenerator(CharStreams.asWriter(sb));
         try {
             jg.writeStartObject();
             jg.writeObjectField("dataSeries", dataSeriesList);
+            jg.writeNumberField("dataPointIntervalMillis", dataPointIntervalMillis);
+            jg.writeObjectField("executionCounts", executionCountsList);
+            jg.writeObjectField("markings", markings);
             jg.writeEndObject();
         } finally {
             jg.close();
@@ -106,8 +143,8 @@ class SyntheticResultJsonService {
         List<SyntheticMonitorConfig> configs =
                 configRepository.getSyntheticMonitorConfigs(agentRollupId);
         for (SyntheticMonitorConfig config : configs) {
-            syntheticMonitors
-                    .add(ImmutableSyntheticMonitor.of(config.getId(), config.getDisplay()));
+            syntheticMonitors.add(ImmutableSyntheticMonitor.of(config.getId(),
+                    MoreConfigDefaults.getDisplayOrDefault(config)));
         }
         ImmutableList<SyntheticMonitor> sortedSyntheticMonitors =
                 new SyntheticMonitorOrdering().immutableSortedCopy(syntheticMonitors);
@@ -123,7 +160,7 @@ class SyntheticResultJsonService {
         }
         long nonRolledUpFrom = from;
         if (!syntheticResults.isEmpty()) {
-            long lastRolledUpTime = syntheticResults.get(syntheticResults.size() - 1).captureTime();
+            long lastRolledUpTime = Iterables.getLast(syntheticResults).captureTime();
             nonRolledUpFrom = Math.max(nonRolledUpFrom, lastRolledUpTime + 1);
         }
         List<SyntheticResult> orderedNonRolledUpSyntheticResults = Lists.newArrayList();
@@ -141,15 +178,15 @@ class SyntheticResultJsonService {
     private <K> void syncManualRollupCaptureTimes(Map<K, List<SyntheticResult>> map,
             int rollupLevel) {
         long fixedIntervalMillis =
-                configRepository.getRollupConfigs().get(rollupLevel - 1).intervalMillis();
+                configRepository.getRollupConfigs().get(rollupLevel).intervalMillis();
         Map<K, Long> manualRollupCaptureTimes = Maps.newHashMap();
         long maxCaptureTime = Long.MIN_VALUE;
-        for (Entry<K, List<SyntheticResult>> entry : map.entrySet()) {
+        for (Map.Entry<K, List<SyntheticResult>> entry : map.entrySet()) {
             List<SyntheticResult> syntheticResults = entry.getValue();
             if (syntheticResults.isEmpty()) {
                 continue;
             }
-            SyntheticResult lastSyntheticResult = syntheticResults.get(syntheticResults.size() - 1);
+            SyntheticResult lastSyntheticResult = Iterables.getLast(syntheticResults);
             long lastCaptureTime = lastSyntheticResult.captureTime();
             maxCaptureTime = Math.max(maxCaptureTime, lastCaptureTime);
             if (lastCaptureTime % fixedIntervalMillis != 0) {
@@ -160,11 +197,11 @@ class SyntheticResultJsonService {
             // nothing to sync
             return;
         }
-        long maxRollupCaptureTime = Utils.getRollupCaptureTime(maxCaptureTime, fixedIntervalMillis);
+        long maxRollupCaptureTime = CaptureTimes.getRollup(maxCaptureTime, fixedIntervalMillis);
         long maxDiffToSync = Math.min(fixedIntervalMillis / 5, 60000);
-        for (Entry<K, Long> entry : manualRollupCaptureTimes.entrySet()) {
+        for (Map.Entry<K, Long> entry : manualRollupCaptureTimes.entrySet()) {
             Long captureTime = entry.getValue();
-            if (Utils.getRollupCaptureTime(captureTime,
+            if (CaptureTimes.getRollup(captureTime,
                     fixedIntervalMillis) != maxRollupCaptureTime) {
                 continue;
             }
@@ -176,7 +213,7 @@ class SyntheticResultJsonService {
             List<SyntheticResult> syntheticResults = checkNotNull(map.get(key));
             // make copy in case ImmutableList
             syntheticResults = Lists.newArrayList(syntheticResults);
-            SyntheticResult lastSyntheticResult = syntheticResults.get(syntheticResults.size() - 1);
+            SyntheticResult lastSyntheticResult = Iterables.getLast(syntheticResults);
             syntheticResults.set(syntheticResults.size() - 1, ImmutableSyntheticResult.builder()
                     .copyFrom(lastSyntheticResult)
                     .captureTime(maxCaptureTime)
@@ -191,7 +228,7 @@ class SyntheticResultJsonService {
         List<SyntheticResult> rolledUpSyntheticResults = Lists.newArrayList();
         double totalDurationNanos = 0;
         long executionCount = 0;
-        long errorCount = 0;
+        ErrorIntervalCollector errorIntervalCollector = new ErrorIntervalCollector();
         long currRollupCaptureTime = Long.MIN_VALUE;
         for (SyntheticResult nonRolledUpSyntheticResult : orderedNonRolledUpSyntheticResults) {
             long captureTime = nonRolledUpSyntheticResult.captureTime();
@@ -201,26 +238,31 @@ class SyntheticResultJsonService {
                         .captureTime(currRollupCaptureTime)
                         .totalDurationNanos(totalDurationNanos)
                         .executionCount(executionCount)
-                        .errorCount(errorCount)
+                        .errorIntervals(errorIntervalCollector.getMergedErrorIntervals())
                         .build());
                 totalDurationNanos = 0;
                 executionCount = 0;
-                errorCount = 0;
+                errorIntervalCollector = new ErrorIntervalCollector();
             }
             currRollupCaptureTime = rollupCaptureTime;
             totalDurationNanos += nonRolledUpSyntheticResult.totalDurationNanos();
             executionCount += nonRolledUpSyntheticResult.executionCount();
-            errorCount += nonRolledUpSyntheticResult.errorCount();
+            List<ErrorInterval> errorIntervals = nonRolledUpSyntheticResult.errorIntervals();
+            if (errorIntervals.isEmpty()) {
+                errorIntervalCollector.addGap();
+            } else {
+                errorIntervalCollector.addErrorIntervals(errorIntervals);
+            }
         }
         if (executionCount > 0) {
             // roll up final one
-            long lastCaptureTime = orderedNonRolledUpSyntheticResults
-                    .get(orderedNonRolledUpSyntheticResults.size() - 1).captureTime();
+            long lastCaptureTime =
+                    Iterables.getLast(orderedNonRolledUpSyntheticResults).captureTime();
             rolledUpSyntheticResults.add(ImmutableSyntheticResult.builder()
                     .captureTime(lastCaptureTime)
                     .totalDurationNanos(totalDurationNanos)
                     .executionCount(executionCount)
-                    .errorCount(errorCount)
+                    .errorIntervals(errorIntervalCollector.getMergedErrorIntervals())
                     .build());
         }
         return rolledUpSyntheticResults;
@@ -231,9 +273,12 @@ class SyntheticResultJsonService {
         DataSeries dataSeries = new DataSeries(dataSeriesName);
         SyntheticResult lastSyntheticResult = null;
         for (SyntheticResult syntheticResult : syntheticResults) {
-            if (lastSyntheticResult != null
-                    && syntheticResult.captureTime()
-                            - lastSyntheticResult.captureTime() > gapMillis) {
+            if (syntheticResult.executionCount() == 0) {
+                // only errors captured in this aggregate
+                continue;
+            }
+            if (lastSyntheticResult != null && syntheticResult.captureTime()
+                    - lastSyntheticResult.captureTime() > gapMillis) {
                 dataSeries.addNull();
             }
             dataSeries.add(syntheticResult.captureTime(),
@@ -242,6 +287,47 @@ class SyntheticResultJsonService {
             lastSyntheticResult = syntheticResult;
         }
         return dataSeries;
+    }
+
+    private static List<ChartMarking> toChartMarkings(
+            List<List<MultiErrorInterval>> multiErrorIntervalsList,
+            List<String> syntheticMonitorIds) {
+        MultiErrorIntervalMerger multiErrorIntervalMerger = new MultiErrorIntervalMerger();
+        for (int i = 0; i < multiErrorIntervalsList.size(); i++) {
+            List<MultiErrorInterval> multiErrorIntervals = multiErrorIntervalsList.get(i);
+            String syntheticMonitorId = syntheticMonitorIds.get(i);
+            multiErrorIntervalMerger.addMultiErrorIntervals(syntheticMonitorId,
+                    multiErrorIntervals);
+        }
+        List<ChartMarking> chartMarkings = Lists.newArrayList();
+        for (GroupedMultiErrorInterval groupedMultiErrorInterval : multiErrorIntervalMerger
+                .getGroupedMultiErrorIntervals()) {
+            ImmutableChartMarking.Builder chartMarking = ImmutableChartMarking.builder()
+                    .from(groupedMultiErrorInterval.from())
+                    .to(groupedMultiErrorInterval.to());
+            for (Map.Entry<String, List<ErrorInterval>> entry : groupedMultiErrorInterval
+                    .errorIntervals().entrySet()) {
+                chartMarking.putIntervals(entry.getKey(),
+                        toChartMarkingIntervals(entry.getValue()));
+            }
+            chartMarkings.add(chartMarking.build());
+        }
+        return chartMarkings;
+    }
+
+    private static List<ChartMarkingInterval> toChartMarkingIntervals(
+            List<ErrorInterval> errorIntervals) {
+        List<ChartMarkingInterval> chartMarkingIntervals =
+                Lists.newArrayListWithCapacity(errorIntervals.size());
+        for (ErrorInterval errorInterval : errorIntervals) {
+            chartMarkingIntervals.add(ImmutableChartMarkingInterval.builder()
+                    .from(errorInterval.from())
+                    .to(errorInterval.to())
+                    .count(errorInterval.count())
+                    .message(errorInterval.message())
+                    .build());
+        }
+        return chartMarkingIntervals;
     }
 
     @Value.Immutable
@@ -269,7 +355,7 @@ class SyntheticResultJsonService {
 
         @Override
         public Long apply(Long captureTime) {
-            return Utils.getRollupCaptureTime(captureTime, fixedIntervalMillis);
+            return CaptureTimes.getRollup(captureTime, fixedIntervalMillis);
         }
     }
 

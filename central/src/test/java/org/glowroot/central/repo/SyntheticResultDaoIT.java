@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package org.glowroot.central.repo;
 import java.util.List;
 
 import com.datastax.driver.core.Cluster;
-import com.datastax.driver.core.KeyspaceMetadata;
 import com.google.common.collect.Lists;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -26,9 +25,9 @@ import org.junit.Test;
 
 import org.glowroot.central.util.ClusterManager;
 import org.glowroot.central.util.Session;
-import org.glowroot.common.config.ImmutableCentralStorageConfig;
-import org.glowroot.common.repo.SyntheticResultRepository.SyntheticResult;
 import org.glowroot.common.util.Clock;
+import org.glowroot.common2.config.ImmutableCentralStorageConfig;
+import org.glowroot.common2.repo.SyntheticResult;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,28 +37,22 @@ public class SyntheticResultDaoIT {
     private static Cluster cluster;
     private static Session session;
     private static ClusterManager clusterManager;
-    private static AgentRollupDao agentRollupDao;
-    private static SyntheticResultDao syntheticResultDao;
+    private static SyntheticResultDaoImpl syntheticResultDao;
 
     @BeforeClass
     public static void setUp() throws Exception {
         SharedSetupRunListener.startCassandra();
         cluster = Clusters.newCluster();
-        session = new Session(cluster.newSession());
-        session.createKeyspaceIfNotExists("glowroot_unit_tests");
-        session.execute("use glowroot_unit_tests");
-        KeyspaceMetadata keyspaceMetadata =
-                cluster.getMetadata().getKeyspace("glowroot_unit_tests");
-
+        session = new Session(cluster.newSession(), "glowroot_unit_tests");
         clusterManager = ClusterManager.create();
         CentralConfigDao centralConfigDao = new CentralConfigDao(session, clusterManager);
-        agentRollupDao = new AgentRollupDao(session, clusterManager);
         AgentConfigDao agentConfigDao = new AgentConfigDao(session, clusterManager);
-        UserDao userDao = new UserDao(session, keyspaceMetadata, clusterManager);
-        RoleDao roleDao = new RoleDao(session, keyspaceMetadata, clusterManager);
-        ConfigRepositoryImpl configRepository = new ConfigRepositoryImpl(agentRollupDao,
-                agentConfigDao, centralConfigDao, userDao, roleDao, "");
-        syntheticResultDao = new SyntheticResultDao(session, configRepository, Clock.systemClock());
+        UserDao userDao = new UserDao(session, clusterManager);
+        RoleDao roleDao = new RoleDao(session, clusterManager);
+        ConfigRepositoryImpl configRepository =
+                new ConfigRepositoryImpl(centralConfigDao, agentConfigDao, userDao, roleDao, "");
+        syntheticResultDao =
+                new SyntheticResultDaoImpl(session, configRepository, Clock.systemClock());
     }
 
     @AfterClass
@@ -73,9 +66,9 @@ public class SyntheticResultDaoIT {
     @Test
     public void shouldRollup() throws Exception {
         syntheticResultDao.truncateAll();
-        syntheticResultDao.store("one", "11223344", 60001, SECONDS.toNanos(1), false);
-        syntheticResultDao.store("one", "11223344", 120002, SECONDS.toNanos(3), false);
-        syntheticResultDao.store("one", "11223344", 360000, SECONDS.toNanos(7), false);
+        syntheticResultDao.store("one", "11223344", 60001, SECONDS.toNanos(1), null);
+        syntheticResultDao.store("one", "11223344", 120002, SECONDS.toNanos(3), null);
+        syntheticResultDao.store("one", "11223344", 360000, SECONDS.toNanos(7), null);
 
         // check non-rolled up data
         List<SyntheticResult> syntheticResults =
@@ -86,11 +79,11 @@ public class SyntheticResultDaoIT {
         assertThat(result1.captureTime()).isEqualTo(60001);
         assertThat(result1.totalDurationNanos()).isEqualTo(SECONDS.toNanos(1));
         assertThat(result1.executionCount()).isEqualTo(1);
-        assertThat(result1.errorCount()).isEqualTo(0);
+        assertThat(result1.errorIntervals()).isEmpty();
         assertThat(result2.captureTime()).isEqualTo(120002);
         assertThat(result2.totalDurationNanos()).isEqualTo(SECONDS.toNanos(3));
         assertThat(result2.executionCount()).isEqualTo(1);
-        assertThat(result2.errorCount()).isEqualTo(0);
+        assertThat(result2.errorIntervals()).isEmpty();
 
         // rollup
         List<Integer> rollupExpirationHours = Lists.newArrayList(
@@ -107,6 +100,6 @@ public class SyntheticResultDaoIT {
         assertThat(result1.captureTime()).isEqualTo(300000);
         assertThat(result1.totalDurationNanos()).isEqualTo(SECONDS.toNanos(4));
         assertThat(result1.executionCount()).isEqualTo(2);
-        assertThat(result1.errorCount()).isEqualTo(0);
+        assertThat(result1.errorIntervals()).isEmpty();
     }
 }

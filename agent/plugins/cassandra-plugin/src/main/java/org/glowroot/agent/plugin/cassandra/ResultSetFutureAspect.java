@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,11 @@
  */
 package org.glowroot.agent.plugin.cassandra;
 
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
-
 import org.glowroot.agent.plugin.api.AsyncQueryEntry;
 import org.glowroot.agent.plugin.api.ThreadContext;
 import org.glowroot.agent.plugin.api.Timer;
+import org.glowroot.agent.plugin.api.checker.NonNull;
+import org.glowroot.agent.plugin.api.checker.Nullable;
 import org.glowroot.agent.plugin.api.weaving.BindParameter;
 import org.glowroot.agent.plugin.api.weaving.BindReceiver;
 import org.glowroot.agent.plugin.api.weaving.BindReturn;
@@ -39,9 +38,9 @@ public class ResultSetFutureAspect {
     @Mixin("com.datastax.driver.core.ResultSetFuture")
     public static class ResultSetFutureImpl implements ResultSetFutureMixin {
 
-        private volatile boolean glowroot$completed;
-        private volatile @Nullable Throwable glowroot$exception;
-        private volatile @Nullable AsyncQueryEntry glowroot$asyncQueryEntry;
+        private transient volatile boolean glowroot$completed;
+        private transient volatile @Nullable Throwable glowroot$exception;
+        private transient volatile @Nullable AsyncQueryEntry glowroot$asyncQueryEntry;
 
         @Override
         public void glowroot$setCompleted() {
@@ -104,7 +103,7 @@ public class ResultSetFutureAspect {
         public static Timer onBefore(ThreadContext threadContext,
                 @BindReceiver ResultSetFutureMixin resultSetFuture) {
             @SuppressWarnings("nullness") // just checked above in isEnabled()
-            @Nonnull
+            @NonNull
             AsyncQueryEntry asyncQueryEntry = resultSetFuture.glowroot$getAsyncQueryEntry();
             return asyncQueryEntry.extendSyncTimer(threadContext);
         }
@@ -116,7 +115,7 @@ public class ResultSetFutureAspect {
             }
             // pass query entry to the result set so it can be used when iterating the result set
             AsyncQueryEntry asyncQueryEntry = resultSetFuture.glowroot$getAsyncQueryEntry();
-            resultSet.glowroot$setLastQueryEntry(asyncQueryEntry);
+            resultSet.glowroot$setQueryEntry(asyncQueryEntry);
         }
         @OnAfter
         public static void onAfter(@BindTraveler Timer timer) {

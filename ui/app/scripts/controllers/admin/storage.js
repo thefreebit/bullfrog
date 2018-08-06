@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,10 @@ glowroot.controller('AdminStorageCtrl', [
     // initialize page binding object
     $scope.page = {};
 
+    // close modal backdrop if open, this is needed if click on "see Configuration > Storage > Trace detail data" inside
+    // of trace modal
+    $('.modal-backdrop').remove();
+
     $scope.hasChanges = function () {
       return $scope.originalConfig && !angular.equals($scope.config, $scope.originalConfig);
     };
@@ -41,17 +45,39 @@ glowroot.controller('AdminStorageCtrl', [
       }
     });
 
+    if ($scope.layout.central) {
+      $scope.$watchCollection('page.queryAndServiceCallRollupExpirationDays', function (newValue) {
+        if ($scope.config) {
+          $scope.config.queryAndServiceCallRollupExpirationHours = [];
+          angular.forEach(newValue, function (days) {
+            $scope.config.queryAndServiceCallRollupExpirationHours.push(days * 24);
+          });
+        }
+      });
+
+      $scope.$watchCollection('page.profileRollupExpirationDays', function (newValue) {
+        if ($scope.config) {
+          $scope.config.profileRollupExpirationHours = [];
+          angular.forEach(newValue, function (days) {
+            $scope.config.profileRollupExpirationHours.push(days * 24);
+          });
+        }
+      });
+    }
+
     $scope.$watchCollection('page.traceExpirationDays', function (newValue) {
       if ($scope.config) {
         $scope.config.traceExpirationHours = newValue * 24;
       }
     });
 
-    $scope.$watchCollection('page.fullQueryTextExpirationDays', function (newValue) {
-      if ($scope.config) {
-        $scope.config.fullQueryTextExpirationHours = newValue * 24;
-      }
-    });
+    if (!$scope.layout.central) {
+      $scope.$watchCollection('page.fullQueryTextExpirationDays', function (newValue) {
+        if ($scope.config) {
+          $scope.config.fullQueryTextExpirationHours = newValue * 24;
+        }
+      });
+    }
 
     function onNewData(data) {
       $scope.loaded = true;
@@ -62,11 +88,25 @@ glowroot.controller('AdminStorageCtrl', [
       angular.forEach(data.rollupExpirationHours, function (hours) {
         $scope.page.rollupExpirationDays.push(hours / 24);
       });
+      if ($scope.layout.central) {
+        $scope.page.queryAndServiceCallRollupExpirationDays = [];
+        angular.forEach(data.queryAndServiceCallRollupExpirationHours, function (hours) {
+          $scope.page.queryAndServiceCallRollupExpirationDays.push(hours / 24);
+        });
+        $scope.page.profileRollupExpirationDays = [];
+        angular.forEach(data.profileRollupExpirationHours, function (hours) {
+          $scope.page.profileRollupExpirationDays.push(hours / 24);
+        });
+      }
       $scope.page.traceExpirationDays = data.traceExpirationHours / 24;
-      $scope.page.fullQueryTextExpirationDays = data.fullQueryTextExpirationHours / 24;
+      if (!$scope.layout.central) {
+        $scope.page.fullQueryTextExpirationDays = data.fullQueryTextExpirationHours / 24;
+      }
     }
 
     $scope.save = function (deferred) {
+      $scope.showH2DiskSpaceAnalysis = false;
+      $scope.showTraceCountAnalysis = false;
       $http.post('backend/admin/storage', $scope.config)
           .then(function (response) {
             onNewData(response.data);
@@ -76,10 +116,72 @@ glowroot.controller('AdminStorageCtrl', [
           });
     };
 
+    $scope.updateCassandraTwcsWindowSizes = function (deferred) {
+      $http.post('backend/admin/update-cassandra-twcs-window-sizes')
+          .then(function (response) {
+            var updatedTableCount = response.data;
+            deferred.resolve('Updated ' + updatedTableCount + ' table' + (updatedTableCount === 1 ? '' : 's'));
+          }, function (response) {
+            httpErrors.handle(response, $scope, deferred);
+          });
+    };
+
     $scope.deleteAllStoredData = function (deferred) {
-      $http.post('backend/admin/delete-all-stored-data', {agentRollupId: $scope.agentRollupId})
+      $scope.showH2DiskSpaceAnalysis = false;
+      $scope.showTraceCountAnalysis = false;
+      $http.post('backend/admin/delete-all-stored-data', {})
           .then(function () {
             deferred.resolve('Deleted');
+          }, function (response) {
+            httpErrors.handle(response, $scope, deferred);
+          });
+    };
+
+    $scope.defragH2Data = function (deferred) {
+      $scope.showH2DiskSpaceAnalysis = false;
+      $scope.showTraceCountAnalysis = false;
+      $http.post('backend/admin/defrag-h2-data', {})
+          .then(function () {
+            deferred.resolve('Defragmented');
+          }, function (response) {
+            httpErrors.handle(response, $scope, deferred);
+          });
+    };
+
+    $scope.compactH2Data = function (deferred) {
+      $scope.showH2DiskSpaceAnalysis = false;
+      $scope.showTraceCountAnalysis = false;
+      $http.post('backend/admin/compact-h2-data', {})
+          .then(function () {
+            deferred.resolve('Compacted');
+          }, function (response) {
+            httpErrors.handle(response, $scope, deferred);
+          });
+    };
+
+    $scope.analyzeH2DiskSpace = function (deferred) {
+      $scope.showH2DiskSpaceAnalysis = false;
+      $scope.showTraceCountAnalysis = false;
+      $http.post('backend/admin/analyze-h2-disk-space', {})
+          .then(function (data) {
+            $scope.h2DataFileSize = data.data.h2DataFileSize;
+            $scope.analyzedH2Tables = data.data.tables;
+            $scope.showH2DiskSpaceAnalysis = true;
+            deferred.resolve('Analyzed');
+          }, function (response) {
+            httpErrors.handle(response, $scope, deferred);
+          });
+    };
+
+    $scope.analyzeTraceCounts = function (deferred) {
+      $scope.showH2DiskSpaceAnalysis = false;
+      $scope.showTraceCountAnalysis = false;
+      $http.post('backend/admin/analyze-trace-counts', {})
+          .then(function (data) {
+            $scope.analyzedTraceOverallCounts = data.data.overallCounts;
+            $scope.analyzedTraceCounts = data.data.counts;
+            $scope.showTraceCountAnalysis = true;
+            deferred.resolve('Analyzed');
           }, function (response) {
             httpErrors.handle(response, $scope, deferred);
           });

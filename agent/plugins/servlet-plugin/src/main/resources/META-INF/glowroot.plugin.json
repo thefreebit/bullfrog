@@ -67,9 +67,10 @@
       "methodParameterTypes": [
         "javax.servlet.ServletContextEvent"
       ],
-      "captureKind": "trace-entry",
+      "captureKind": "transaction",
       "timerName": "listener init",
-      "traceEntryMessageTemplate": "listener init: {{this.class.name}}"
+      "transactionType": "Startup",
+      "transactionNameTemplate": "Listener init: {{this.class.name}}"
     },
     {
       "className": "javax.servlet.Servlet",
@@ -77,9 +78,10 @@
       "methodParameterTypes": [
         "javax.servlet.ServletConfig"
       ],
-      "captureKind": "trace-entry",
+      "captureKind": "transaction",
       "timerName": "servlet init",
-      "traceEntryMessageTemplate": "servlet init: {{this.class.name}}"
+      "transactionType": "Startup",
+      "transactionNameTemplate": "Servlet init: {{this.class.name}}"
     },
     {
       "className": "javax.servlet.Filter",
@@ -87,9 +89,10 @@
       "methodParameterTypes": [
         "javax.servlet.FilterConfig"
       ],
-      "captureKind": "trace-entry",
+      "captureKind": "transaction",
       "timerName": "filter init",
-      "traceEntryMessageTemplate": "filter init: {{this.class.name}}"
+      "transactionType": "Startup",
+      "transactionNameTemplate": "Filter init: {{this.class.name}}"
     },
     {
       "className": "javax.servlet.ServletContainerInitializer",
@@ -98,19 +101,20 @@
         "java.util.Set",
         "javax.servlet.ServletContext"
       ],
-      "captureKind": "trace-entry",
+      "captureKind": "transaction",
       "timerName": "container initializer",
-      "traceEntryMessageTemplate": "container initializer: {{this.class.name}}"
+      "transactionType": "Startup",
+      "transactionNameTemplate": "Container initializer: {{this.class.name}}"
     },
     {
-      "className": "io.undertow.servlet.api.DeploymentManager",
-      "methodName": "start",
+      "className": "org.wildfly.extension.undertow.deployment.UndertowDeploymentService",
+      "methodName": "startContext",
       "methodParameterTypes": [
       ],
       "captureKind": "transaction",
       "timerName": "application startup",
       "transactionType": "Startup",
-      "transactionNameTemplate": "Servlet context: {{this.deployment.deploymentInfo.contextPath}}"
+      "transactionNameTemplate": "Servlet context: {{this.deploymentInfoInjectedValue.value.contextPath}}"
     },
     {
       "className": "org.eclipse.jetty.webapp.WebAppContext",

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,6 @@ package org.glowroot.agent.model;
 
 import java.util.List;
 
-import javax.annotation.Nullable;
-
 import com.google.common.base.Ticker;
 
 import org.glowroot.agent.util.Tickers;
@@ -28,20 +26,26 @@ public class AsyncTimerImpl implements CommonTimerImpl {
     private static final Ticker ticker = Tickers.getTicker();
 
     private final TimerNameImpl timerName;
-    private final long startTick;
 
-    private volatile long totalNanos = -1;
+    private volatile long startTick;
+    private volatile boolean active;
 
-    // this is for maintaining list of async timers
-    private volatile @Nullable AsyncTimerImpl nextAsyncTimer;
+    private volatile long totalNanos = 0;
 
     public AsyncTimerImpl(TimerNameImpl timerName, long startTick) {
         this.timerName = timerName;
         this.startTick = startTick;
+        active = true;
     }
 
     public void end(long endTick) {
-        totalNanos = endTick - startTick;
+        totalNanos += endTick - startTick;
+        active = false;
+    }
+
+    public void extend(long startTick) {
+        this.startTick = startTick;
+        active = true;
     }
 
     @Override
@@ -57,9 +61,8 @@ public class AsyncTimerImpl implements CommonTimerImpl {
     @Override
     public long getTotalNanos() {
         long totalNanos = this.totalNanos;
-        if (totalNanos == -1) {
-            // active
-            totalNanos = ticker.read() - startTick;
+        if (active) {
+            totalNanos += ticker.read() - startTick;
         }
         return totalNanos;
     }
@@ -80,20 +83,13 @@ public class AsyncTimerImpl implements CommonTimerImpl {
     }
 
     public boolean active() {
-        return totalNanos == -1;
+        return active;
     }
 
     @Override
     public TimerImplSnapshot getSnapshot() {
-        long totalNanos = this.totalNanos;
-        boolean active = false;
-        if (totalNanos == -1) {
-            // active
-            active = true;
-            totalNanos = ticker.read() - startTick;
-        }
         return ImmutableTimerImplSnapshot.builder()
-                .totalNanos(totalNanos)
+                .totalNanos(getTotalNanos())
                 .count(1)
                 .active(active)
                 .build();

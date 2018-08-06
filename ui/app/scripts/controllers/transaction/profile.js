@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,10 @@ glowroot.controller('TransactionProfileCtrl', [
   '$http',
   '$location',
   'locationChanges',
+  'charts',
   'queryStrings',
   'httpErrors',
-  function ($scope, $http, $location, locationChanges, queryStrings, httpErrors) {
+  function ($scope, $http, $location, locationChanges, charts, queryStrings, httpErrors) {
 
     $scope.$parent.activeTabItem = 'profile';
 
@@ -43,7 +44,7 @@ glowroot.controller('TransactionProfileCtrl', [
     });
 
     $scope.tabQueryString = function (auxiliary) {
-      var query = $scope.buildQueryObject({});
+      var query = $scope.buildQueryObject();
       if (auxiliary) {
         query.auxiliary = true;
       }
@@ -72,7 +73,7 @@ glowroot.controller('TransactionProfileCtrl', [
     };
 
     $scope.flameGraphHref = function () {
-      var query = $scope.buildQueryObject();
+      var query = $scope.buildQueryObject(true);
       delete query['summary-sort-order'];
       if ($scope.filter) {
         query.filter = $scope.filter;
@@ -84,7 +85,7 @@ glowroot.controller('TransactionProfileCtrl', [
     };
 
     $scope.refresh = function () {
-      $scope.applyLast();
+      charts.applyLast($scope);
       appliedFilter = $scope.filter;
       $scope.range.chartRefresh++;
     };

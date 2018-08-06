@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,6 @@ package org.glowroot.agent.weaving;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.lang.management.LockInfo;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MonitorInfo;
@@ -27,28 +25,28 @@ import java.lang.management.ThreadMXBean;
 import java.security.CodeSource;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
-import javax.annotation.Nullable;
-
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.StandardSystemProperty;
 import com.google.common.base.Supplier;
 import com.google.common.base.Ticker;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
 import com.google.common.io.Files;
 import com.google.common.primitives.Longs;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.commons.AdviceAdapter;
-import org.objectweb.asm.commons.JSRInlinerAdapter;
-import org.objectweb.asm.util.CheckClassAdapter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.glowroot.agent.bytecode.api.Bytecode;
 import org.glowroot.agent.config.ConfigService;
 import org.glowroot.agent.impl.ThreadContextImpl;
 import org.glowroot.agent.impl.TimerImpl;
@@ -59,19 +57,28 @@ import org.glowroot.agent.plugin.api.config.ConfigListener;
 import org.glowroot.agent.plugin.api.weaving.Pointcut;
 import org.glowroot.agent.util.IterableWithSelfRemovableEntries;
 import org.glowroot.agent.util.IterableWithSelfRemovableEntries.SelfRemovableEntry;
-import org.glowroot.agent.weaving.AnalyzedWorld.ParseContext;
 import org.glowroot.common.util.ScheduledRunnable.TerminateSubsequentExecutionsException;
 
-import static com.google.common.base.Preconditions.checkNotNull;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
-import static org.objectweb.asm.Opcodes.ASM5;
+import static org.objectweb.asm.Opcodes.ASM6;
+import static org.objectweb.asm.Opcodes.INVOKESTATIC;
+import static org.objectweb.asm.Opcodes.V1_6;
 
 public class Weaver {
 
     private static final Logger logger = LoggerFactory.getLogger(Weaver.class);
 
-    // useful for debugging java.lang.VerifyErrors
-    private static final boolean VERIFY_WEAVING = Boolean.getBoolean("glowroot.weaving.verify");
+    // useful for debugging java.lang.VerifyError and java.lang.ClassFormatError
+    private static final @Nullable String DEBUG_CLASS_NAME;
+
+    static {
+        String debugClassName = System.getProperty("glowroot.debug.className");
+        if (debugClassName == null) {
+            DEBUG_CLASS_NAME = null;
+        } else {
+            DEBUG_CLASS_NAME = ClassNames.toInternalName(debugClassName);
+        }
+    }
 
     private final Supplier<List<Advice>> advisors;
     private final ImmutableList<ShimType> shimTypes;
@@ -82,6 +89,8 @@ public class Weaver {
     private final TimerName timerName;
 
     private volatile boolean weavingTimerEnabled;
+
+    private volatile boolean noLongerNeedToWeaveMainMethods;
 
     private volatile boolean weavingDisabledForLoggingDeadlock;
 
@@ -107,6 +116,10 @@ public class Weaver {
         this.timerName = timerNameCache.getTimerName(OnlyForTheTimerName.class);
     }
 
+    public void setNoLongerNeedToWeaveMainMethods() {
+        noLongerNeedToWeaveMainMethods = true;
+    }
+
     public void checkForDeadlockedActiveWeaving() {
         long currTick = ticker.read();
         List<Long> threadIds = Lists.newArrayList();
@@ -121,7 +134,8 @@ public class Weaver {
     }
 
     byte /*@Nullable*/ [] weave(byte[] classBytes, String className,
-            @Nullable CodeSource codeSource, @Nullable ClassLoader loader) {
+            @Nullable Class<?> classBeingRedefined, @Nullable CodeSource codeSource,
+            @Nullable ClassLoader loader) {
         if (weavingDisabledForLoggingDeadlock) {
             return null;
         }
@@ -131,7 +145,8 @@ public class Weaver {
                 activeWeavings.add(new ActiveWeaving(Thread.currentThread().getId(), startTick));
         try {
             logger.trace("transform(): className={}", className);
-            byte[] transformedBytes = weaveUnderTimer(classBytes, className, codeSource, loader);
+            byte[] transformedBytes =
+                    weaveUnderTimer(classBytes, className, classBeingRedefined, codeSource, loader);
             if (transformedBytes != null) {
                 logger.debug("transform(): transformed {}", className);
             }
@@ -148,7 +163,8 @@ public class Weaver {
         if (!weavingTimerEnabled) {
             return null;
         }
-        ThreadContextImpl threadContext = transactionRegistry.getCurrentThreadContextHolder().get();
+        ThreadContextImpl threadContext =
+                (ThreadContextImpl) transactionRegistry.getCurrentThreadContextHolder().get();
         if (threadContext == null) {
             return null;
         }
@@ -160,57 +176,123 @@ public class Weaver {
     }
 
     private byte /*@Nullable*/ [] weaveUnderTimer(byte[] classBytes, String className,
-            @Nullable CodeSource codeSource, @Nullable ClassLoader loader) {
-        List<Advice> advisors = analyzedWorld.mergeInstrumentationAnnotations(this.advisors.get(),
+            @Nullable Class<?> classBeingRedefined, @Nullable CodeSource codeSource,
+            @Nullable ClassLoader loader) {
+        List<Advice> advisors = AnalyzedWorld.mergeInstrumentationAnnotations(this.advisors.get(),
                 classBytes, loader, className);
         ThinClassVisitor accv = new ThinClassVisitor();
         new ClassReader(classBytes).accept(accv, ClassReader.SKIP_FRAMES + ClassReader.SKIP_CODE);
+        boolean frames = accv.getMajorVersion() >= V1_6;
+        int expandFrames = frames ? ClassReader.EXPAND_FRAMES : 0;
         byte[] maybeProcessedBytes = null;
-        if (className.equals("org/apache/felix/framework/BundleWiringImpl")) {
-            ClassWriter cw = new ComputeFramesClassWriter(ClassWriter.COMPUTE_FRAMES, analyzedWorld,
-                    loader, codeSource, className);
-            ClassVisitor cv = new FelixOsgiHackClassVisitor(cw);
+        if (accv.isConstructorPointcut()) {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            ClassVisitor cv = new PointcutClassVisitor(cw);
             ClassReader cr = new ClassReader(classBytes);
-            cr.accept(new JSRInlinerClassVisitor(cv), ClassReader.SKIP_FRAMES);
+            cr.accept(new JSRInlinerClassVisitor(cv), expandFrames);
             maybeProcessedBytes = cw.toByteArray();
-        } else if (className.equals("org/jboss/system/server/ServerImpl")) {
-            ClassWriter cw = new ComputeFramesClassWriter(ClassWriter.COMPUTE_FRAMES, analyzedWorld,
-                    loader, codeSource, className);
-            ClassVisitor cv = new JBoss4HackClassVisitor(cw);
+        } else if (className.equals(ImportantClassNames.MANAGEMENT_FACTORY_CLASS_NAME)) {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            ClassVisitor cv = new ManagementFactoryHackClassVisitor(cw);
             ClassReader cr = new ClassReader(classBytes);
-            cr.accept(new JSRInlinerClassVisitor(cv), ClassReader.SKIP_FRAMES);
+            cr.accept(new JSRInlinerClassVisitor(cv), expandFrames);
+            maybeProcessedBytes = cw.toByteArray();
+        } else if (className.equals(ImportantClassNames.JBOSS_WELD_HACK_CLASS_NAME)) {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            ClassVisitor cv = new JBossWeldHackClassVisitor(cw);
+            ClassReader cr = new ClassReader(classBytes);
+            cr.accept(new JSRInlinerClassVisitor(cv), expandFrames);
+            maybeProcessedBytes = cw.toByteArray();
+        } else if (className.equals(ImportantClassNames.JBOSS_MODULES_HACK_CLASS_NAME)) {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            ClassVisitor cv = new JBossModulesHackClassVisitor(cw);
+            ClassReader cr = new ClassReader(classBytes);
+            cr.accept(new JSRInlinerClassVisitor(cv), expandFrames);
+            maybeProcessedBytes = cw.toByteArray();
+        } else if (className.equals(ImportantClassNames.JBOSS_URL_HACK_CLASS_NAME)) {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            ClassVisitor cv = new JBossUrlHackClassVisitor(cw);
+            ClassReader cr = new ClassReader(classBytes);
+            cr.accept(new JSRInlinerClassVisitor(cv), expandFrames);
+            maybeProcessedBytes = cw.toByteArray();
+        } else if (className.equals(ImportantClassNames.FELIX_OSGI_HACK_CLASS_NAME)
+                || className.equals(ImportantClassNames.FELIX3_OSGI_HACK_CLASS_NAME)) {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            ClassVisitor cv = new OsgiHackClassVisitor(cw, className, "shouldBootDelegate");
+            ClassReader cr = new ClassReader(classBytes);
+            cr.accept(new JSRInlinerClassVisitor(cv), expandFrames);
+            maybeProcessedBytes = cw.toByteArray();
+        } else if (className.equals(ImportantClassNames.ECLIPSE_OSGI_HACK_CLASS_NAME)) {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            ClassVisitor cv = new OsgiHackClassVisitor(cw, className, "isBootDelegationPackage");
+            ClassReader cr = new ClassReader(classBytes);
+            cr.accept(new JSRInlinerClassVisitor(cv), expandFrames);
+            maybeProcessedBytes = cw.toByteArray();
+        } else if (className.equals(ImportantClassNames.OPENEJB_HACK_CLASS_NAME)) {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            ClassVisitor cv = new OpenEJBHackClassVisitor(cw);
+            ClassReader cr = new ClassReader(classBytes);
+            cr.accept(new JSRInlinerClassVisitor(cv), expandFrames);
+            maybeProcessedBytes = cw.toByteArray();
+        } else if (className.equals(ImportantClassNames.HIKARI_CP_PROXY_HACK_CLASS_NAME)) {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            ClassVisitor cv = new HikariCpProxyHackClassVisitor(cw);
+            ClassReader cr = new ClassReader(classBytes);
+            cr.accept(new JSRInlinerClassVisitor(cv), expandFrames);
             maybeProcessedBytes = cw.toByteArray();
         }
         ClassAnalyzer classAnalyzer = new ClassAnalyzer(accv.getThinClass(), advisors, shimTypes,
-                mixinTypes, loader, analyzedWorld, codeSource, classBytes);
+                mixinTypes, loader, analyzedWorld, codeSource, classBytes,
+                noLongerNeedToWeaveMainMethods);
         classAnalyzer.analyzeMethods();
         if (!classAnalyzer.isWeavingRequired()) {
             analyzedWorld.add(classAnalyzer.getAnalyzedClass(), loader);
             return maybeProcessedBytes;
         }
-        // from http://www.oracle.com/technetwork/java/javase/compatibility-417013.html:
-        //
-        // "Classfiles with version number 51 are exclusively verified using the type-checking
-        // verifier, and thus the methods must have StackMapTable attributes when appropriate.
-        // For classfiles with version 50, the Hotspot JVM would (and continues to) failover to
-        // the type-inferencing verifier if the stackmaps in the file were missing or incorrect.
-        // This failover behavior does not occur for classfiles with version 51 (the default
-        // version for Java SE 7).
-        // Any tool that modifies bytecode in a version 51 classfile must be sure to update the
-        // stackmap information to be consistent with the bytecode in order to pass
-        // verification."
-        //
-        ClassWriter cw = new ComputeFramesClassWriter(ClassWriter.COMPUTE_FRAMES, analyzedWorld,
-                loader, codeSource, className);
-        WeavingClassVisitor cv =
-                new WeavingClassVisitor(cw, loader, classAnalyzer.getAnalyzedClass(),
-                        classAnalyzer.getMethodsThatOnlyNowFulfillAdvice(),
-                        classAnalyzer.getMatchedShimTypes(), classAnalyzer.getMatchedMixinTypes(),
-                        classAnalyzer.getMethodAdvisors(), analyzedWorld);
+        List<ShimType> matchedShimTypes = classAnalyzer.getMatchedShimTypes();
+        List<MixinType> matchedMixinTypes = classAnalyzer.getMatchedMixinTypes();
+        if (className.equals("java/lang/Thread")) {
+            matchedMixinTypes = ImmutableList.of();
+        }
+        if (classBeingRedefined != null
+                && (!matchedShimTypes.isEmpty() || !matchedMixinTypes.isEmpty())) {
+            Set<String> interfaceNames = Sets.newHashSet();
+            for (Class<?> iface : classBeingRedefined.getInterfaces()) {
+                interfaceNames.add(iface.getName());
+            }
+            for (ShimType matchedShimType : matchedShimTypes) {
+                if (!interfaceNames.contains(matchedShimType.iface().getClassName())) {
+                    // re-weaving would fail with "attempted to change superclass or interfaces"
+                    logger.warn("not reweaving {} because cannot add shim type: {}",
+                            ClassNames.fromInternalName(className),
+                            matchedShimType.iface().getClassName());
+                    return null;
+                }
+            }
+            for (MixinType matchedMixinType : matchedMixinTypes) {
+                for (Type mixinInterface : matchedMixinType.interfaces()) {
+                    if (!interfaceNames.contains(mixinInterface.getClassName())) {
+                        // re-weaving would fail with "attempted to change superclass or interfaces"
+                        logger.warn("not reweaving {} because cannot add mixin type: {}",
+                                ClassNames.fromInternalName(className),
+                                mixinInterface.getClassName());
+                        return null;
+                    }
+                }
+            }
+        }
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+        WeavingClassVisitor cv = new WeavingClassVisitor(cw, loader, frames,
+                noLongerNeedToWeaveMainMethods, classAnalyzer.getAnalyzedClass(),
+                classAnalyzer.getMethodsThatOnlyNowFulfillAdvice(), matchedShimTypes,
+                matchedMixinTypes, classAnalyzer.getMethodAdvisors(), analyzedWorld);
         ClassReader cr =
                 new ClassReader(maybeProcessedBytes == null ? classBytes : maybeProcessedBytes);
+        byte[] transformedBytes;
         try {
-            cr.accept(new JSRInlinerClassVisitor(cv), ClassReader.SKIP_FRAMES);
+            cr.accept(new JSRInlinerClassVisitor(cv), expandFrames);
+            // ClassWriter.toByteArray() can throw exception also, see issue #370
+            transformedBytes = cw.toByteArray();
         } catch (RuntimeException e) {
             logger.error("unable to weave {}: {}", className, e.getMessage(), e);
             try {
@@ -222,16 +304,26 @@ public class Weaver {
             }
             return null;
         }
-        byte[] transformedBytes = cw.toByteArray();
-        if (VERIFY_WEAVING) {
-            verify(transformedBytes, loader, classBytes, className);
+        if (className.equals(DEBUG_CLASS_NAME)) {
+            try {
+                File tempFile = File.createTempFile("glowroot-transformed-", ".class");
+                Files.write(transformedBytes, tempFile);
+                logger.info("class file for {} (transformed) written to: {}", className,
+                        tempFile.getAbsolutePath());
+                tempFile = File.createTempFile("glowroot-original-", ".class");
+                Files.write(classBytes, tempFile);
+                logger.info("class file for {} (original) written to: {}", className,
+                        tempFile.getAbsolutePath());
+            } catch (IOException e) {
+                logger.warn(e.getMessage(), e);
+            }
         }
         return transformedBytes;
     }
 
     private void checkForDeadlockedActiveWeaving(List<Long> activeWeavingThreadIds) {
         ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
-        long /*@Nullable*/ [] deadlockedThreadIds = threadBean.findDeadlockedThreads();
+        long[] deadlockedThreadIds = threadBean.findDeadlockedThreads();
         if (deadlockedThreadIds == null || Collections.disjoint(Longs.asList(deadlockedThreadIds),
                 activeWeavingThreadIds)) {
             return;
@@ -257,42 +349,6 @@ public class Weaver {
         } finally {
             weavingDisabledForLoggingDeadlock = false;
         }
-    }
-
-    private static void verify(byte[] transformedBytes, @Nullable ClassLoader loader,
-            byte[] originalBytes, String className) {
-        String originalBytesVerifyError = verify(originalBytes, loader);
-        if (!originalBytesVerifyError.isEmpty()) {
-            // not much to do if original byte code fails to verify
-            logger.debug("class verify error for original bytecode\n{}", originalBytesVerifyError);
-            return;
-        }
-        String transformedBytesVerifyError = verify(transformedBytes, loader);
-        if (!transformedBytesVerifyError.isEmpty()) {
-            logger.error("class verify error for transformed bytecode\n:{}",
-                    transformedBytesVerifyError);
-            try {
-                File originalBytesFile =
-                        getTempFile(className, "glowroot-verify-error-", "-original.class");
-                Files.write(originalBytes, originalBytesFile);
-                logger.error("wrote original bytecode to: {}", originalBytesFile.getAbsolutePath());
-                File transformedBytesFile =
-                        getTempFile(className, "glowroot-verify-error-", "-transformed.class");
-                Files.write(transformedBytes, transformedBytesFile);
-                logger.error("wrote transformed bytecode to: {}",
-                        transformedBytesFile.getAbsolutePath());
-            } catch (IOException e) {
-                logger.error(e.getMessage(), e);
-            }
-        }
-    }
-
-    private static String verify(byte[] bytes, @Nullable ClassLoader loader) {
-        StringWriter sw = new StringWriter();
-        PrintWriter pw = new PrintWriter(sw);
-        CheckClassAdapter.verify(new ClassReader(bytes), loader, false, pw);
-        pw.close();
-        return sw.toString();
     }
 
     private static File getTempFile(String className, String prefix, String suffix) {
@@ -362,167 +418,89 @@ public class Weaver {
         }
     }
 
-    private static class JSRInlinerClassVisitor extends ClassVisitor {
-
-        private JSRInlinerClassVisitor(ClassVisitor cv) {
-            super(ASM5, cv);
-        }
-
-        @Override
-        public MethodVisitor visitMethod(int access, String name, String desc,
-                @Nullable String signature, String /*@Nullable*/ [] exceptions) {
-            MethodVisitor mv =
-                    checkNotNull(cv).visitMethod(access, name, desc, signature, exceptions);
-            return new JSRInlinerAdapter(mv, access, name, desc, signature, exceptions);
-        }
-    }
-
-    @VisibleForTesting
-    static class ComputeFramesClassWriter extends ClassWriter {
-
-        private final AnalyzedWorld analyzedWorld;
-        private final @Nullable ClassLoader loader;
-        private final ParseContext parseContext;
-
-        public ComputeFramesClassWriter(int flags, AnalyzedWorld analyzedWorld,
-                @Nullable ClassLoader loader, @Nullable CodeSource codeSource, String className) {
-            super(flags);
-            this.analyzedWorld = analyzedWorld;
-            this.loader = loader;
-            this.parseContext = ImmutableParseContext.of(className, codeSource);
-        }
-
-        // implements logic similar to org.objectweb.asm.ClassWriter.getCommonSuperClass()
-        @Override
-        protected String getCommonSuperClass(String type1, String type2) {
-            if (type1.equals("java/lang/Object") || type2.equals("java/lang/Object")) {
-                return "java/lang/Object";
-            }
-            try {
-                return getCommonSuperClassInternal(type1, type2);
-            } catch (IOException e) {
-                logger.error(e.getMessage(), e);
-                return "java/lang/Object";
-            }
-        }
-
-        private String getCommonSuperClassInternal(String type1, String type2) throws IOException {
-            AnalyzedClass analyzedClass1;
-            try {
-                analyzedClass1 =
-                        analyzedWorld.getAnalyzedClass(ClassNames.fromInternalName(type1), loader);
-            } catch (ClassNotFoundException e) {
-                // log at debug level only since this code will fail anyways if it is actually used
-                // at runtime since type doesn't exist
-                logger.debug("type {} not found while parsing type {}", type1, parseContext, e);
-                return "java/lang/Object";
-            }
-            AnalyzedClass analyzedClass2;
-            try {
-                analyzedClass2 =
-                        analyzedWorld.getAnalyzedClass(ClassNames.fromInternalName(type2), loader);
-            } catch (ClassNotFoundException e) {
-                // log at debug level only since this code will fail anyways if it is actually used
-                // at runtime since type doesn't exist
-                logger.debug("type {} not found while parsing type {}", type2, parseContext, e);
-                return "java/lang/Object";
-            }
-            return getCommonSuperClass(analyzedClass1, analyzedClass2, type1, type2);
-        }
-
-        private String getCommonSuperClass(AnalyzedClass analyzedClass1,
-                AnalyzedClass analyzedClass2, String type1, String type2) throws IOException {
-            if (isAssignableFrom(analyzedClass1.name(), analyzedClass2)) {
-                return type1;
-            }
-            if (isAssignableFrom(analyzedClass2.name(), analyzedClass1)) {
-                return type2;
-            }
-            if (analyzedClass1.isInterface() || analyzedClass2.isInterface()) {
-                return "java/lang/Object";
-            }
-            return getCommonSuperClass(analyzedClass1, analyzedClass2);
-        }
-
-        private String getCommonSuperClass(AnalyzedClass analyzedClass1,
-                AnalyzedClass analyzedClass2) throws IOException {
-            // climb analyzedClass1 super class hierarchy and check if any of them are assignable
-            // from analyzedClass2
-            String superName = analyzedClass1.superName();
-            while (superName != null) {
-                if (isAssignableFrom(superName, analyzedClass2)) {
-                    return ClassNames.toInternalName(superName);
-                }
-                try {
-                    AnalyzedClass superAnalyzedClass =
-                            analyzedWorld.getAnalyzedClass(superName, loader);
-                    superName = superAnalyzedClass.superName();
-                } catch (ClassNotFoundException e) {
-                    // log at debug level only since this code must not be getting used anyways, as
-                    // it would fail on execution since the type doesn't exist
-                    logger.debug("type {} not found while parsing type {}", superName, parseContext,
-                            e);
-                    return "java/lang/Object";
-                }
-            }
-            return "java/lang/Object";
-        }
-
-        private boolean isAssignableFrom(String possibleSuperClassName, AnalyzedClass analyzedClass)
-                throws IOException {
-            if (analyzedClass.name().equals(possibleSuperClassName)) {
-                return true;
-            }
-            if (isAssignableFromInterfaces(possibleSuperClassName, analyzedClass)) {
-                return true;
-            }
-            String superName = analyzedClass.superName();
-            if (superName == null) {
-                return false;
-            }
-            return isAssignableFromSuperClass(possibleSuperClassName, superName);
-        }
-
-        private boolean isAssignableFromInterfaces(String possibleSuperClassName,
-                AnalyzedClass analyzedClass) throws IOException {
-            for (String interfaceName : analyzedClass.interfaceNames()) {
-                try {
-                    AnalyzedClass interfaceAnalyzedClass =
-                            analyzedWorld.getAnalyzedClass(interfaceName, loader);
-                    if (isAssignableFrom(possibleSuperClassName, interfaceAnalyzedClass)) {
-                        return true;
-                    }
-                } catch (ClassNotFoundException e) {
-                    // log at debug level only since this code must not be getting used anyways, as
-                    // it would fail on execution since the type doesn't exist
-                    logger.debug("type {} not found while parsing type {}", interfaceName,
-                            parseContext, e);
-                }
-            }
-            return false;
-        }
-
-        private boolean isAssignableFromSuperClass(String possibleSuperClassName, String superName)
-                throws IOException {
-            try {
-                AnalyzedClass superAnalyzedClass =
-                        analyzedWorld.getAnalyzedClass(superName, loader);
-                return isAssignableFrom(possibleSuperClassName, superAnalyzedClass);
-            } catch (ClassNotFoundException e) {
-                // log at debug level only since this code must not be getting used anyways, as it
-                // would fail on execution since the type doesn't exist
-                logger.debug("type {} not found while parsing type {}", superName, parseContext, e);
-                return false;
-            }
-        }
-    }
-
-    private static class FelixOsgiHackClassVisitor extends ClassVisitor {
+    private static class ManagementFactoryHackClassVisitor extends ClassVisitor {
 
         private final ClassWriter cw;
 
-        FelixOsgiHackClassVisitor(ClassWriter cw) {
-            super(ASM5, cw);
+        private ManagementFactoryHackClassVisitor(ClassWriter cw) {
+            super(ASM6, cw);
+            this.cw = cw;
+        }
+
+        @Override
+        public @Nullable MethodVisitor visitMethod(int access, String name, String desc,
+                @Nullable String signature, String /*@Nullable*/ [] exceptions) {
+            MethodVisitor mv = cw.visitMethod(access, name, desc, signature, exceptions);
+            if (name.equals("getPlatformMBeanServer")
+                    && desc.equals("()Ljavax/management/MBeanServer;")) {
+                return new ManagementFactoryHackMethodVisitor(mv, access, name, desc);
+            } else {
+                return mv;
+            }
+        }
+    }
+
+    private static class ManagementFactoryHackMethodVisitor extends AdviceAdapter {
+
+        private ManagementFactoryHackMethodVisitor(MethodVisitor mv, int access, String name,
+                String desc) {
+            super(ASM6, mv, access, name, desc);
+        }
+
+        @Override
+        protected void onMethodExit(int opcode) {
+            if (opcode != ATHROW) {
+                visitMethodInsn(INVOKESTATIC, Type.getType(Bytecode.class).getInternalName(),
+                        "exitingGetPlatformMBeanServer", "()V", false);
+            }
+        }
+    }
+
+    private static class JBossWeldHackClassVisitor extends ClassVisitor {
+
+        private final ClassWriter cw;
+
+        private JBossWeldHackClassVisitor(ClassWriter cw) {
+            super(ASM6, cw);
+            this.cw = cw;
+        }
+
+        @Override
+        public @Nullable MethodVisitor visitMethod(int access, String name, String desc,
+                @Nullable String signature, String /*@Nullable*/ [] exceptions) {
+            MethodVisitor mv = cw.visitMethod(access, name, desc, signature, exceptions);
+            if (name.equals("checkDelegateType")
+                    && desc.equals("(Ljavax/enterprise/inject/spi/Decorator;)V")) {
+                return new JBossWeldHackMethodVisitor(mv);
+            } else {
+                return mv;
+            }
+        }
+    }
+
+    private static class JBossWeldHackMethodVisitor extends MethodVisitor {
+
+        private JBossWeldHackMethodVisitor(MethodVisitor mv) {
+            super(ASM6, mv);
+        }
+
+        @Override
+        public void visitMethodInsn(int opcode, String owner, String name, String desc,
+                boolean itf) {
+            super.visitMethodInsn(opcode, owner, name, desc, itf);
+            if (name.equals("getDecoratedTypes") && desc.equals("()Ljava/util/Set;")) {
+                super.visitMethodInsn(INVOKESTATIC, "org/glowroot/agent/bytecode/api/Util",
+                        "stripGlowrootTypes", "(Ljava/util/Set;)Ljava/util/Set;", false);
+            }
+        }
+    }
+
+    private static class JBossModulesHackClassVisitor extends ClassVisitor {
+
+        private final ClassWriter cw;
+
+        private JBossModulesHackClassVisitor(ClassWriter cw) {
+            super(ASM6, cw);
             this.cw = cw;
         }
 
@@ -530,41 +508,92 @@ public class Weaver {
         public MethodVisitor visitMethod(int access, String name, String desc,
                 @Nullable String signature, String /*@Nullable*/ [] exceptions) {
             MethodVisitor mv = cw.visitMethod(access, name, desc, signature, exceptions);
-            if (name.equals("shouldBootDelegate") && desc.equals("(Ljava/lang/String;)Z")) {
-                return new FelixOsgiHackMethodVisitor(mv, access, name, desc);
+            if (name.equals("<clinit>")) {
+                return new JBossModulesHackMethodVisitor(mv);
             } else {
                 return mv;
             }
         }
     }
 
-    private static class FelixOsgiHackMethodVisitor extends AdviceAdapter {
+    private static class JBossModulesHackMethodVisitor extends MethodVisitor {
 
-        private FelixOsgiHackMethodVisitor(MethodVisitor mv, int access, String name, String desc) {
-            super(ASM5, mv, access, name, desc);
+        private JBossModulesHackMethodVisitor(MethodVisitor mv) {
+            super(ASM6, mv);
+        }
+
+        @Override
+        public void visitFieldInsn(int opcode, String owner, String name, String desc) {
+            if (name.equals("systemPackages") && desc.equals("[Ljava/lang/String;")) {
+                visitMethodInsn(INVOKESTATIC, "org/glowroot/agent/bytecode/api/Util",
+                        "appendToJBossModulesSystemPkgs",
+                        "([Ljava/lang/String;)[Ljava/lang/String;", false);
+            }
+            super.visitFieldInsn(opcode, owner, name, desc);
+        }
+    }
+
+    private static class OsgiHackClassVisitor extends ClassVisitor {
+
+        private final ClassWriter cw;
+        // this hack is used for
+        // org.apache.felix.framework.BundleWiringImpl.shouldBootDelegate() (felix 4.0.0+)
+        // org.apache.felix.framework.ModuleImpl.shouldBootDelegate() (prior to felix 4.0.0)
+        // org.eclipse.osgi.internal.framework.EquinoxContainer.isBootDelegationPackage()
+        private final String className;
+        private final String methodName;
+
+        private OsgiHackClassVisitor(ClassWriter cw, String className, String methodName) {
+            super(ASM6, cw);
+            this.cw = cw;
+            this.className = className;
+            this.methodName = methodName;
+        }
+
+        @Override
+        public MethodVisitor visitMethod(int access, String name, String desc,
+                @Nullable String signature, String /*@Nullable*/ [] exceptions) {
+            MethodVisitor mv = cw.visitMethod(access, name, desc, signature, exceptions);
+            if (name.equals(methodName) && desc.equals("(Ljava/lang/String;)Z")) {
+                return new OsgiHackMethodVisitor(className, mv, access, name, desc);
+            } else {
+                return mv;
+            }
+        }
+    }
+
+    private static class OsgiHackMethodVisitor extends AdviceAdapter {
+
+        private final String ownerName;
+
+        private OsgiHackMethodVisitor(String ownerName, MethodVisitor mv, int access,
+                String name, String desc) {
+            super(ASM6, mv, access, name, desc);
+            this.ownerName = ownerName;
         }
 
         @Override
         protected void onMethodEnter() {
-            mv.visitVarInsn(ALOAD, 1);
-            mv.visitLdcInsn("org.glowroot.");
-            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/String", "startsWith",
+            visitVarInsn(ALOAD, 1);
+            visitLdcInsn("org.glowroot.");
+            visitMethodInsn(INVOKEVIRTUAL, "java/lang/String", "startsWith",
                     "(Ljava/lang/String;)Z", false);
             Label label = new Label();
-            mv.visitJumpInsn(IFEQ, label);
-            mv.visitInsn(ICONST_1);
-            mv.visitInsn(IRETURN);
-            mv.visitLabel(label);
-
+            visitJumpInsn(IFEQ, label);
+            visitInsn(ICONST_1);
+            visitInsn(IRETURN);
+            visitLabel(label);
+            Object[] locals = new Object[] {ownerName, "java/lang/String"};
+            visitFrame(F_NEW, locals.length, locals, 0, new Object[0]);
         }
     }
 
-    private static class JBoss4HackClassVisitor extends ClassVisitor {
+    private static class OpenEJBHackClassVisitor extends ClassVisitor {
 
         private final ClassWriter cw;
 
-        JBoss4HackClassVisitor(ClassWriter cw) {
-            super(ASM5, cw);
+        private OpenEJBHackClassVisitor(ClassWriter cw) {
+            super(ASM6, cw);
             this.cw = cw;
         }
 
@@ -572,25 +601,106 @@ public class Weaver {
         public MethodVisitor visitMethod(int access, String name, String desc,
                 @Nullable String signature, String /*@Nullable*/ [] exceptions) {
             MethodVisitor mv = cw.visitMethod(access, name, desc, signature, exceptions);
-            if (name.equals("internalInitURLHandlers") && desc.equals("()V")) {
-                return new JBoss4HackMethodVisitor(mv, access, name, desc);
+            if (name.equals("reloadConfig") && desc.equals("()V")) {
+                return new OpenEJBHackMethodVisitor(mv, access, name, desc);
             } else {
                 return mv;
             }
         }
     }
 
-    private static class JBoss4HackMethodVisitor extends AdviceAdapter {
+    private static class OpenEJBHackMethodVisitor extends AdviceAdapter {
 
-        private JBoss4HackMethodVisitor(MethodVisitor mv, int access, String name, String desc) {
-            super(ASM5, mv, access, name, desc);
+        private OpenEJBHackMethodVisitor(MethodVisitor mv, int access, String name, String desc) {
+            super(ASM6, mv, access, name, desc);
+        }
+
+        @Override
+        protected void onMethodExit(int opcode) {
+            if (opcode == RETURN) {
+                visitFieldInsn(GETSTATIC, ImportantClassNames.OPENEJB_HACK_CLASS_NAME,
+                        "FORCED_SKIP", "Ljava/util/Collection;");
+                visitLdcInsn("org.glowroot.");
+                visitMethodInsn(INVOKEINTERFACE, "java/util/Collection", "add",
+                        "(Ljava/lang/Object;)Z", true);
+                pop();
+            }
+        }
+    }
+
+    private static class HikariCpProxyHackClassVisitor extends ClassVisitor {
+
+        private final ClassWriter cw;
+
+        private HikariCpProxyHackClassVisitor(ClassWriter cw) {
+            super(ASM6, cw);
+            this.cw = cw;
+        }
+
+        @Override
+        public MethodVisitor visitMethod(int access, String name, String desc,
+                @Nullable String signature, String /*@Nullable*/ [] exceptions) {
+            MethodVisitor mv = cw.visitMethod(access, name, desc, signature, exceptions);
+            if (name.equals("generateProxyClass")) {
+                return new HikariCpProxyHackMethodVisitor(mv);
+            } else {
+                return mv;
+            }
+        }
+    }
+
+    private static class HikariCpProxyHackMethodVisitor extends MethodVisitor {
+
+        private HikariCpProxyHackMethodVisitor(MethodVisitor mv) {
+            super(ASM6, mv);
+        }
+
+        @Override
+        public void visitMethodInsn(int opcode, String owner, String name, String desc,
+                boolean itf) {
+            super.visitMethodInsn(opcode, owner, name, desc, itf);
+            if (owner.equals("com/zaxxer/hikari/util/ClassLoaderUtils")
+                    && name.equals("getAllInterfaces")
+                    && desc.equals("(Ljava/lang/Class;)Ljava/util/Set;")) {
+                super.visitMethodInsn(INVOKESTATIC, "org/glowroot/agent/bytecode/api/Util",
+                        "stripGlowrootClasses", "(Ljava/util/Set;)Ljava/util/Set;", false);
+            }
+        }
+    }
+
+    private static class JBossUrlHackClassVisitor extends ClassVisitor {
+
+        private final ClassWriter cw;
+
+        private JBossUrlHackClassVisitor(ClassWriter cw) {
+            super(ASM6, cw);
+            this.cw = cw;
+        }
+
+        @Override
+        public MethodVisitor visitMethod(int access, String name, String desc,
+                @Nullable String signature, String /*@Nullable*/ [] exceptions) {
+            MethodVisitor mv = cw.visitMethod(access, name, desc, signature, exceptions);
+            if (name.equals("<clinit>") && desc.equals("()V")) {
+                return new JBossUrlHackMethodVisitor(mv, access, name, desc);
+            } else {
+                return mv;
+            }
+        }
+    }
+
+    private static class JBossUrlHackMethodVisitor extends AdviceAdapter {
+
+        private JBossUrlHackMethodVisitor(MethodVisitor mv, int access, String name,
+                String desc) {
+            super(ASM6, mv, access, name, desc);
         }
 
         @Override
         protected void onMethodEnter() {
             // these classes can be initialized inside of ClassFileTransformer.transform(), via
             // Resources.toByteArray(url) inside of AnalyzedWorld.createAnalyzedClass()
-            // because jboss 4.x registers org.jboss.net.protocol.URLStreamHandlerFactory to handle
+            // because jboss registers org.jboss.net.protocol.URLStreamHandlerFactory to handle
             // "file" and "resource" URLs
             //
             // these classes can not be initialized in PreInitializeWeavingClasses since they are

@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -66,7 +66,7 @@ glowroot.controller('TransactionSidebarCtrl', [
     };
 
     $scope.summarySortQueryString = function (summarySortOrder) {
-      var query = $scope.buildQueryObject();
+      var query = $scope.buildQueryObject(true);
       delete query.summarySortOrder;
       if (summarySortOrder !== $scope.defaultSummarySortOrder) {
         query['summary-sort-order'] = summarySortOrder;
@@ -89,16 +89,10 @@ glowroot.controller('TransactionSidebarCtrl', [
         });
 
     var initialStateChangeSuccess = true;
-    $scope.$on('$stateChangeSuccess', function () {
-      // don't let the active sidebar selection get out of sync (which can happen after using the back button)
-      var activeElement = document.activeElement;
-      if (activeElement && $(activeElement).closest('.gt-sidebar').length) {
-        var gtUrl = activeElement.getAttribute('gt-url');
-        if (gtUrl && gtUrl !== $location.url()) {
-          activeElement.blur();
-        }
-      }
+    $scope.$on('gtStateChangeSuccess', function () {
       if ($scope.range.last && !initialStateChangeSuccess) {
+        // need to update selectpicker dropdown with current tab url
+        $('#summarySortDropdown').selectpicker('refresh');
         // refresh on tab change
         $timeout(function () {
           // slight delay to de-prioritize summaries data request
@@ -132,6 +126,7 @@ glowroot.controller('TransactionSidebarCtrl', [
       concurrentUpdateCount++;
       $http.get('backend/' + $scope.shortName + '/summaries' + queryStrings.encodeObject(query))
           .then(function (response) {
+            $scope.showSpinner--;
             if (moreLoading) {
               $scope.summariesLoadingMore--;
             }
@@ -139,7 +134,6 @@ glowroot.controller('TransactionSidebarCtrl', [
             if (concurrentUpdateCount) {
               return;
             }
-            $scope.showSpinner--;
             $scope.summariesNoSearch = false;
 
             lastSortOrder = query.sortOrder;

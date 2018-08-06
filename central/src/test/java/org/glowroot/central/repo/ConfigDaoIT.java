@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,8 @@ import org.junit.Test;
 import org.glowroot.central.util.ClusterManager;
 import org.glowroot.central.util.Session;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig;
+import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.TransactionConfig;
+import org.glowroot.wire.api.model.Proto.OptionalInt32;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -38,9 +40,7 @@ public class ConfigDaoIT {
     public static void setUp() throws Exception {
         SharedSetupRunListener.startCassandra();
         cluster = Clusters.newCluster();
-        session = new Session(cluster.newSession());
-        session.createKeyspaceIfNotExists("glowroot_unit_tests");
-        session.execute("use glowroot_unit_tests");
+        session = new Session(cluster.newSession(), "glowroot_unit_tests");
         clusterManager = ClusterManager.create();
 
         agentConfigDao = new AgentConfigDao(session, clusterManager);
@@ -62,9 +62,8 @@ public class ConfigDaoIT {
     @Test
     public void shouldStoreAgentConfig() throws Exception {
         // given
-        AgentConfig agentConfig = AgentConfig.newBuilder()
-                .build();
-        agentConfigDao.store("a", null, agentConfig);
+        AgentConfig agentConfig = AgentConfig.getDefaultInstance();
+        agentConfigDao.store("a", agentConfig);
         // when
         AgentConfig readAgentConfig = agentConfigDao.read("a");
         // then
@@ -74,10 +73,12 @@ public class ConfigDaoIT {
     @Test
     public void shouldNotOverwriteExistingAgentConfig() throws Exception {
         // given
-        AgentConfig agentConfig = AgentConfig.newBuilder()
-                .build();
-        agentConfigDao.store("a", null, agentConfig);
-        agentConfigDao.store("a", null, AgentConfig.newBuilder()
+        AgentConfig agentConfig = AgentConfig.getDefaultInstance();
+        agentConfigDao.store("a", agentConfig);
+        agentConfigDao.store("a", AgentConfig.newBuilder()
+                .setTransactionConfig(TransactionConfig.newBuilder()
+                        .setSlowThresholdMillis(OptionalInt32.newBuilder()
+                                .setValue(1234)))
                 .build());
         // when
         AgentConfig readAgentConfig = agentConfigDao.read("a");

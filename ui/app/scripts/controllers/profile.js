@@ -18,20 +18,9 @@
 
 glowroot.controller('ProfileCtrl', [
   '$scope',
-  '$location',
-  function ($scope, $location) {
+  function ($scope) {
     // \u00b7 is &middot;
     document.title = 'Profile \u00b7 BullFrog';
     $scope.$parent.activeNavbarItem = 'gears';
-
-    $scope.$on('$stateChangeSuccess', function () {
-      // don't let the active sidebar selection get out of sync (which can happen after using the back button)
-      if (document.activeElement) {
-        var gtUrl = document.activeElement.getAttribute('gt-url');
-        if (gtUrl && gtUrl !== $location.path().substring(1)) {
-          document.activeElement.blur();
-        }
-      }
-    });
   }
 ]);

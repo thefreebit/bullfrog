@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,15 @@
  */
 package org.glowroot.central.repo;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.concurrent.Future;
 
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.PreparedStatement;
 
+import org.glowroot.central.util.MoreFutures;
 import org.glowroot.central.util.Session;
 import org.glowroot.common.util.Clock;
 
@@ -33,15 +36,13 @@ public class HeartbeatDao {
     private static final int TTL = (int) HOURS.toSeconds(EXPIRATION_HOURS);
 
     private final Session session;
-    private final AgentRollupDao agentRollupDao;
     private final Clock clock;
 
     private final PreparedStatement insertPS;
     private final PreparedStatement existsPS;
 
-    HeartbeatDao(Session session, AgentRollupDao agentRollupDao, Clock clock) {
+    HeartbeatDao(Session session, Clock clock) throws InterruptedException {
         this.session = session;
-        this.agentRollupDao = agentRollupDao;
         this.clock = clock;
 
         session.createTableWithTWCS("create table if not exists heartbeat (agent_id varchar,"
@@ -54,15 +55,17 @@ public class HeartbeatDao {
     }
 
     public void store(String agentId) throws Exception {
-        List<String> agentRollupIds = agentRollupDao.readAgentRollupIds(agentId);
+        List<String> agentRollupIds = AgentRollupIds.getAgentRollupIds(agentId);
+        List<Future<?>> futures = new ArrayList<>();
         for (String agentRollupId : agentRollupIds) {
             BoundStatement boundStatement = insertPS.bind();
             int i = 0;
             boundStatement.setString(i++, agentRollupId);
             boundStatement.setTimestamp(i++, new Date(clock.currentTimeMillis()));
             boundStatement.setInt(i++, TTL);
-            session.execute(boundStatement);
+            futures.add(session.executeAsync(boundStatement));
         }
+        MoreFutures.waitForAll(futures);
     }
 
     public boolean exists(String agentRollupId, long centralCaptureFrom, long centralCaptureTo)

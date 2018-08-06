@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,8 @@ glowroot.controller('ConfigTransactionCtrl', [
       return;
     }
 
+    var defaultTransactionType;
+
     $scope.hasChanges = function () {
       return $scope.originalConfig && !angular.equals($scope.config, $scope.originalConfig);
     };
@@ -34,9 +36,37 @@ glowroot.controller('ConfigTransactionCtrl', [
 
     function onNewData(data) {
       $scope.loaded = true;
-      $scope.config = data;
+      $scope.config = data.config;
       $scope.originalConfig = angular.copy($scope.config);
+      $scope.allTransactionTypes = [];
+      angular.forEach(data.allTransactionTypes, function (transactionType) {
+        $scope.allTransactionTypes.push({
+          name: transactionType
+        });
+      });
+      angular.forEach($scope.config.slowThresholds, function (slowThreshold) {
+        if (data.allTransactionTypes.indexOf(slowThreshold.transactionType) === -1) {
+          $scope.allTransactionTypes.push({
+            name: slowThreshold.transactionType,
+            disabled: true
+          });
+        }
+      });
+      defaultTransactionType = data.defaultTransactionType;
     }
+
+    $scope.addSlowThreshold = function () {
+      $scope.config.slowThresholds.push({
+        transactionType: defaultTransactionType,
+        transactionName: '',
+        thresholdMillis: null
+      });
+    };
+
+    $scope.removeSlowThreshold = function (slowThreshold) {
+      var index = $scope.config.slowThresholds.indexOf(slowThreshold);
+      $scope.config.slowThresholds.splice(index, 1);
+    };
 
     $scope.save = function (deferred) {
       var postData = angular.copy($scope.config);

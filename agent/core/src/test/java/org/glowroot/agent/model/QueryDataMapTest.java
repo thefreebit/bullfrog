@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 package org.glowroot.agent.model;
 
 import java.util.Map;
-import java.util.Map.Entry;
 
 import com.google.common.collect.Maps;
 import org.junit.Test;
@@ -30,16 +29,16 @@ public class QueryDataMapTest {
     public void testBucketCollision() {
         // given
         QueryDataMap map = new QueryDataMap("");
-        Map<String, QueryData> uniqueQueries = Maps.newHashMap();
+        Map<String, SyncQueryData> uniqueQueries = Maps.newHashMap();
         for (int i = 0; i < 100; i++) {
-            uniqueQueries.put("query-" + i, mock(QueryData.class));
+            uniqueQueries.put("query-" + i, mock(SyncQueryData.class));
         }
         // when
-        for (Entry<String, QueryData> entry : uniqueQueries.entrySet()) {
+        for (Map.Entry<String, SyncQueryData> entry : uniqueQueries.entrySet()) {
             map.put(entry.getKey(), entry.getValue());
         }
         // then
-        for (Entry<String, QueryData> entry : uniqueQueries.entrySet()) {
+        for (Map.Entry<String, SyncQueryData> entry : uniqueQueries.entrySet()) {
             assertThat(map.get(new String(entry.getKey()))).isEqualTo(entry.getValue());
         }
     }

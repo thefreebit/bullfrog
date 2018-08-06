@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,13 +25,15 @@ import com.google.common.base.Stopwatch;
 import com.google.common.io.Files;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class AgentDirsLocking {
 
     private AgentDirsLocking() {}
 
-    public static Closeable lockAgentDirs(File tmpDir) throws Exception {
+    public static Closeable lockAgentDirs(File tmpDir, boolean central, boolean offlineViewer)
+            throws Exception {
         File lockFile = new File(tmpDir, ".lock");
         Files.createParentDirs(lockFile);
         Files.touch(lockFile);
@@ -45,10 +47,10 @@ public class AgentDirsLocking {
                 if (fileLock != null) {
                     break;
                 }
-                Thread.sleep(100);
+                MILLISECONDS.sleep(100);
             }
             if (fileLock == null) {
-                throw new AgentDirsLockedException(lockFile);
+                throw new AgentDirsLockedException(lockFile, central, offlineViewer);
             }
         }
         lockFile.deleteOnExit();
@@ -67,13 +69,25 @@ public class AgentDirsLocking {
     public static class AgentDirsLockedException extends Exception {
 
         private final File lockFile;
+        private final boolean central;
+        private final boolean offlineViewer;
 
-        private AgentDirsLockedException(File lockFile) {
+        private AgentDirsLockedException(File lockFile, boolean central, boolean offlineViewer) {
             this.lockFile = lockFile;
+            this.central = central;
+            this.offlineViewer = offlineViewer;
         }
 
         public File getLockFile() {
             return lockFile;
+        }
+
+        public boolean isCentral() {
+            return central;
+        }
+
+        public boolean isOfflineViewer() {
+            return offlineViewer;
         }
     }
 }

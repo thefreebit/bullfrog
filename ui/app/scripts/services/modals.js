@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,15 @@ glowroot.factory('modals', [
   function ($timeout, $location) {
     function display(selector, centerVertically) {
       var $selector = $(selector);
+      if (!$selector.parents('#modalContent').length) {
+        $selector.scope().$on('$destroy', function () {
+          $selector.remove();
+          // close modal backdrop if open
+          $('.modal-backdrop').remove();
+        });
+        $selector.detach().appendTo($('#modalContent'));
+      }
+
       if (centerVertically) {
         // see http://stackoverflow.com/questions/18053408/vertically-centering-bootstrap-modal-window/20444744#20444744
         $selector.off('show.bs.modal');
@@ -52,6 +61,9 @@ glowroot.factory('modals', [
         $('.navbar-fixed-top').css('padding-right', '');
         $('.navbar-fixed-bottom').css('padding-right', '');
         $('#chart canvas').show();
+        $('body > header').removeAttr('aria-hidden');
+        $('body > main > :not(#modalContent)').removeAttr('aria-hidden');
+        $('body > footer').removeAttr('aria-hidden');
       });
       $timeout(function () {
         // need to focus on something inside the modal, otherwise keyboard events won't be captured,
@@ -60,6 +72,9 @@ glowroot.factory('modals', [
         $selector.find('.modal-body').css('outline', 'none');
         $selector.find('.modal-body').focus();
       });
+      $('body > header').attr('aria-hidden', 'true');
+      $('body > main > :not(#modalContent)').attr('aria-hidden', 'true');
+      $('body > footer').attr('aria-hidden', 'true');
     }
 
     return {

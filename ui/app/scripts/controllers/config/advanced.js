@@ -39,11 +39,6 @@ glowroot.controller('ConfigAdvancedCtrl', [
       $scope.originalConfig = angular.copy($scope.config);
     }
 
-    $scope.isAgentRollup = function () {
-      // using query string instead of layout.agentRollups[agentRollupId].agent in case agentRollupId doesn't exist
-      return $location.search()['agent-rollup-id'];
-    };
-
     $scope.save = function (deferred) {
       var postData = angular.copy($scope.config);
       $http.post('backend/config/advanced?agent-rollup-id=' + encodeURIComponent($scope.agentRollupId), postData)

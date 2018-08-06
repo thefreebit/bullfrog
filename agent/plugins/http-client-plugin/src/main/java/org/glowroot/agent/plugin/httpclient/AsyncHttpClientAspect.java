@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,14 +18,13 @@ package org.glowroot.agent.plugin.httpclient;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 
-import javax.annotation.Nullable;
-
 import org.glowroot.agent.plugin.api.Agent;
 import org.glowroot.agent.plugin.api.AsyncTraceEntry;
 import org.glowroot.agent.plugin.api.MessageSupplier;
 import org.glowroot.agent.plugin.api.ThreadContext;
 import org.glowroot.agent.plugin.api.Timer;
 import org.glowroot.agent.plugin.api.TimerName;
+import org.glowroot.agent.plugin.api.checker.Nullable;
 import org.glowroot.agent.plugin.api.util.FastThreadLocal;
 import org.glowroot.agent.plugin.api.weaving.BindClassMeta;
 import org.glowroot.agent.plugin.api.weaving.BindParameter;
@@ -73,7 +72,7 @@ public class AsyncHttpClientAspect {
     public abstract static class ListenableFutureImpl implements ListenableFutureMixin {
 
         // volatile not needed, only accessed by the main thread
-        private @Nullable AsyncTraceEntry glowroot$asyncTraceEntry;
+        private transient @Nullable AsyncTraceEntry glowroot$asyncTraceEntry;
 
         @Override
         public @Nullable AsyncTraceEntry glowroot$getAsyncTraceEntry() {
@@ -119,6 +118,7 @@ public class AsyncHttpClientAspect {
 
     @Pointcut(className = "org.asynchttpclient.AsyncHttpClient", methodName = "executeRequest",
             methodParameterTypes = {"org.asynchttpclient.Request", ".."},
+            methodReturnType = "org.asynchttpclient.ListenableFuture",
             nestingGroup = "http-client", timerName = "http client request")
     public static class ExecuteRequestAdvice {
         private static final TimerName timerName = Agent.getTimerName(ExecuteRequestAdvice.class);
@@ -195,6 +195,7 @@ public class AsyncHttpClientAspect {
 
     @Pointcut(className = "com.ning.http.client.AsyncHttpClient", methodName = "executeRequest",
             methodParameterTypes = {"com.ning.http.client.Request", ".."},
+            methodReturnType = "com.ning.http.client.ListenableFuture",
             nestingGroup = "http-client", timerName = "http client request")
     public static class OldExecuteRequestAdvice {
         private static final TimerName timerName =

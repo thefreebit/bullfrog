@@ -1,5 +1,4 @@
 BullFrog
-=========
 
 BullFrog is an Artifactory specific open source Java APM based on [Glowroot](https://github.com/glowroot/glowroot).
 
@@ -60,6 +59,8 @@ If you are modifying web assets, you either need to run grunt to re-build them a
 
 `grunt serve` serves up the Glowroot web assets to the browser without the concat/minify/rev step, which makes testing/debugging much easier. It reverse proxies non- static resource requests to http://localhost:4000 to be handled by Glowroot. It also watches for changes to the files and performs live-reload of web assets inside the browser.
 
+`grunt serve:demo` does the same as above, except that it reverse proxies non- static resource requests to [https://demo.glowroot.org](https://demo.glowroot.org) instead of http://localhost:4000.
+
 ## Integration tests
 
 Integration tests are run during Maven's standard `integration-test` lifecycle phase.
@@ -70,7 +71,7 @@ Browser-based integration tests are run using WebDriver.  By default they run ag
 
 ## Microbenchmarks
 
-Microbenchmarks are written using the excellent [JMH](http://openjdk.java.net/projects/code-tools/jmh/) benchmark harness. The microbenchmarks can be built and run under [agent-parent/benchmarks](agent-parent/benchmarks):
+Microbenchmarks are written using the excellent [JMH](http://openjdk.java.net/projects/code-tools/jmh/) benchmark harness. The microbenchmarks can be built and run under [agent/benchmarks](agent/benchmarks):
 
     mvn clean package
     java -jar target/benchmarks.jar -jvmArgs -javaagent:path/to/glowroot.jar

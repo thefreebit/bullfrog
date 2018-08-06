@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,17 +21,13 @@ import java.security.Principal;
 import java.util.List;
 import java.util.Map;
 
-import javax.annotation.Nullable;
-
-import com.google.common.base.Strings;
-import com.google.common.collect.ImmutableMap;
-
 import org.glowroot.agent.plugin.api.Agent;
 import org.glowroot.agent.plugin.api.OptionalThreadContext;
 import org.glowroot.agent.plugin.api.ThreadContext;
 import org.glowroot.agent.plugin.api.ThreadContext.Priority;
 import org.glowroot.agent.plugin.api.TimerName;
 import org.glowroot.agent.plugin.api.TraceEntry;
+import org.glowroot.agent.plugin.api.checker.Nullable;
 import org.glowroot.agent.plugin.api.util.FastThreadLocal;
 import org.glowroot.agent.plugin.api.weaving.BindParameter;
 import org.glowroot.agent.plugin.api.weaving.BindReturn;
@@ -88,7 +84,7 @@ public class HttpHandlerAspect {
         @OnBefore
         public static @Nullable TraceEntry onBefore(OptionalThreadContext context,
                 @BindParameter @Nullable HttpExchange exchange) {
-            return onBeforeCommon(context, exchange, null);
+            return onBeforeCommon(context, exchange);
         }
 
         @OnReturn
@@ -130,7 +126,7 @@ public class HttpHandlerAspect {
         }
 
         private static @Nullable TraceEntry onBeforeCommon(OptionalThreadContext context,
-                @Nullable HttpExchange exchange, @Nullable String transactionTypeOverride) {
+                @Nullable HttpExchange exchange) {
             if (exchange == null) {
                 // seems nothing sensible to do here other than ignore
                 return null;
@@ -138,8 +134,7 @@ public class HttpHandlerAspect {
             String requestUri = getRequestURI(exchange.getRequestURI());
             String requestQueryString = getRequestQueryString(exchange.getRequestURI());
             String requestMethod = Strings.nullToEmpty(exchange.getRequestMethod());
-            ImmutableMap<String, Object> requestHeaders =
-                    DetailCapture.captureRequestHeaders(exchange);
+            Map<String, Object> requestHeaders = DetailCapture.captureRequestHeaders(exchange);
             String requestRemoteAddr = DetailCapture.captureRequestRemoteAddr(exchange);
             String requestRemoteHost = DetailCapture.captureRequestRemoteHost(exchange);
             HttpHandlerMessageSupplier messageSupplier =
@@ -150,13 +145,11 @@ public class HttpHandlerAspect {
             Headers headers = exchange.glowroot$getRequestHeaders();
             if (headers != null) {
                 String transactionTypeHeader = headers.getFirst("Glowroot-Transaction-Type");
-                if (transactionTypeHeader != null && transactionTypeHeader.equals("Synthetic")) {
+                if ("Synthetic".equals(transactionTypeHeader)) {
                     // Glowroot-Transaction-Type header currently only accepts "Synthetic", in order
                     // to prevent spamming of transaction types, which could cause some issues
                     transactionType = transactionTypeHeader;
                     setWithCoreMaxPriority = true;
-                } else if (transactionTypeOverride != null) {
-                    transactionType = transactionTypeOverride;
                 }
             }
             TraceEntry traceEntry = context.startTransaction(transactionType, requestUri,
@@ -201,7 +194,7 @@ public class HttpHandlerAspect {
         @OnBefore
         public static @Nullable TraceEntry onBefore(OptionalThreadContext context,
                 @BindParameter @Nullable HttpExchange exchange) {
-            return HandleAdvice.onBeforeCommon(context, exchange, null);
+            return HandleAdvice.onBeforeCommon(context, exchange);
         }
 
         @OnReturn
@@ -225,7 +218,8 @@ public class HttpHandlerAspect {
         // using @IsEnabled like this avoids ThreadContext lookup for common case
         @IsEnabled
         public static boolean isEnabled(@BindParameter Integer statusCode) {
-            return statusCode >= 500;
+            return statusCode >= 500 || JavaHttpServerPluginProperties.traceErrorOn4xxResponseCode()
+                    && statusCode >= 400;
         }
 
         @OnAfter

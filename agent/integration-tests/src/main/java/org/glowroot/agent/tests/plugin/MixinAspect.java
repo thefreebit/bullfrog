@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
  */
 package org.glowroot.agent.tests.plugin;
 
-import javax.annotation.Nullable;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.agent.plugin.api.weaving.Mixin;
 import org.glowroot.agent.plugin.api.weaving.MixinInit;
@@ -25,7 +25,7 @@ public class MixinAspect {
     @Mixin("java.lang.Runnable")
     public static class RunnableMixinImpl implements RunnableMixin {
 
-        private @Nullable String string;
+        private transient @Nullable String string;
 
         @MixinInit
         private void initHasString() {

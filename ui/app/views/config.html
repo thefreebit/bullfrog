@@ -1,5 +1,5 @@
 <!--
-  Copyright 2012-2017 the original author or authors.
+  Copyright 2012-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -13,29 +13,48 @@
   See the License for the specific language governing permissions and
   limitations under the License.
 -->
-<div class="gt-header"  ng-style="{'margin-bottom': layout.central ? '6px' : '18px'}">
+<div class="gt-header"
+     ng-style="{'margin-bottom': layout.central || layout.embeddedAgentRollup.display ? '5px' : '15px'}">
   <div class="gt-header-page-name">
-    <div ng-hide="layout.central">
+    <h1 ng-show="!layout.central && !layout.embeddedAgentRollup.display">
       Configuration
-    </div>
-    <div style="margin-top: -16px;" ng-show="layout.central">
+    </h1>
+    <div style="margin-top: -16px;"
+         ng-show="layout.central || layout.embeddedAgentRollup.display">
       <!-- negative margin-left is so background doesn't bleed through transparent 1px border when menu is open -->
       <span class="gt-inline-block gt-header-menu"
-            style="margin: 20px 0 8px -1px;">
+            style="margin-left: -1px; vertical-align: 2px;"
+            ng-show="layout.central">
         <select gt-selectpicker
-                gt-model="selectedAgentRollup"
-                gt-title="layout.agentRollups[agentRollupId].display || '&amp;lt;select&amp;gt;'"
+                gt-title="agentRollup.display || '&amp;lt;select&amp;gt;'"
                 data-live-search="true"
                 data-style="btn-flat"
-                id="agentRollupDropdown">
-          <!-- using layout.agentRollupValues instead of layout.agentRollups in case there are any agent rollup ids
-               that start with '$', because angular silently ignores object keys starting with '$' -->
-          <option ng-repeat="agentRollup in layout.agentRollupValues"
-                  data-href="{{agentRollupUrl(agentRollup)}}"
-                  value="{{agentRollup.id}}">
-            {{agentRollup.indentedDisplay}}
+                id="agentRollupDropdown"
+                aria-label="Agent">
+          <option ng-repeat="item in agentRollups track by item.id"
+                  data-href="{{agentRollupUrl(item.id)}}"
+                  data-tokens="{{item.display}}"
+                  value="{{item.id}}"
+                  title="{{agentRollup.display}}"
+                  ng-disabled="item.disabled"
+                  ng-selected="item.id == agentRollup.id">
+            {{item.indentedDisplay}}
+          </option>
+          <option disabled
+                  class="gt-agent-rollup-dropdown-message hide"
+                  style="font-style: italic; font-size: 16px; cursor: inherit;"
+                  ng-if="agentRollups.length === 0">
+            No active agents in the past 7 days
+          </option>
+          <!-- can't use gt-spinner due to selectpicker behavior -->
+          <option disabled
+                  class="gt-agent-rollup-dropdown-spinner hide"
+                  style="position: relative; height: 30px; cursor: inherit;">
           </option>
         </select>
+      </span>
+      <span ng-if="layout.embeddedAgentRollup.display">
+        {{layout.embeddedAgentRollup.display}}
       </span>
       <!-- don't use border to simulate vertical bar since this will jitter on reload (at least in Chrome)
            while chrome guesses the placement of the border based on default font and then it moves slightly
@@ -43,15 +62,21 @@
       <span class="gt-inline-block gt-separator">
         |
       </span>
-      <span class="gt-inline-block">
+      <h1 class="gt-inline-block">
         Configuration
-      </span>
+      </h1>
     </div>
   </div>
 </div>
 <div class="gt-sidebar hidden-print">
   <div class="panel panel-default">
-    <ul class="list-group">
+    <div class="list-group">
+      <div gt-sidebar-item
+           gt-display="General"
+           gt-url="config/general{{agentQueryString()}}"
+           gt-active="currentUrl() === 'config/general'"
+           ng-if="layout.central">
+      </div>
       <div gt-sidebar-item
            gt-display="Transactions"
            gt-url="config/transaction{{agentQueryString()}}"
@@ -63,6 +88,12 @@
            gt-url="config/gauge-list{{agentQueryString()}}"
            gt-active="currentUrl() === 'config/gauge-list'"
            gt-sub-active="currentUrl() === 'config/gauge'"
+           ng-if="!isAgentRollup()">
+      </div>
+      <div gt-sidebar-item
+           gt-display="JVM"
+           gt-url="config/jvm{{agentQueryString()}}"
+           gt-active="currentUrl() === 'config/jvm'"
            ng-if="!isAgentRollup()">
       </div>
       <div gt-sidebar-item
@@ -102,25 +133,8 @@
            gt-url="config/advanced{{agentQueryString()}}"
            gt-active="currentUrl() === 'config/advanced'">
       </div>
-    </ul>
+    </div>
   </div>
 </div>
 <div ui-view class="gt-main-column">
-</div>
-<div class="modal" id="confirmationModal" tabindex="-1">
-  <div class="modal-dialog"
-       style="max-width: 500px;">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3></h3>
-      </div>
-      <div class="modal-body">
-        <p></p>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-default" id="confirmationModalButton">Yes</button>
-        <button class="btn btn-primary" data-dismiss="modal">Cancel</button>
-      </div>
-    </div>
-  </div>
 </div>

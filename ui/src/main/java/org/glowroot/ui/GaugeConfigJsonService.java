@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,6 @@ package org.glowroot.ui;
 
 import java.util.List;
 
-import javax.annotation.Nullable;
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
@@ -26,19 +24,19 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.glowroot.common.live.LiveJvmService;
 import org.glowroot.common.live.LiveJvmService.AgentNotConnectedException;
-import org.glowroot.common.repo.ConfigRepository;
-import org.glowroot.common.repo.ConfigRepository.DuplicateMBeanObjectNameException;
-import org.glowroot.common.repo.util.Gauges;
 import org.glowroot.common.util.ObjectMappers;
 import org.glowroot.common.util.Styles;
 import org.glowroot.common.util.Versions;
-import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.ConfigRepository.DuplicateMBeanObjectNameException;
+import org.glowroot.common2.repo.util.Gauges;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.GaugeConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.MBeanAttribute;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.MBeanMeta;
@@ -246,7 +244,7 @@ class GaugeConfigJsonService {
         abstract Optional<String> version(); // absent for insert operations
 
         private GaugeConfig convert() {
-            AgentConfig.GaugeConfig.Builder builder = GaugeConfig.newBuilder()
+            GaugeConfig.Builder builder = GaugeConfig.newBuilder()
                     .setMbeanObjectName(mbeanObjectName());
             for (MBeanAttributeDto mbeanAttribute : mbeanAttributes()) {
                 builder.addMbeanAttribute(mbeanAttribute.convert());

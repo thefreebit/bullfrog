@@ -15,7 +15,7 @@ service CollectorService {
   // deprecated in 0.9.5, replaced by collectAggregateStream
   rpc collectAggregates(OldAggregateMessage) returns (AggregateResponseMessage);
   rpc collectAggregateStream(stream AggregateStreamMessage) returns (AggregateResponseMessage);
-  rpc collectGaugeValues(GaugeValueMessage) returns (EmptyMessage);
+  rpc collectGaugeValues(GaugeValueMessage) returns (GaugeValueResponseMessage);
   // deprecated in 0.9.5, replaced by collectTraceStream
   rpc collectTrace(OldTraceMessage) returns (EmptyMessage);
   rpc collectTraceStream(stream TraceStreamMessage) returns (EmptyMessage);
@@ -24,7 +24,7 @@ service CollectorService {
 
 message InitMessage {
   string agent_id = 1;
-  string agent_rollup_id = 4;
+  string v09_agent_rollup_id = 4; // deprecated in 0.10.0, now rollup is incorporated into agent_id
   Environment environment = 2;
   AgentConfig agent_config = 3;
 }
@@ -59,6 +59,11 @@ message AggregateResponseMessage {
 message GaugeValueMessage {
   string agent_id = 1;
   repeated GaugeValue gauge_values = 2;
+  bool post_v09 = 3;
+}
+
+message GaugeValueResponseMessage {
+  bool resend_init = 1;
 }
 
 message OldTraceMessage {
@@ -73,16 +78,22 @@ message TraceStreamMessage {
     Trace trace = 3; // deprecated in 0.9.13
     Trace.Entry entry = 4; // entry ordering is pre-order depth-first
                            // there are typically multiple "root" nodes (with depth=0)
+    Queries queries = 9;
     Profile main_thread_profile = 5;
     Profile aux_thread_profile = 6;
     Trace.Header header = 7;
     TraceStreamCounts stream_counts = 8;
+  }
+
+  message Queries {
+    repeated Aggregate.Query query = 1;
   }
 }
 
 message LogMessage {
   string agent_id = 1;
   LogEvent log_event = 2;
+  bool post_v09 = 3;
 }
 
 message Environment {
@@ -115,6 +126,7 @@ message JavaInfo {
 message AggregateStreamHeader {
   string agent_id = 1;
   int64 capture_time = 2;
+  bool post_v09 = 3;
 }
 
 message OverallAggregate {
@@ -142,11 +154,12 @@ message TraceStreamHeader {
   string agent_id = 1;
   string trace_id = 2;
   bool update = 3;
+  bool post_v09 = 4;
 }
 
 message TraceStreamCounts {
-  int32 shared_query_text_count = 1;
   int32 entry_count = 2;
+  int32 shared_query_text_count = 1;
 }
 
 message LogEvent {

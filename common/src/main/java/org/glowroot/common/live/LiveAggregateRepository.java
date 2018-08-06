@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,10 @@ package org.glowroot.common.live;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
 
-import javax.annotation.Nullable;
-
+import com.google.common.collect.Sets;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 
 import org.glowroot.common.model.OverallErrorSummaryCollector;
@@ -44,6 +45,8 @@ public interface LiveAggregateRepository {
 
     long mergeInTransactionErrorSummaries(String agentId, OverallQuery query,
             TransactionErrorSummaryCollector collector);
+
+    Set<String> getTransactionTypes(String agentId);
 
     @Nullable
     LiveResult<OverviewAggregate> getOverviewAggregates(String agentId, TransactionQuery query);
@@ -99,9 +102,7 @@ public interface LiveAggregateRepository {
         List<Aggregate.Timer> mainThreadRootTimers();
         List<Aggregate.Timer> auxThreadRootTimers();
         List<Aggregate.Timer> asyncTimers();
-        @Nullable
         Aggregate.ThreadStats mainThreadStats();
-        @Nullable
         Aggregate.ThreadStats auxThreadStats();
     }
 
@@ -165,6 +166,11 @@ public interface LiveAggregateRepository {
         public long mergeInTransactionErrorSummaries(String agentId, OverallQuery query,
                 TransactionErrorSummaryCollector collector) {
             return query.to();
+        }
+
+        @Override
+        public Set<String> getTransactionTypes(String agentId) {
+            return Sets.newHashSet();
         }
 
         @Override

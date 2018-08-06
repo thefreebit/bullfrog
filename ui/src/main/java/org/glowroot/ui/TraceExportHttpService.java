@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import com.google.common.base.Charsets;
 import com.google.common.collect.Lists;
 import com.google.common.io.CharSource;
 import com.google.common.io.Resources;
@@ -34,6 +33,7 @@ import org.glowroot.ui.CommonHandler.CommonResponse;
 import org.glowroot.ui.HttpSessionManager.Authentication;
 import org.glowroot.ui.TraceCommonService.TraceExport;
 
+import static com.google.common.base.Charsets.UTF_8;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static io.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
@@ -62,8 +62,6 @@ class TraceExportHttpService implements HttpService {
     public CommonResponse handleRequest(CommonRequest request, Authentication authentication)
             throws Exception {
         auditLogger.info("{} - GET {}", authentication.caseAmbiguousUsername(), request.getUri());
-        List<String> agentRollupIds = request.getParameters("agent-rollup-id");
-        String agentRollupId = agentRollupIds.isEmpty() ? "" : agentRollupIds.get(0);
         List<String> agentIds = request.getParameters("agent-id");
         String agentId = agentIds.isEmpty() ? "" : agentIds.get(0);
         List<String> traceIds = request.getParameters("trace-id");
@@ -74,14 +72,9 @@ class TraceExportHttpService implements HttpService {
         List<String> checkLiveTracesParams = request.getParameters("check-live-traces");
         boolean checkLiveTraces = !checkLiveTracesParams.isEmpty()
                 && Boolean.parseBoolean(checkLiveTracesParams.get(0));
-        logger.debug(
-                "handleRequest(): agentRollupId={}, agentId={}, traceId={}, checkLiveTraces={}",
-                agentRollupId, agentId, traceId, checkLiveTraces);
-        if (agentRollupId.isEmpty()) {
-            agentRollupId = agentId;
-        }
-        TraceExport traceExport =
-                traceCommonService.getExport(agentRollupId, agentId, traceId, checkLiveTraces);
+        logger.debug("handleRequest(): agentId={}, traceId={}, checkLiveTraces={}", agentId,
+                traceId, checkLiveTraces);
+        TraceExport traceExport = traceCommonService.getExport(agentId, traceId, checkLiveTraces);
         if (traceExport == null) {
             logger.warn("no trace found for id: {}", traceId);
             return new CommonResponse(NOT_FOUND);
@@ -100,6 +93,7 @@ class TraceExportHttpService implements HttpService {
         String exportJsPlaceholder = "<script src=\"scripts/export.js\"></script>";
         String headerPlaceholder = "<script type=\"text/json\" id=\"headerJson\"></script>";
         String entriesPlaceholder = "<script type=\"text/json\" id=\"entriesJson\"></script>";
+        String queriesPlaceholder = "<script type=\"text/json\" id=\"queriesJson\"></script>";
         String sharedQueryTextsPlaceholder =
                 "<script type=\"text/json\" id=\"sharedQueryTextsJson\"></script>";
         String mainThreadProfilePlaceholder =
@@ -111,8 +105,9 @@ class TraceExportHttpService implements HttpService {
         String templateContent = asCharSource("trace-export.html").read();
         Pattern pattern = Pattern.compile("(" + htmlStartTag + "|" + exportCssPlaceholder + "|"
                 + exportJsPlaceholder + "|" + headerPlaceholder + "|" + entriesPlaceholder + "|"
-                + sharedQueryTextsPlaceholder + "|" + mainThreadProfilePlaceholder + "|"
-                + auxThreadProfilePlaceholder + "|" + footerMessagePlaceholder + ")");
+                + queriesPlaceholder + "|" + sharedQueryTextsPlaceholder + "|"
+                + mainThreadProfilePlaceholder + "|" + auxThreadProfilePlaceholder + "|"
+                + footerMessagePlaceholder + ")");
         Matcher matcher = pattern.matcher(templateContent);
         int curr = 0;
         List<ChunkSource> chunkSources = Lists.newArrayList();
@@ -143,6 +138,14 @@ class TraceExportHttpService implements HttpService {
                 String entriesJson = traceExport.entriesJson();
                 if (entriesJson != null) {
                     chunkSources.add(ChunkSource.wrap(entriesJson));
+                }
+                chunkSources.add(ChunkSource.wrap("</script>"));
+            } else if (match.equals(queriesPlaceholder)) {
+                chunkSources
+                        .add(ChunkSource.wrap("<script type=\"text/json\" id=\"queriesJson\">"));
+                String queriesJson = traceExport.queriesJson();
+                if (queriesJson != null) {
+                    chunkSources.add(ChunkSource.wrap(queriesJson));
                 }
                 chunkSources.add(ChunkSource.wrap("</script>"));
             } else if (match.equals(sharedQueryTextsPlaceholder)) {
@@ -186,6 +189,6 @@ class TraceExportHttpService implements HttpService {
     private static CharSource asCharSource(String exportResourceName) {
         URL url = TraceExportHttpService.class
                 .getResource("/org/glowroot/ui/export-dist/" + exportResourceName);
-        return Resources.asCharSource(checkNotNull(url), Charsets.UTF_8);
+        return Resources.asCharSource(checkNotNull(url), UTF_8);
     }
 }

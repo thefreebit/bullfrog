@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,14 +22,14 @@ import com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.glowroot.agent.api.Glowroot;
 import org.glowroot.agent.api.Instrumentation;
+import org.glowroot.central.repo.ActiveAgentDao;
+import org.glowroot.central.repo.ActiveAgentDao.AgentConfigUpdate;
 import org.glowroot.central.repo.AgentConfigDao;
-import org.glowroot.central.repo.AgentRollupDao;
-import org.glowroot.central.repo.AgentRollupDao.AgentConfigUpdate;
-import org.glowroot.common.repo.AgentRollupRepository.AgentRollup;
 import org.glowroot.common.util.Clock;
+import org.glowroot.common2.repo.ActiveAgentRepository.AgentRollup;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 class UpdateAgentConfigIfNeededService implements Runnable {
@@ -37,7 +37,7 @@ class UpdateAgentConfigIfNeededService implements Runnable {
     private static final Logger logger =
             LoggerFactory.getLogger(UpdateAgentConfigIfNeededService.class);
 
-    private final AgentRollupDao agentRollupDao;
+    private final ActiveAgentDao activeAgentDao;
     private final AgentConfigDao agentConfigDao;
     private final DownstreamServiceImpl downstreamService;
     private final Clock clock;
@@ -46,9 +46,9 @@ class UpdateAgentConfigIfNeededService implements Runnable {
 
     private volatile boolean closed;
 
-    UpdateAgentConfigIfNeededService(AgentRollupDao agentRollupDao, AgentConfigDao agentConfigDao,
+    UpdateAgentConfigIfNeededService(ActiveAgentDao activeAgentDao, AgentConfigDao agentConfigDao,
             DownstreamServiceImpl downstreamService, Clock clock) {
-        this.agentRollupDao = agentRollupDao;
+        this.activeAgentDao = activeAgentDao;
         this.agentConfigDao = agentConfigDao;
         this.downstreamService = downstreamService;
         this.clock = clock;
@@ -60,7 +60,7 @@ class UpdateAgentConfigIfNeededService implements Runnable {
     public void run() {
         while (!closed) {
             try {
-                Thread.sleep(millisUntilNextRollup(clock.currentTimeMillis()));
+                MILLISECONDS.sleep(millisUntilNextRollup(clock.currentTimeMillis()));
                 runInternal();
             } catch (InterruptedException e) {
                 // probably shutdown requested (see close method below)
@@ -86,8 +86,7 @@ class UpdateAgentConfigIfNeededService implements Runnable {
             transactionName = "Outer update agent config loop", traceHeadline = "Outer rollup loop",
             timer = "outer rollup loop")
     private void runInternal() throws Exception {
-        Glowroot.setTransactionOuter();
-        for (AgentRollup agentRollup : agentRollupDao.readAgentRollups()) {
+        for (AgentRollup agentRollup : activeAgentDao.readRecentlyActiveAgentRollups(7)) {
             updateAgentConfigIfNeededAndConnected(agentRollup);
         }
     }
@@ -133,7 +132,7 @@ class UpdateAgentConfigIfNeededService implements Runnable {
 
     private String getDisplayForLogging(String agentRollupId) throws InterruptedException {
         try {
-            return agentRollupDao.readAgentRollupDisplay(agentRollupId);
+            return agentConfigDao.readAgentRollupDisplay(agentRollupId);
         } catch (InterruptedException e) {
             // probably shutdown requested (see close method above)
             throw e;

@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,17 +19,15 @@ import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.lang.instrument.Instrumentation;
+import java.lang.reflect.Constructor;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
-import javax.annotation.Nullable;
-
 import ch.qos.logback.core.Context;
-import com.google.common.base.Supplier;
-import com.google.common.base.Suppliers;
 import com.google.common.base.Ticker;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,7 +36,8 @@ import org.glowroot.agent.collector.Collector;
 import org.glowroot.agent.collector.Collector.AgentConfigUpdater;
 import org.glowroot.agent.config.ConfigService;
 import org.glowroot.agent.config.PluginCache;
-import org.glowroot.agent.init.NettyWorkaround.NettyInit;
+import org.glowroot.agent.impl.BytecodeServiceImpl.OnEnteringMain;
+import org.glowroot.agent.init.PreCheckLoadedClasses.PreCheckClassFileTransformer;
 import org.glowroot.agent.util.ThreadFactories;
 import org.glowroot.agent.util.Tickers;
 import org.glowroot.common.util.Clock;
@@ -49,29 +48,40 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class NonEmbeddedGlowrootAgentInit implements GlowrootAgentInit {
 
+    // log startup messages using logger name "org.glowroot"
+    private static final Logger startupLogger = LoggerFactory.getLogger("org.glowroot");
+
+    private static final Logger logger =
+            LoggerFactory.getLogger(NonEmbeddedGlowrootAgentInit.class);
+
     private final @Nullable String collectorAddress;
-    private final @Nullable Collector customCollector;
+    private final @Nullable String collectorAuthority;
+    private final @Nullable Class<? extends Collector> customCollectorClass;
 
-    private @MonotonicNonNull AgentModule agentModule;
-    private @MonotonicNonNull CentralCollector centralCollector;
+    private volatile @MonotonicNonNull AgentModule agentModule;
+    private volatile @MonotonicNonNull CentralCollector centralCollector;
 
-    private @MonotonicNonNull ScheduledExecutorService backgroundExecutor;
+    private volatile @MonotonicNonNull ScheduledExecutorService backgroundExecutor;
 
-    private @MonotonicNonNull Closeable agentDirsLockingCloseable;
+    private volatile @MonotonicNonNull Closeable agentDirsLockingCloseable;
 
     public NonEmbeddedGlowrootAgentInit(@Nullable String collectorAddress,
-            @Nullable Collector customCollector) {
+            @Nullable String collectorAuthority,
+            @Nullable Class<? extends Collector> customCollectorClass) {
         this.collectorAddress = collectorAddress;
-        this.customCollector = customCollector;
+        this.collectorAuthority = collectorAuthority;
+        this.customCollectorClass = customCollectorClass;
     }
 
     @Override
     public void init(@Nullable File pluginsDir, final File confDir,
             final @Nullable File sharedConfDir, File logDir, File tmpDir,
-            final Map<String, String> properties, final @Nullable Instrumentation instrumentation,
+            final @Nullable File glowrootJarFile, final Map<String, String> properties,
+            final @Nullable Instrumentation instrumentation,
+            @Nullable PreCheckClassFileTransformer preCheckClassFileTransformer,
             final String glowrootVersion) throws Exception {
 
-        agentDirsLockingCloseable = AgentDirsLocking.lockAgentDirs(tmpDir);
+        agentDirsLockingCloseable = AgentDirsLocking.lockAgentDirs(tmpDir, true, false);
         Ticker ticker = Tickers.getTicker();
         Clock clock = Clock.systemClock();
 
@@ -90,38 +100,58 @@ public class NonEmbeddedGlowrootAgentInit implements GlowrootAgentInit {
         collectorLogbackAppender.start();
         attachAppender(collectorLogbackAppender);
 
-        // need to delay creation of the scheduled executor until instrumentation is set up
-        Supplier<ScheduledExecutorService> backgroundExecutorSupplier =
-                createBackgroundExecutorSupplier();
-
-        final AgentModule agentModule = new AgentModule(clock, ticker, pluginCache, configService,
-                backgroundExecutorSupplier, collectorProxy, instrumentation, tmpDir);
-
-        final ScheduledExecutorService backgroundExecutor = backgroundExecutorSupplier.get();
-
-        final AgentConfigUpdater agentConfigUpdater =
-                new ConfigUpdateService(configService, pluginCache);
-
-        NettyWorkaround.run(instrumentation, new NettyInit() {
+        agentModule = new AgentModule(clock, ticker, pluginCache, configService, instrumentation,
+                glowrootJarFile, tmpDir, preCheckClassFileTransformer);
+        OnEnteringMain onEnteringMain = new OnEnteringMain() {
             @Override
-            public void execute(boolean newThread) throws Exception {
+            public void run(@Nullable String mainClass) throws Exception {
+                // TODO report checker framework issue that occurs without checkNotNull
+                checkNotNull(agentModule);
+                ScheduledExecutorService backgroundExecutor = Executors.newScheduledThreadPool(2,
+                        ThreadFactories.create("Glowroot-Background-%d"));
+                agentModule.onEnteringMain(backgroundExecutor, collectorProxy, instrumentation,
+                        glowrootJarFile, mainClass);
+                AgentConfigUpdater agentConfigUpdater =
+                        new ConfigUpdateService(configService, pluginCache);
+                NettyWorkaround.run();
                 Collector collector;
-                if (customCollector == null) {
-                    centralCollector = new CentralCollector(properties,
-                            checkNotNull(collectorAddress), agentModule.getLiveJvmService(),
-                            agentModule.getLiveWeavingService(),
-                            agentModule.getLiveTraceRepository(), agentConfigUpdater);
-                    collector = centralCollector;
+                Constructor<? extends Collector> collectorProxyConstructor = null;
+                if (customCollectorClass != null) {
+                    try {
+                        collectorProxyConstructor =
+                                customCollectorClass.getConstructor(Collector.class);
+                    } catch (NoSuchMethodException e) {
+                        logger.debug(e.getMessage(), e);
+                    }
+                }
+                if (customCollectorClass != null && collectorProxyConstructor == null) {
+                    collector = customCollectorClass.newInstance();
                 } else {
-                    collector = customCollector;
+                    centralCollector = new CentralCollector(properties,
+                            checkNotNull(collectorAddress), collectorAuthority, confDir,
+                            sharedConfDir, agentModule.getLiveJvmService(),
+                            agentModule.getLiveWeavingService(),
+                            agentModule.getLiveTraceRepository(), agentConfigUpdater,
+                            configService);
+                    if (collectorProxyConstructor == null) {
+                        collector = centralCollector;
+                    } else {
+                        startupLogger.info("using collector proxy: {}",
+                                collectorProxyConstructor.getName());
+                        collector = collectorProxyConstructor.newInstance(centralCollector);
+                    }
                 }
                 collectorProxy.setInstance(collector);
-                collector.init(confDir, sharedConfDir, EnvironmentCreator.create(glowrootVersion),
+                collector.init(confDir, sharedConfDir,
+                        EnvironmentCreator.create(glowrootVersion, configService.getJvmConfig()),
                         configService.getAgentConfig(), agentConfigUpdater);
             }
-        });
-        this.agentModule = agentModule;
-        this.backgroundExecutor = backgroundExecutor;
+        };
+        if (instrumentation == null) {
+            onEnteringMain.run(null);
+        } else {
+            agentModule.setOnEnteringMain(onEnteringMain);
+        }
     }
 
     @Override
@@ -146,10 +176,11 @@ public class NonEmbeddedGlowrootAgentInit implements GlowrootAgentInit {
         if (centralCollector != null) {
             centralCollector.close();
         }
-        checkNotNull(backgroundExecutor);
-        backgroundExecutor.shutdown();
-        if (!backgroundExecutor.awaitTermination(10, SECONDS)) {
-            throw new IllegalStateException("Could not terminate executor");
+        if (backgroundExecutor != null) {
+            backgroundExecutor.shutdown();
+            if (!backgroundExecutor.awaitTermination(10, SECONDS)) {
+                throw new IllegalStateException("Could not terminate executor");
+            }
         }
         // and unlock the agent directory
         if (agentDirsLockingCloseable != null) {
@@ -163,16 +194,6 @@ public class NonEmbeddedGlowrootAgentInit implements GlowrootAgentInit {
         if (centralCollector != null) {
             centralCollector.awaitClose();
         }
-    }
-
-    public static Supplier<ScheduledExecutorService> createBackgroundExecutorSupplier() {
-        return Suppliers.memoize(new Supplier<ScheduledExecutorService>() {
-            @Override
-            public ScheduledExecutorService get() {
-                return Executors.newScheduledThreadPool(2,
-                        ThreadFactories.create("Glowroot-Background-%d"));
-            }
-        });
     }
 
     private static void attachAppender(CollectorLogbackAppender appender) {

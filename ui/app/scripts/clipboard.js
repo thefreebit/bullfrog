@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-/* global $, Clipboard */
+/* global $, ClipboardJS */
 
 var nextClipboardId = 1;
 
 // this is not angular service because it is included in exported traces as well
-window.gtClipboard = function (clipboardSelector, clipboardContainer, textNodeFn, textFn) {
+window.gtClipboard = function (clipboardSelector, clipboardContainer, textFn) {
   setTimeout(function () {
     var $clipboardIcon = $(clipboardSelector);
     if ($clipboardIcon.attr('id')) {
@@ -40,10 +40,10 @@ window.gtClipboard = function (clipboardSelector, clipboardContainer, textNodeFn
     var $clipboardContainer = $(clipboardContainer);
     clipboardOptions.container = $clipboardContainer[0];
     tooltipOptions.container = $clipboardContainer;
-    var clipboard = new Clipboard('#' + clipboardId, clipboardOptions);
+    var clipboard = new ClipboardJS('#' + clipboardId, clipboardOptions);
     $clipboardIcon.tooltip(tooltipOptions);
 
-    clipboard.on('success', function (e) {
+    clipboard.on('success', function () {
       $clipboardIcon.attr('title', 'Copied!')
           .tooltip('fixTitle')
           .tooltip('show');

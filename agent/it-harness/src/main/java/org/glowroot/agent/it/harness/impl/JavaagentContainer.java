@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,13 +25,12 @@ import java.lang.management.RuntimeMXBean;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.List;
-import java.util.Map.Entry;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.jar.JarEntry;
 import java.util.jar.JarInputStream;
-
-import javax.annotation.Nullable;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
@@ -40,12 +39,13 @@ import com.google.common.base.Stopwatch;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
-import com.google.common.reflect.Reflection;
+import com.google.common.io.ByteStreams;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.grpc.ManagedChannel;
 import io.grpc.netty.NegotiationType;
 import io.grpc.netty.NettyChannelBuilder;
 import io.netty.channel.EventLoopGroup;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,6 +61,7 @@ import org.glowroot.agent.it.harness.grpc.JavaagentServiceOuterClass.Void;
 import org.glowroot.wire.api.model.TraceOuterClass.Trace;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class JavaagentContainer implements Container {
@@ -68,10 +69,6 @@ public class JavaagentContainer implements Container {
     private static final boolean XDEBUG = Boolean.getBoolean("glowroot.test.xdebug");
 
     private static final Logger logger = LoggerFactory.getLogger(JavaagentContainer.class);
-
-    static {
-        Reflection.initialize(InitLogging.class);
-    }
 
     private final File testDir;
     private final boolean deleteTestDirOnClose;
@@ -85,6 +82,7 @@ public class JavaagentContainer implements Container {
     private final @Nullable TraceCollector traceCollector;
     private final JavaagentServiceBlockingStub javaagentService;
     private final ExecutorService consolePipeExecutor;
+    private final Future<?> consolePipeFuture;
     private final Process process;
     private final ConsoleOutputPipe consoleOutputPipe;
     private final @Nullable ConfigServiceImpl configService;
@@ -123,8 +121,7 @@ public class JavaagentContainer implements Container {
                     // TODO report checker framework issue that occurs without checkNotNull
                     Socket socket = checkNotNull(heartbeatListenerSocket).accept();
                     InputStream socketIn = socket.getInputStream();
-                    while (socketIn.read() != -1) {
-                    }
+                    ByteStreams.exhaust(socketIn);
                 } catch (IOException e) {
                     logger.error(e.getMessage(), e);
                 }
@@ -153,21 +150,21 @@ public class JavaagentContainer implements Container {
                 javaagentServicePort, this.testDir, extraJvmArgs);
         ProcessBuilder processBuilder = new ProcessBuilder(command);
         processBuilder.redirectErrorStream(true);
-        final Process process = processBuilder.start();
+        Process process = processBuilder.start();
         consolePipeExecutor = Executors.newSingleThreadExecutor();
         InputStream in = process.getInputStream();
         // process.getInputStream() only returns null if ProcessBuilder.redirectOutput() is used
         // to redirect output to a file
         checkNotNull(in);
         consoleOutputPipe = new ConsoleOutputPipe(in, System.out);
-        consolePipeExecutor.submit(consoleOutputPipe);
+        consolePipeFuture = consolePipeExecutor.submit(consoleOutputPipe);
         this.process = process;
 
-        eventLoopGroup = EventLoopGroups.create("Glowroot-GRPC-Worker-ELG");
+        eventLoopGroup = EventLoopGroups.create("Glowroot-IT-Harness*-GRPC-Worker-ELG");
         executor = Executors.newCachedThreadPool(
                 new ThreadFactoryBuilder()
                         .setDaemon(true)
-                        .setNameFormat("Glowroot-GRPC-Executor-%d")
+                        .setNameFormat("Glowroot-IT-Harness*-GRPC-Executor-%d")
                         .build());
         channel = NettyChannelBuilder.forAddress("localhost", javaagentServicePort)
                 .eventLoopGroup(eventLoopGroup)
@@ -187,7 +184,7 @@ public class JavaagentContainer implements Container {
             } catch (Exception e) {
                 logger.debug(e.getMessage(), e);
             }
-            Thread.sleep(100);
+            MILLISECONDS.sleep(100);
         }
         javaagentService = JavaagentServiceGrpc.newBlockingStub(channel)
                 .withCompression("gzip");
@@ -222,32 +219,26 @@ public class JavaagentContainer implements Container {
 
     @Override
     public Trace execute(Class<? extends AppUnderTest> appClass) throws Exception {
-        checkNotNull(traceCollector);
-        executeInternal(appClass);
-        // extra long wait time is needed for StackOverflowOOMIT on slow travis ci machines since it
-        // can sometimes take a long time for that large trace to be serialized and transferred
-        Trace trace = traceCollector.getCompletedTrace(20, SECONDS);
-        traceCollector.clearTrace();
-        return trace;
+        return executeInternal(appClass, null, null);
     }
 
     @Override
     public Trace execute(Class<? extends AppUnderTest> appClass, String transactionType)
             throws Exception {
-        checkNotNull(traceCollector);
-        executeInternal(appClass);
-        // extra long wait time is needed for StackOverflowOOMIT on slow travis ci machines since it
-        // can sometimes take a long time for that large trace to be serialized and transferred
-        Trace trace = traceCollector.getCompletedTrace(transactionType, 20, SECONDS);
-        traceCollector.clearTrace();
-        return trace;
+        return executeInternal(appClass, transactionType, null);
+    }
+
+    @Override
+    public Trace execute(Class<? extends AppUnderTest> appClass, String transactionType,
+            String transactionName) throws Exception {
+        return executeInternal(appClass, transactionType, transactionName);
     }
 
     @Override
     public void executeNoExpectedTrace(Class<? extends AppUnderTest> appClass) throws Exception {
         executeInternal(appClass);
         // give a short time to see if trace gets collected
-        Thread.sleep(10);
+        MILLISECONDS.sleep(10);
         if (traceCollector != null && traceCollector.hasTrace()) {
             throw new IllegalStateException("Trace was collected when none was expected");
         }
@@ -297,6 +288,7 @@ public class JavaagentContainer implements Container {
             server.close();
         }
         process.waitFor();
+        consolePipeFuture.get();
         consolePipeExecutor.shutdown();
         if (!consolePipeExecutor.awaitTermination(10, SECONDS)) {
             throw new IllegalStateException("Could not terminate executor");
@@ -310,6 +302,18 @@ public class JavaagentContainer implements Container {
         if (deleteTestDirOnClose) {
             TempDirs.deleteRecursively(testDir);
         }
+    }
+
+    private Trace executeInternal(Class<? extends AppUnderTest> appClass,
+            @Nullable String transactionType, @Nullable String transactionName) throws Exception {
+        checkNotNull(traceCollector);
+        executeInternal(appClass);
+        // extra long wait time is needed for StackOverflowOOMIT on slow travis ci machines since it
+        // can sometimes take a long time for that large trace to be serialized and transferred
+        Trace trace =
+                traceCollector.getCompletedTrace(transactionType, transactionName, 20, SECONDS);
+        traceCollector.clearTrace();
+        return trace;
     }
 
     private void executeInternal(Class<? extends AppUnderTest> appUnderTestClass) {
@@ -338,71 +342,110 @@ public class JavaagentContainer implements Container {
         String classpath = Strings.nullToEmpty(StandardSystemProperty.JAVA_CLASS_PATH.value());
         List<String> bootPaths = Lists.newArrayList();
         List<String> paths = Lists.newArrayList();
-        List<String> maybeShadedInsideAgentJars = Lists.newArrayList();
-        List<String> maybeBootstrapJar = Lists.newArrayList();
+        List<String> maybeBootPaths = Lists.newArrayList();
         File javaagentJarFile = null;
         for (String path : Splitter.on(File.pathSeparatorChar).split(classpath)) {
             File file = new File(path);
             String name = file.getName();
-            boolean agentClasses = false;
-            if (name.equals("classes") && !file.getAbsolutePath().endsWith(File.separator
-                    + "it-harness" + File.separator + "target" + File.separator + "classes")) {
-                agentClasses = true;
-            }
-            if (name.matches("glowroot-agent-core-[0-9.]+(-SNAPSHOT)?.jar")) {
+            String targetClasses = File.separator + "target" + File.separator + "classes";
+            if (name.matches("glowroot-agent-core(-unshaded)?-[0-9.]+(-SNAPSHOT)?.jar")
+                    || name.matches("glowroot-agent-it-harness-[0-9.]+(-SNAPSHOT)?.jar")) {
                 javaagentJarFile = file;
             } else if (name.matches("glowroot-common-[0-9.]+(-SNAPSHOT)?.jar")
                     || name.matches("glowroot-wire-api-[0-9.]+(-SNAPSHOT)?.jar")
                     || name.matches("glowroot-agent-api-[0-9.]+(-SNAPSHOT)?.jar")
-                    || name.matches("glowroot-agent-plugin-api-[0-9.]+(-SNAPSHOT)?.jar")) {
-                // these artifacts should not be present since glowroot-agent-core shades them
-                // but maven 3.3.1/3.3.3 are not using the dependency reduced pom during downstream
-                // module builds, which causes the glowroot artifacts to be included
-                // when running "mvn clean install" from the project root, see MSHADE-206
-                maybeShadedInsideAgentJars.add(path);
-            } else if (agentClasses) {
-                bootPaths.add(path);
-            } else if (name.matches("glowroot-agent-it-harness-[0-9.]+(-SNAPSHOT)?\\.jar")) {
-                paths.add(path);
-            } else if (file.getAbsolutePath().endsWith(File.separator + "it-harness"
-                    + File.separator + "target" + File.separator + "classes")) {
-                paths.add(path);
-            } else if (name.endsWith(".jar") && file.getAbsolutePath()
-                    .endsWith(File.separator + "target" + File.separator + name)) {
-                bootPaths.add(path);
-            } else if (name.matches("glowroot-.*\\.jar")) {
-                bootPaths.add(path);
-            } else if (name.matches("guava-.*\\.jar")) {
-                // several plugins use guava
-                bootPaths.add(path);
+                    || name.matches("glowroot-agent-plugin-api-[0-9.]+(-SNAPSHOT)?.jar")
+                    || name.matches("glowroot-agent-bytecode-api-[0-9.]+(-SNAPSHOT)?.jar")) {
+                // these are glowroot-agent-core-unshaded transitive dependencies
+                maybeBootPaths.add(path);
+            } else if (file.getAbsolutePath().endsWith(File.separator + "common" + targetClasses)
+                    || file.getAbsolutePath().endsWith(File.separator + "wire-api" + targetClasses)
+                    || file.getAbsolutePath().endsWith(File.separator + "api" + targetClasses)
+                    || file.getAbsolutePath()
+                            .endsWith(File.separator + "plugin-api" + targetClasses)
+                    || file.getAbsolutePath()
+                            .endsWith(File.separator + "bytecode-api" + targetClasses)) {
+                // these are glowroot-agent-core-unshaded transitive dependencies
+                maybeBootPaths.add(path);
             } else if (name.matches("asm-.*\\.jar")
-                    || name.matches("compress-lzf-.*\\.jar")
                     || name.matches("grpc-.*\\.jar")
                     || name.matches("opencensus-.*\\.jar")
                     || name.matches("guava-.*\\.jar")
-                    || name.matches("h2-.*\\.jar")
                     || name.matches("HdrHistogram-.*\\.jar")
                     || name.matches("instrumentation-api-.*\\.jar")
                     || name.matches("jackson-.*\\.jar")
-                    || name.matches("javax.servlet-api-.*\\.jar")
-                    || name.matches("jzlib-.*\\.jar")
                     || name.matches("logback-.*\\.jar")
-                    || name.matches("mailapi-.*\\.jar")
-                    || name.matches("netty-.*\\.jar")
+                    // javax.servlet-api is needed because logback-classic has
+                    // META-INF/services/javax.servlet.ServletContainerInitializer
+                    || name.matches("javax.servlet-api-.*\\.jar")
+                    || name.matches("netty-buffer-.*\\.jar")
+                    || name.matches("netty-codec-.*\\.jar")
+                    || name.matches("netty-codec-http2-.*\\.jar")
+                    || name.matches("netty-codec-http-.*\\.jar")
+                    || name.matches("netty-codec-socks-.*\\.jar")
+                    || name.matches("netty-common-.*\\.jar")
+                    || name.matches("netty-handler-.*\\.jar")
+                    || name.matches("netty-handler-proxy-.*\\.jar")
+                    || name.matches("netty-resolver-.*\\.jar")
+                    || name.matches("netty-transport-.*\\.jar")
                     || name.matches("protobuf-java-.*\\.jar")
                     || name.matches("slf4j-api-.*\\.jar")
-                    || name.matches("smtp-.*\\.jar")
                     || name.matches("value-.*\\.jar")
                     || name.matches("error_prone_annotations-.*\\.jar")
                     || name.matches("jsr305-.*\\.jar")) {
-                // these are glowroot-agent-core transitive dependencies
-                maybeBootstrapJar.add(path);
+                // these are glowroot-agent-core-unshaded transitive dependencies
+                maybeBootPaths.add(path);
+            } else if (name.matches("glowroot-common2-[0-9.]+(-SNAPSHOT)?.jar")
+                    || name.matches("glowroot-ui-[0-9.]+(-SNAPSHOT)?.jar")
+                    || name.matches(
+                            "glowroot-agent-embedded(-unshaded)?-[0-9.]+(-SNAPSHOT)?.jar")) {
+                // these are glowroot-agent-embedded-unshaded transitive dependencies
+                paths.add(path);
+            } else if (file.getAbsolutePath().endsWith(File.separator + "common2" + targetClasses)
+                    || file.getAbsolutePath().endsWith(File.separator + "ui" + targetClasses)
+                    || file.getAbsolutePath()
+                            .endsWith(File.separator + "embedded" + targetClasses)) {
+                // these are glowroot-agent-embedded-unshaded transitive dependencies
+                paths.add(path);
+            } else if (name.matches("compress-.*\\.jar")
+                    || name.matches("h2-.*\\.jar")
+                    || name.matches("jzlib-.*\\.jar")
+                    || name.matches("mailapi-.*\\.jar")
+                    || name.matches("smtp-.*\\.jar")) {
+                // these are glowroot-agent-embedded-unshaded transitive dependencies
+                paths.add(path);
+            } else if (name.matches("glowroot-agent-it-harness-unshaded-[0-9.]+(-SNAPSHOT)?.jar")) {
+                // this is integration test harness, needs to be in bootstrap class loader when it
+                // it is shaded (because then it contains glowroot-agent-core), and for consistency
+                // putting it in bootstrap class loader at other times as well
+                bootPaths.add(path);
+            } else if (file.getAbsolutePath()
+                    .endsWith(File.separator + "it-harness" + targetClasses)) {
+                // this is integration test harness, needs to be in bootstrap class loader when it
+                // it is shaded (because then it contains glowroot-agent-core), and for consistency
+                // putting it in bootstrap class loader at other times as well
+                bootPaths.add(path);
+            } else if (name.endsWith(".jar") && file.getAbsolutePath()
+                    .endsWith(File.separator + "target" + File.separator + name)) {
+                // this is the plugin under test
+                bootPaths.add(path);
+            } else if (name.matches("glowroot-agent-[a-z-]+-plugin-[0-9.]+(-SNAPSHOT)?.jar")) {
+                // this another (core) plugin that it depends on, e.g. the executor plugin
+                bootPaths.add(path);
+            } else if (file.getAbsolutePath().endsWith(targetClasses)) {
+                // this is the plugin under test
+                bootPaths.add(path);
+            } else if (file.getAbsolutePath()
+                    .endsWith(File.separator + "target" + File.separator + "test-classes")) {
+                // this is the plugin test classes
+                paths.add(path);
             } else {
+                // these are plugin test dependencies
                 paths.add(path);
             }
         }
         if (javaagentJarFile == null) {
-            bootPaths.addAll(maybeBootstrapJar);
+            bootPaths.addAll(maybeBootPaths);
         } else {
             boolean shaded = false;
             JarInputStream jarIn = new JarInputStream(new FileInputStream(javaagentJarFile));
@@ -418,17 +461,21 @@ public class JavaagentContainer implements Container {
                 jarIn.close();
             }
             if (shaded) {
-                paths.addAll(maybeBootstrapJar);
+                paths.addAll(maybeBootPaths);
             } else {
-                bootPaths.addAll(maybeBootstrapJar);
-                bootPaths.addAll(maybeShadedInsideAgentJars);
+                bootPaths.addAll(maybeBootPaths);
             }
         }
         command.add("-Xbootclasspath/a:" + Joiner.on(File.pathSeparatorChar).join(bootPaths));
         command.add("-classpath");
         command.add(Joiner.on(File.pathSeparatorChar).join(paths));
+        if (XDEBUG) {
+            // the -agentlib arg needs to come before the -javaagent arg
+            command.add("-Xdebug");
+            command.add("-agentlib:jdwp=transport=dt_socket,address=8000,server=y,suspend=y");
+        }
         if (javaagentJarFile == null) {
-            // create jar file in data dir since that gets cleaned up at end of test already
+            // create jar file in test dir since that gets cleaned up at end of test already
             javaagentJarFile = DelegatingJavaagent.createDelegatingJavaagentJarFile(testDir);
             command.add("-javaagent:" + javaagentJarFile);
             command.add("-DdelegateJavaagent=" + AgentPremain.class.getName());
@@ -439,6 +486,7 @@ public class JavaagentContainer implements Container {
         if (collectorPort != 0) {
             command.add("-Dglowroot.collector.address=localhost:" + collectorPort);
         }
+        command.add("-Dglowroot.debug.preCheckLoadedClasses=true");
         // this is used inside low-entropy docker containers
         String sourceOfRandomness = System.getProperty("java.security.egd");
         if (sourceOfRandomness != null) {
@@ -449,7 +497,7 @@ public class JavaagentContainer implements Container {
         }
         // leave as much memory as possible to old gen
         command.add("-XX:NewRatio=20");
-        for (Entry<Object, Object> entry : System.getProperties().entrySet()) {
+        for (Map.Entry<Object, Object> entry : System.getProperties().entrySet()) {
             Object keyObject = entry.getKey();
             if (!(keyObject instanceof String)) {
                 continue;
@@ -458,10 +506,6 @@ public class JavaagentContainer implements Container {
             if (key.startsWith("glowroot.internal.") || key.startsWith("glowroot.test.")) {
                 command.add("-D" + key + "=" + entry.getValue());
             }
-        }
-        if (XDEBUG) {
-            command.add("-Xdebug");
-            command.add("-agentlib:jdwp=transport=dt_socket,address=8000,server=y,suspend=y");
         }
         command.add(JavaagentMain.class.getName());
         command.add(Integer.toString(heartbeatPort));
@@ -512,15 +556,8 @@ public class JavaagentContainer implements Container {
 
         @Override
         public void run() {
-            byte[] buffer = new byte[100];
             try {
-                while (true) {
-                    int n = in.read(buffer);
-                    if (n == -1) {
-                        break;
-                    }
-                    out.write(buffer, 0, n);
-                }
+                ByteStreams.copy(in, out);
             } catch (IOException e) {
                 logger.error(e.getMessage(), e);
             }

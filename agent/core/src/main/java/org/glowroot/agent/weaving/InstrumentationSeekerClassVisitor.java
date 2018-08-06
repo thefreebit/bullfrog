@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,10 @@ package org.glowroot.agent.weaving;
 
 import java.util.List;
 
-import javax.annotation.Nullable;
-
+import com.google.common.base.MoreObjects;
 import com.google.common.collect.Lists;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 import org.objectweb.asm.AnnotationVisitor;
 import org.objectweb.asm.ClassVisitor;
@@ -29,12 +29,14 @@ import org.objectweb.asm.Type;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.glowroot.agent.api.Instrumentation;
 import org.glowroot.agent.config.ImmutableInstrumentationConfig;
 import org.glowroot.agent.config.InstrumentationConfig;
+import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.InstrumentationConfig.AlreadyInTransactionBehavior;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.InstrumentationConfig.CaptureKind;
 
 import static com.google.common.base.Preconditions.checkNotNull;
-import static org.objectweb.asm.Opcodes.ASM5;
+import static org.objectweb.asm.Opcodes.ASM6;
 
 class InstrumentationSeekerClassVisitor extends ClassVisitor {
 
@@ -46,7 +48,7 @@ class InstrumentationSeekerClassVisitor extends ClassVisitor {
     private @MonotonicNonNull String owner;
 
     InstrumentationSeekerClassVisitor() {
-        super(ASM5);
+        super(ASM6);
     }
 
     @Override
@@ -76,7 +78,7 @@ class InstrumentationSeekerClassVisitor extends ClassVisitor {
         private @MonotonicNonNull TimerAnnotationVisitor timerAnnotationVisitor;
 
         private InstrumentationAnnotationMethodVisitor(String methodName, String desc) {
-            super(ASM5);
+            super(ASM6);
             this.methodName = methodName;
             this.desc = desc;
         }
@@ -137,12 +139,16 @@ class InstrumentationSeekerClassVisitor extends ClassVisitor {
                         Type.getType(owner).getClassName());
                 return;
             }
+            AlreadyInTransactionBehavior alreadyInTransactionBehavior = MoreObjects.firstNonNull(
+                    transactionAnnotationVisitor.alreadyInTransactionBehavior,
+                    AlreadyInTransactionBehavior.CAPTURE_TRACE_ENTRY);
             instrumentationConfigs.add(startBuilder()
                     .captureKind(CaptureKind.TRANSACTION)
                     .transactionType(transactionType)
                     .transactionNameTemplate(transactionNameTemplate)
                     .traceEntryMessageTemplate(traceHeadline)
                     .timerName(timerName)
+                    .alreadyInTransactionBehavior(alreadyInTransactionBehavior)
                     .build());
         }
 
@@ -208,9 +214,10 @@ class InstrumentationSeekerClassVisitor extends ClassVisitor {
         private @Nullable String transactionNameTemplate;
         private @Nullable String traceHeadline;
         private @Nullable String timerName;
+        private @Nullable AlreadyInTransactionBehavior alreadyInTransactionBehavior;
 
         private TransactionAnnotationVisitor() {
-            super(ASM5);
+            super(ASM6);
         }
 
         @Override
@@ -220,14 +227,28 @@ class InstrumentationSeekerClassVisitor extends ClassVisitor {
             }
             if (name.equals("transactionType")) {
                 transactionType = (String) value;
-            } else if (name.equals("transactionName") || name.equals("transactionNameTemplate")) {
-                // second condition above is supporting deprecated transactionNameTemplate
+            } else if (name.equals("transactionName")) {
                 transactionNameTemplate = (String) value;
             } else if (name.equals("traceHeadline")) {
                 traceHeadline = (String) value;
-            } else if (name.equals("timer") || name.equals("timerName")) {
-                // second condition above is supporting deprecated timerName
+            } else if (name.equals("timer")) {
                 timerName = (String) value;
+            } else if (name.equals("alreadyInTransactionBehavior")) {
+                alreadyInTransactionBehavior = toProto(value);
+            }
+        }
+
+        private static AlreadyInTransactionBehavior toProto(Object value) {
+            if (value.equals(Instrumentation.AlreadyInTransactionBehavior.CAPTURE_TRACE_ENTRY)) {
+                return AlreadyInTransactionBehavior.CAPTURE_TRACE_ENTRY;
+            } else if (value
+                    .equals(Instrumentation.AlreadyInTransactionBehavior.CAPTURE_NEW_TRANSACTION)) {
+                return AlreadyInTransactionBehavior.CAPTURE_NEW_TRANSACTION;
+            } else if (value.equals(Instrumentation.AlreadyInTransactionBehavior.DO_NOTHING)) {
+                return AlreadyInTransactionBehavior.DO_NOTHING;
+            } else {
+                throw new IllegalStateException(
+                        "Unexpected AlreadyInTransactionBehavior: " + value);
             }
         }
     }
@@ -238,7 +259,7 @@ class InstrumentationSeekerClassVisitor extends ClassVisitor {
         private @Nullable String timerName;
 
         private TraceEntryAnnotationVisitor() {
-            super(ASM5);
+            super(ASM6);
         }
 
         @Override
@@ -246,11 +267,9 @@ class InstrumentationSeekerClassVisitor extends ClassVisitor {
             if (name == null) {
                 return;
             }
-            if (name.equals("message") || name.equals("messageTemplate")) {
-                // second condition above is supporting deprecated messageTemplate
+            if (name.equals("message")) {
                 messageTemplate = (String) value;
-            } else if (name.equals("timer") || name.equals("timerName")) {
-                // second condition above is supporting deprecated timerName
+            } else if (name.equals("timer")) {
                 timerName = (String) value;
             }
         }
@@ -261,7 +280,7 @@ class InstrumentationSeekerClassVisitor extends ClassVisitor {
         private @Nullable String timerName;
 
         private TimerAnnotationVisitor() {
-            super(ASM5);
+            super(ASM6);
         }
 
         @Override

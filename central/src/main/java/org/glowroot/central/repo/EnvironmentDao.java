@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,23 +17,19 @@ package org.glowroot.central.repo;
 
 import java.nio.ByteBuffer;
 
-import javax.annotation.Nullable;
-
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.Row;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.central.util.Session;
-import org.glowroot.common.repo.EnvironmentRepository;
+import org.glowroot.common2.repo.EnvironmentRepository;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.Environment;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
 // TODO environment records never expire for abandoned agent ids
 public class EnvironmentDao implements EnvironmentRepository {
-
-    private static final String WITH_LCS =
-            "with compaction = { 'class' : 'LeveledCompactionStrategy' }";
 
     private final Session session;
 
@@ -43,14 +39,14 @@ public class EnvironmentDao implements EnvironmentRepository {
     EnvironmentDao(Session session) throws Exception {
         this.session = session;
 
-        session.execute("create table if not exists environment (agent_id varchar,"
-                + " environment blob, primary key (agent_id)) " + WITH_LCS);
+        session.createTableWithLCS("create table if not exists environment (agent_id varchar,"
+                + " environment blob, primary key (agent_id))");
 
         insertPS = session.prepare("insert into environment (agent_id, environment) values (?, ?)");
         readPS = session.prepare("select environment from environment where agent_id = ?");
     }
 
-    public void insert(String agentId, Environment environment) throws Exception {
+    public void store(String agentId, Environment environment) throws Exception {
         BoundStatement boundStatement = insertPS.bind();
         int i = 0;
         boundStatement.setString(i++, agentId);

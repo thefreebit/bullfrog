@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,32 +15,27 @@
  */
 package org.glowroot.central.repo;
 
+import java.util.ArrayList;
 import java.util.List;
 
-import javax.annotation.Nullable;
-
 import com.datastax.driver.core.BoundStatement;
-import com.datastax.driver.core.KeyspaceMetadata;
 import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.Row;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.central.util.Cache;
 import org.glowroot.central.util.Cache.CacheLoader;
 import org.glowroot.central.util.ClusterManager;
 import org.glowroot.central.util.Session;
-import org.glowroot.common.config.ImmutableUserConfig;
-import org.glowroot.common.config.UserConfig;
-import org.glowroot.common.repo.ConfigRepository.DuplicateUsernameException;
+import org.glowroot.common2.config.ImmutableUserConfig;
+import org.glowroot.common2.config.UserConfig;
+import org.glowroot.common2.repo.ConfigRepository.DuplicateUsernameException;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
 class UserDao {
-
-    private static final String WITH_LCS =
-            "with compaction = { 'class' : 'LeveledCompactionStrategy' }";
 
     private static final String ALL_USERS_SINGLE_CACHE_KEY = "x";
 
@@ -53,15 +48,13 @@ class UserDao {
 
     private final Cache<String, List<UserConfig>> allUserConfigsCache;
 
-    UserDao(Session session, KeyspaceMetadata keyspaceMetadata,
-            ClusterManager clusterManager) throws Exception {
+    UserDao(Session session, ClusterManager clusterManager) throws Exception {
         this.session = session;
 
-        boolean createAnonymousUser = keyspaceMetadata.getTable("user") == null;
+        boolean createAnonymousUser = session.getTable("user") == null;
 
-        session.execute("create table if not exists user (username varchar, ldap boolean,"
-                + " password_hash varchar, roles set<varchar>, primary key (username)) "
-                + WITH_LCS);
+        session.createTableWithLCS("create table if not exists user (username varchar, ldap"
+                + " boolean, password_hash varchar, roles set<varchar>, primary key (username))");
 
         readPS = session.prepare("select username, ldap, password_hash, roles from user");
         insertIfNotExistsPS = session.prepare("insert into user (username, ldap, password_hash,"
@@ -71,7 +64,10 @@ class UserDao {
         deletePS = session.prepare("delete from user where username = ?");
 
         if (createAnonymousUser) {
-            BoundStatement boundStatement = insertIfNotExistsPS.bind();
+            // don't use "if not exists" here since it's not needed and has more chance to fail,
+            // leaving the schema in a bad state (with the user table created, but no anonymous
+            // user)
+            BoundStatement boundStatement = insertPS.bind();
             int i = 0;
             boundStatement.setString(i++, "anonymous");
             boundStatement.setBool(i++, false);
@@ -156,7 +152,7 @@ class UserDao {
         @Override
         public List<UserConfig> load(String dummy) throws Exception {
             ResultSet results = session.execute(readPS.bind());
-            List<UserConfig> users = Lists.newArrayList();
+            List<UserConfig> users = new ArrayList<>();
             for (Row row : results) {
                 users.add(buildUser(row));
             }

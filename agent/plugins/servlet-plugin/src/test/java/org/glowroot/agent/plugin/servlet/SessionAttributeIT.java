@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
 
-import javax.annotation.Nullable;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -303,6 +302,33 @@ public class SessionAttributeIT {
     }
 
     @Test
+    public void testHasBadSessionAttribute() throws Exception {
+        // given
+        container.getConfigService().setPluginProperty(PLUGIN_ID, "captureSessionAttributes", "*");
+        // when
+        Trace trace = container.execute(HasBadSessionAttribute.class, "Web");
+        // then
+        assertThat(getSessionAttributes(trace)).isNotNull();
+        assertThat(getSessionAttributes(trace)).hasSize(1);
+        assertThat(getSessionAttributes(trace).get("one")).isEqualTo("");
+        assertThat(getUpdatedSessionAttributes(trace)).isNull();
+    }
+
+    @Test
+    public void testSetBadSessionAttribute() throws Exception {
+        // given
+        container.getConfigService().setPluginProperty(PLUGIN_ID, "captureSessionAttributes", "*");
+        // when
+        Trace trace = container.execute(SetBadSessionAttribute.class, "Web");
+        // then
+        assertThat(getSessionAttributes(trace)).isNull();
+        assertThat(getUpdatedSessionAttributes(trace)).isNotNull();
+        assertThat(getUpdatedSessionAttributes(trace)).hasSize(1);
+        assertThat(getUpdatedSessionAttributes(trace).containsKey("one")).isTrue();
+        assertThat(getUpdatedSessionAttributes(trace).get("one")).isEmpty();
+    }
+
+    @Test
     public void testHasMissingSessionAttribute2() throws Exception {
         // given
         container.getConfigService().setPluginProperty(PLUGIN_ID, "captureSessionAttributes",
@@ -429,19 +455,19 @@ public class SessionAttributeIT {
         assertThat(getUpdatedSessionAttributes(trace).get("::id")).isEqualTo("abcdef");
     }
 
-    static @Nullable Map<String, String> getSessionAttributes(Trace trace) {
+    static Map<String, String> getSessionAttributes(Trace trace) {
         return getDetailMap(trace, "Session attributes");
     }
 
-    static @Nullable Map<String, String> getInitialSessionAttributes(Trace trace) {
+    static Map<String, String> getInitialSessionAttributes(Trace trace) {
         return getDetailMap(trace, "Session attributes (at beginning of this request)");
     }
 
-    static @Nullable Map<String, String> getUpdatedSessionAttributes(Trace trace) {
+    static Map<String, String> getUpdatedSessionAttributes(Trace trace) {
         return getDetailMap(trace, "Session attributes (updated during this request)");
     }
 
-    private static @Nullable Map<String, String> getDetailMap(Trace trace, String name) {
+    private static Map<String, String> getDetailMap(Trace trace, String name) {
         List<Trace.DetailEntry> details = trace.getHeader().getDetailEntryList();
         Trace.DetailEntry found = null;
         for (Trace.DetailEntry detail : details) {
@@ -519,6 +545,22 @@ public class SessionAttributeIT {
         @Override
         protected void doGet(HttpServletRequest request, HttpServletResponse response) {
             request.getSession().setAttribute("one", null);
+        }
+    }
+
+    @SuppressWarnings("serial")
+    public static class HasBadSessionAttribute extends TestServlet {
+        @Override
+        protected void before(HttpServletRequest request, HttpServletResponse response) {
+            request.getSession().setAttribute("one", new BadObject());
+        }
+    }
+
+    @SuppressWarnings("serial")
+    public static class SetBadSessionAttribute extends TestServlet {
+        @Override
+        protected void doGet(HttpServletRequest request, HttpServletResponse response) {
+            request.getSession().setAttribute("one", new BadObject());
         }
     }
 
@@ -646,6 +688,13 @@ public class SessionAttributeIT {
         }
         public String getThree() {
             return three;
+        }
+    }
+
+    public static class BadObject {
+        @Override
+        public String toString() {
+            return null;
         }
     }
 }

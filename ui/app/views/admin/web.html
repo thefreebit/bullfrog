@@ -1,5 +1,5 @@
 <!--
-  Copyright 2013-2017 the original author or authors.
+  Copyright 2013-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -68,7 +68,8 @@
       </div>
       <div gt-form-group
            gt-type="checkbox"
-           gt-label="Use HTTPS"
+           gt-label="HTTPS"
+           gt-checkbox-label="Use HTTPS"
            gt-model="config.https"
            gt-disabled="!layout.adminEdit"
            gt-col-class1="col-lg-4"
@@ -80,11 +81,13 @@
                style="padding-bottom: 5px;">
             Active value is <code>{{activeHttps}}</code>.
           </div>
-          Serve the user interface over HTTPS. The SSL certificate and private key to be used must be placed in the
-          {{certificateDir}} directory with filenames <em>certificate.pem</em> and
-          <em>private.pem</em> before enabling HTTPS. The private key should not have a passphrase.
-          E.g. a self signed certificate can be generated at the command line using
-          <em>openssl req -new -x509 -nodes -days 365 -out certificate.pem -keyout private.pem</em>
+          Serve the user interface over HTTPS. The certificate and private key to be used must be placed in the
+          {{certificateDir}} directory with filenames <em>ui-cert.pem</em> and <em>ui-key.pem</em> before enabling
+          HTTPS, where ui-cert.pem is a PEM encoded X.509 certificate chain, and ui-key.pem is a PEM encoded PKCS#8
+          private key without a passphrase.
+          (for example, a self signed certificate can be generated at the command line meeting the above requirements
+          using OpenSSL 1.0.0 or later:
+          <em>openssl req -new -x509 -nodes -days 365 -out ui-cert.pem -keyout ui-key.pem</em>)
         </div>
       </div>
       <div gt-form-group
@@ -149,3 +152,5 @@
     </div>
   </div>
 </div>
+<!-- each page with confirmation dialog needs its own confirmation dom so that it is deleted on $destroy -->
+<div ng-include="'template/gt-confirmation.html'"></div>

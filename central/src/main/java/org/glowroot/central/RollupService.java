@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,31 +15,32 @@
  */
 package org.glowroot.central;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-
-import javax.annotation.Nullable;
 
 import com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.glowroot.agent.api.Glowroot;
 import org.glowroot.agent.api.Instrumentation;
-import org.glowroot.central.repo.AgentRollupDao;
+import org.glowroot.central.repo.ActiveAgentDao;
 import org.glowroot.central.repo.AggregateDao;
 import org.glowroot.central.repo.GaugeValueDao;
 import org.glowroot.central.repo.SyntheticResultDao;
-import org.glowroot.common.repo.AgentRollupRepository.AgentRollup;
 import org.glowroot.common.util.Clock;
+import org.glowroot.common2.repo.ActiveAgentRepository.AgentRollup;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 class RollupService implements Runnable {
 
     private static final Logger logger = LoggerFactory.getLogger(RollupService.class);
 
-    private final AgentRollupDao agentRollupDao;
+    private final ActiveAgentDao activeAgentDao;
     private final AggregateDao aggregateDao;
     private final GaugeValueDao gaugeValueDao;
     private final SyntheticResultDao syntheticResultDao;
@@ -50,10 +51,10 @@ class RollupService implements Runnable {
 
     private volatile boolean closed;
 
-    RollupService(AgentRollupDao agentRollupDao, AggregateDao aggregateDao,
+    RollupService(ActiveAgentDao activeAgentDao, AggregateDao aggregateDao,
             GaugeValueDao gaugeValueDao, SyntheticResultDao syntheticResultDao,
             CentralAlertingService centralAlertingService, Clock clock) {
-        this.agentRollupDao = agentRollupDao;
+        this.activeAgentDao = activeAgentDao;
         this.aggregateDao = aggregateDao;
         this.gaugeValueDao = gaugeValueDao;
         this.syntheticResultDao = syntheticResultDao;
@@ -67,7 +68,7 @@ class RollupService implements Runnable {
     public void run() {
         while (!closed) {
             try {
-                Thread.sleep(millisUntilNextRollup(clock.currentTimeMillis()));
+                MILLISECONDS.sleep(millisUntilNextRollup(clock.currentTimeMillis()));
                 runInternal();
             } catch (InterruptedException e) {
                 // probably shutdown requested (see close method below)
@@ -92,10 +93,11 @@ class RollupService implements Runnable {
             transactionName = "Outer rollup loop", traceHeadline = "Outer rollup loop",
             timer = "outer rollup loop")
     private void runInternal() throws Exception {
-        Glowroot.setTransactionOuter();
-        for (AgentRollup agentRollup : agentRollupDao.readAgentRollups()) {
-            rollupAggregates(agentRollup, null);
-            rollupGauges(agentRollup, null);
+        // randomize order so that multiple central collector nodes will be less likely to perform
+        // duplicative work
+        for (AgentRollup agentRollup : shuffle(activeAgentDao.readRecentlyActiveAgentRollups(7))) {
+            rollupAggregates(agentRollup);
+            rollupGauges(agentRollup);
             rollupSyntheticMonitors(agentRollup);
             // checking aggregate and gauge alerts after rollup since their calculation can depend
             // on rollups depending on time period length (and alerts on rollups are not checked
@@ -104,19 +106,21 @@ class RollupService implements Runnable {
             // agent (not rollup) alerts are also checked right after receiving the respective data
             // (aggregate/gauge/heartbeat) from the agent, but need to also check these once a
             // minute in case no data has been received from the agent recently
-            consumeAgentRollups(agentRollup, this::checkForDeletedAlerts);
-            consumeAgentRollups(agentRollup, this::checkAggregateAndGaugeAndHeartbeatAlertsAsync);
+            checkAggregateAndGaugeAndHeartbeatAlertsAsync(agentRollup);
         }
+        // FIXME keep this here as fallback, but also resolve alerts immediately when they are
+        // deleted (or when their condition is updated)
+        centralAlertingService.checkForAllDeletedAlerts();
     }
 
-    private void rollupAggregates(AgentRollup agentRollup, @Nullable String parentAgentRollupId)
-            throws InterruptedException {
-        for (AgentRollup childAgentRollup : agentRollup.children()) {
-            rollupAggregates(childAgentRollup, agentRollup.id());
+    private void rollupAggregates(AgentRollup agentRollup) throws InterruptedException {
+        // randomize order so that multiple central collector nodes will be less likely to perform
+        // duplicative work
+        for (AgentRollup childAgentRollup : shuffle(agentRollup.children())) {
+            rollupAggregates(childAgentRollup);
         }
         try {
-            aggregateDao.rollup(agentRollup.id(), parentAgentRollupId,
-                    agentRollup.children().isEmpty());
+            aggregateDao.rollup(agentRollup.id());
         } catch (InterruptedException e) {
             // probably shutdown requested (see close method above)
             throw e;
@@ -126,24 +130,22 @@ class RollupService implements Runnable {
     }
 
     // returns true on success, false on failure
-    private boolean rollupGauges(AgentRollup agentRollup, @Nullable String parentAgentRollupId)
-            throws InterruptedException {
-        // important to roll up children first, since gauge values initial roll up from children is
+    private boolean rollupGauges(AgentRollup agentRollup) throws InterruptedException {
+        // need to roll up children first, since gauge values initial roll up from children is
         // done on the 1-min aggregates of the children
         boolean success = true;
         for (AgentRollup childAgentRollup : agentRollup.children()) {
-            boolean childSuccess = rollupGauges(childAgentRollup, agentRollup.id());
+            boolean childSuccess = rollupGauges(childAgentRollup);
             success = success && childSuccess;
         }
         if (!success) {
-            // also important to not roll up parent if exception occurs while rolling up a child,
-            // since gauge values initial roll up from children is done on the 1-min aggregates of
-            // the children
+            // need to _not_ roll up parent if exception occurs while rolling up a child, since
+            // gauge values initial roll up from children is done on the 1-min aggregates of the
+            // children
             return false;
         }
         try {
-            gaugeValueDao.rollup(agentRollup.id(), parentAgentRollupId,
-                    agentRollup.children().isEmpty());
+            gaugeValueDao.rollup(agentRollup.id());
             return true;
         } catch (InterruptedException e) {
             // probably shutdown requested (see close method above)
@@ -168,21 +170,19 @@ class RollupService implements Runnable {
         }
     }
 
-    private void consumeAgentRollups(AgentRollup agentRollup,
-            AgentRollupConsumer agentRollupConsumer) throws Exception {
+    private void checkAggregateAndGaugeAndHeartbeatAlertsAsync(AgentRollup agentRollup)
+            throws InterruptedException {
         for (AgentRollup childAgentRollup : agentRollup.children()) {
-            consumeAgentRollups(childAgentRollup, agentRollupConsumer);
+            checkAggregateAndGaugeAndHeartbeatAlertsAsync(childAgentRollup);
         }
-        agentRollupConsumer.accept(agentRollup);
-    }
-
-    private void checkForDeletedAlerts(AgentRollup agentRollup) {
-        centralAlertingService.checkForDeletedAlerts(agentRollup.id(), agentRollup.display());
-    }
-
-    private void checkAggregateAndGaugeAndHeartbeatAlertsAsync(AgentRollup agentRollup) {
         centralAlertingService.checkAggregateAndGaugeAndHeartbeatAlertsAsync(agentRollup.id(),
                 agentRollup.display(), clock.currentTimeMillis());
+    }
+
+    private static <T> List<T> shuffle(List<T> agentRollups) {
+        List<T> mutable = new ArrayList<>(agentRollups);
+        Collections.shuffle(mutable);
+        return mutable;
     }
 
     @VisibleForTesting

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,18 +17,21 @@ package org.glowroot.central.util;
 
 import java.io.File;
 import java.io.Serializable;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
-import javax.annotation.Nullable;
-
+import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Queues;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.infinispan.configuration.cache.CacheMode;
 import org.infinispan.configuration.cache.ConfigurationBuilder;
 import org.infinispan.configuration.global.GlobalConfiguration;
@@ -42,8 +45,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.glowroot.central.util.Cache.CacheLoader;
+import org.glowroot.common2.repo.util.LockSet;
+import org.glowroot.common2.repo.util.LockSet.LockSetImpl;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public abstract class ClusterManager {
@@ -54,7 +60,7 @@ public abstract class ClusterManager {
         return new NonClusterManager();
     }
 
-    public static ClusterManager create(File centralDir, Map<String, String> jgroupsProperties) {
+    public static ClusterManager create(File confDir, Map<String, String> jgroupsProperties) {
         Map<String, String> properties = Maps.newHashMap(jgroupsProperties);
         String jgroupsConfigurationFile = properties.remove("jgroups.configurationFile");
         if (jgroupsConfigurationFile != null) {
@@ -64,7 +70,7 @@ public abstract class ClusterManager {
                 properties.put("jgroups.initialNodes",
                         Pattern.compile(":([0-9]+)").matcher(initialNodes).replaceAll("[$1]"));
             }
-            return new ClusterManagerImpl(centralDir, jgroupsConfigurationFile, properties);
+            return new ClusterManagerImpl(confDir, jgroupsConfigurationFile, properties);
         } else {
             return new NonClusterManager();
         }
@@ -73,8 +79,14 @@ public abstract class ClusterManager {
     public abstract <K extends /*@NonNull*/ Serializable, V extends /*@NonNull*/ Object> Cache<K, V> createCache(
             String cacheName, CacheLoader<K, V> loader);
 
+    public abstract <K extends /*@NonNull*/ Serializable> LockSet<K> createReplicatedLockSet(
+            String mapName, long expirationTime, TimeUnit expirationUnit);
+
     public abstract <K extends /*@NonNull*/ Serializable, V extends /*@NonNull*/ Serializable> ConcurrentMap<K, V> createReplicatedMap(
             String mapName);
+
+    public abstract <K extends /*@NonNull*/ Serializable, V extends /*@NonNull*/ Serializable> ConcurrentMap<K, V> createReplicatedMap(
+            String mapName, long expirationTime, TimeUnit expirationUnit);
 
     public abstract <K extends /*@NonNull*/ Serializable, V extends /*@NonNull*/ Object> DistributedExecutionMap<K, V> createDistributedExecutionMap(
             String cacheName);
@@ -85,12 +97,12 @@ public abstract class ClusterManager {
 
         private final EmbeddedCacheManager cacheManager;
 
-        private ClusterManagerImpl(File centralDir, String jgroupsConfigurationFile,
+        private ClusterManagerImpl(File confDir, String jgroupsConfigurationFile,
                 Map<String, String> jgroupsProperties) {
             GlobalConfiguration configuration = new GlobalConfigurationBuilder()
                     .transport().defaultTransport()
                     .addProperty("configurationFile",
-                            getConfigurationFilePropertyValue(centralDir, jgroupsConfigurationFile))
+                            getConfigurationFilePropertyValue(confDir, jgroupsConfigurationFile))
                     .build();
             cacheManager = doWithSystemProperties(jgroupsProperties,
                     () -> new DefaultCacheManager(configuration));
@@ -107,11 +119,25 @@ public abstract class ClusterManager {
         }
 
         @Override
+        public <K extends /*@NonNull*/ Serializable> LockSet<K> createReplicatedLockSet(
+                String mapName, long expirationTime, TimeUnit expirationUnit) {
+            return new LockSetImpl<K>(createReplicatedMap(mapName, expirationTime, expirationUnit));
+        }
+
+        @Override
         public <K extends /*@NonNull*/ Serializable, V extends /*@NonNull*/ Serializable> ConcurrentMap<K, V> createReplicatedMap(
                 String mapName) {
+            return createReplicatedMap(mapName, -1, MILLISECONDS);
+        }
+
+        @Override
+        public <K extends /*@NonNull*/ Serializable, V extends /*@NonNull*/ Serializable> ConcurrentMap<K, V> createReplicatedMap(
+                String mapName, long expirationTime, TimeUnit expirationUnit) {
             ConfigurationBuilder configurationBuilder = new ConfigurationBuilder();
             configurationBuilder.clustering()
                     .cacheMode(CacheMode.REPL_ASYNC);
+            configurationBuilder.expiration()
+                    .lifespan(expirationTime, expirationUnit);
             cacheManager.defineConfiguration(mapName, configurationBuilder.build());
             return cacheManager.getCache(mapName);
         }
@@ -131,16 +157,16 @@ public abstract class ClusterManager {
             cacheManager.stop();
             // org.infinispan.factories.NamedExecutorsFactory.stop() calls shutdownNow() on all
             // executors, but does not awaitTermination(), so sleep a bit to allow time
-            Thread.sleep(1000);
+            SECONDS.sleep(1);
         }
 
-        private static String getConfigurationFilePropertyValue(File centralDir,
+        private static String getConfigurationFilePropertyValue(File confDir,
                 String jgroupsConfigurationFile) {
             File file = new File(jgroupsConfigurationFile);
             if (file.isAbsolute()) {
                 return jgroupsConfigurationFile;
             }
-            file = new File(centralDir, jgroupsConfigurationFile);
+            file = new File(confDir, jgroupsConfigurationFile);
             if (file.exists()) {
                 return file.getAbsolutePath();
             }
@@ -154,7 +180,7 @@ public abstract class ClusterManager {
 
         private static <V> V doWithSystemProperties(Map<String, String> properties,
                 Supplier<V> supplier) {
-            Map<String, String> priorSystemProperties = Maps.newHashMap();
+            Map<String, String> priorSystemProperties = new HashMap<>();
             for (Map.Entry<String, String> entry : properties.entrySet()) {
                 String key = entry.getKey();
                 String priorValue = System.getProperty(key);
@@ -183,19 +209,34 @@ public abstract class ClusterManager {
         @Override
         public <K extends /*@NonNull*/ Serializable, V extends /*@NonNull*/ Object> Cache<K, V> createCache(
                 String cacheName, CacheLoader<K, V> loader) {
-            return new NonClusterCacheImpl<K, V>(Maps.newConcurrentMap(), loader);
+            return new NonClusterCacheImpl<K, V>(new ConcurrentHashMap<>(), loader);
         }
 
         @Override
         public <K extends /*@NonNull*/ Serializable, V extends /*@NonNull*/ Object> DistributedExecutionMap<K, V> createDistributedExecutionMap(
                 String cacheName) {
-            return new NonClusterDistributedExecutionMapImpl<>(Maps.newConcurrentMap());
+            return new NonClusterDistributedExecutionMapImpl<>(new ConcurrentHashMap<>());
+        }
+
+        @Override
+        public <K extends /*@NonNull*/ Serializable> LockSet<K> createReplicatedLockSet(
+                String mapName, long expirationTime, TimeUnit expirationUnit) {
+            return new LockSetImpl<>(createReplicatedMap(mapName, expirationTime, expirationUnit));
         }
 
         @Override
         public <K extends /*@NonNull*/ Serializable, V extends /*@NonNull*/ Serializable> ConcurrentMap<K, V> createReplicatedMap(
                 String mapName) {
-            return Maps.newConcurrentMap();
+            return new ConcurrentHashMap<>();
+        }
+
+        @Override
+        public <K extends /*@NonNull*/ Serializable, V extends /*@NonNull*/ Serializable> ConcurrentMap<K, V> createReplicatedMap(
+                String mapName, long expirationTime, TimeUnit expirationUnit) {
+            return CacheBuilder.newBuilder()
+                    .expireAfterWrite(expirationTime, expirationUnit)
+                    .<K, V>build()
+                    .asMap();
         }
 
         @Override
@@ -368,7 +409,7 @@ public abstract class ClusterManager {
     private static class CollectingConsumer<V extends /*@NonNull*/ Object>
             implements TriConsumer<Address, /*@Nullable*/ Optional<V>, /*@Nullable*/ Throwable> {
 
-        private final Queue<V> values = Queues.newConcurrentLinkedQueue();
+        private final Queue<V> values = new ConcurrentLinkedQueue<>();
         private volatile boolean logStackTrace;
 
         @Override

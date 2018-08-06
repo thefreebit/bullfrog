@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,14 +18,10 @@ package org.glowroot.agent.weaving;
 import java.io.File;
 import java.io.IOException;
 import java.lang.instrument.Instrumentation;
-import java.net.URL;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import javax.annotation.Nullable;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Supplier;
@@ -36,6 +32,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,7 +64,7 @@ public class AdviceCache {
 
     private volatile ImmutableList<Advice> allAdvisors;
 
-    public AdviceCache(List<PluginDescriptor> pluginDescriptors, List<File> pluginJars,
+    public AdviceCache(List<PluginDescriptor> pluginDescriptors,
             List<InstrumentationConfig> reweavableConfigs,
             @Nullable Instrumentation instrumentation, File tmpDir) throws Exception {
 
@@ -75,12 +72,6 @@ public class AdviceCache {
         List<ShimType> shimTypes = Lists.newArrayList();
         List<MixinType> mixinTypes = Lists.newArrayList();
         Map<Advice, LazyDefinedClass> lazyAdvisors = Maps.newHashMap();
-        // use temporary class loader so @Pointcut classes won't be defined for real until
-        // PointcutClassVisitor is ready to weave them
-        final URL[] pluginJarURLs = new URL[pluginJars.size()];
-        for (int i = 0; i < pluginJars.size(); i++) {
-            pluginJarURLs[i] = pluginJars.get(i).toURI().toURL();
-        }
         for (PluginDescriptor pluginDescriptor : pluginDescriptors) {
             for (String aspect : pluginDescriptor.aspects()) {
                 try {
@@ -101,14 +92,15 @@ public class AdviceCache {
             lazyAdvisors.putAll(AdviceGenerator.createAdvisors(instrumentationConfigs,
                     pluginDescriptor.id(), false));
         }
-        for (Entry<Advice, LazyDefinedClass> entry : lazyAdvisors.entrySet()) {
+        for (Map.Entry<Advice, LazyDefinedClass> entry : lazyAdvisors.entrySet()) {
             pluginAdvisors.add(entry.getKey());
         }
         if (instrumentation == null) {
-            // this is for tests that don't run with javaagent container
-            ClassLoader loader = AdviceCache.class.getClassLoader();
-            checkNotNull(loader);
-            ClassLoaders.defineClassesInClassLoader(lazyAdvisors.values(), loader);
+            // instrumentation is null when debugging with LocalContainer
+            ClassLoader isolatedWeavingClassLoader = Thread.currentThread().getContextClassLoader();
+            checkNotNull(isolatedWeavingClassLoader);
+            ClassLoaders.defineClassesInClassLoader(lazyAdvisors.values(),
+                    isolatedWeavingClassLoader);
         } else {
             ClassLoaders.createDirectoryOrCleanPreviousContentsWithPrefix(tmpDir,
                     "plugin-pointcuts.jar");
@@ -206,10 +198,11 @@ public class AdviceCache {
         ImmutableMap<Advice, LazyDefinedClass> advisors =
                 AdviceGenerator.createAdvisors(reweavableConfigs, null, true);
         if (instrumentation == null) {
-            // this is for tests that don't run with javaagent container
-            ClassLoader loader = AdviceCache.class.getClassLoader();
-            checkNotNull(loader);
-            ClassLoaders.defineClassesInClassLoader(advisors.values(), loader);
+            // instrumentation is null when debugging with LocalContainer
+            ClassLoader isolatedWeavingClassLoader =
+                    Thread.currentThread().getContextClassLoader();
+            checkNotNull(isolatedWeavingClassLoader);
+            ClassLoaders.defineClassesInClassLoader(advisors.values(), isolatedWeavingClassLoader);
         } else {
             if (cleanTmpDir) {
                 ClassLoaders.createDirectoryOrCleanPreviousContentsWithPrefix(tmpDir,

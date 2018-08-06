@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,16 +17,15 @@ package org.glowroot.ui;
 
 import java.net.URL;
 
-import javax.annotation.Nullable;
-
-import com.google.common.base.Charsets;
 import com.google.common.io.Resources;
 import com.google.common.net.MediaType;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.ui.CommonHandler.CommonRequest;
 import org.glowroot.ui.CommonHandler.CommonResponse;
 import org.glowroot.ui.HttpSessionManager.Authentication;
 
+import static com.google.common.base.Charsets.UTF_8;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static io.netty.handler.codec.http.HttpResponseStatus.OK;
 
@@ -51,7 +50,7 @@ class IndexHtmlHttpService implements HttpService {
     public CommonResponse handleRequest(CommonRequest request, Authentication authentication)
             throws Exception {
         URL url = IndexHtmlHttpService.class.getResource("/org/glowroot/ui/app-dist/index.html");
-        String indexHtml = Resources.toString(checkNotNull(url), Charsets.UTF_8);
+        String indexHtml = Resources.toString(checkNotNull(url), UTF_8);
         String layout = layoutService.getLayoutJson(authentication);
         String contextPath = request.getContextPath();
         String baseHref = contextPath.equals("/") ? "/" : contextPath + "/";
@@ -68,9 +67,6 @@ class IndexHtmlHttpService implements HttpService {
                         + " + 'favicon.$1.ico\">')</script>");
         if (GOOGLE_ANALYTICS_TRACKING_ID != null) {
             // this is for demo.glowroot.org
-            indexHtml = indexHtml.replaceFirst(
-                    "<div class=\"navbar-brand\">(\\s*)Glowroot(\\s*)</div>",
-                    "<a href=\"https://glowroot.org\" class=\"navbar-brand\">$1Glowroot$2</a>");
             indexHtml = indexHtml.replace("</body>",
                     "<script>(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]"
                             + "||function(){(i[r].q=i[r].q||[]).push(arguments)},"

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import java.util.regex.Pattern;
 
 import com.ning.http.client.AsyncHttpClient;
 import com.ning.http.client.Response;
+import com.ning.http.client.cookie.Cookie;
 import org.apache.catalina.Context;
 import org.apache.catalina.loader.WebappLoader;
 import org.apache.catalina.startup.Tomcat;
@@ -36,6 +37,7 @@ import org.glowroot.agent.it.harness.Container;
 import org.glowroot.agent.it.harness.Containers;
 import org.glowroot.wire.api.model.TraceOuterClass.Trace;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class JsfRenderIT {
@@ -75,7 +77,7 @@ public class JsfRenderIT {
     @Test
     public void shouldCaptureJsfAction() throws Exception {
         // when
-        Trace trace = container.execute(PostHello.class, "Web");
+        Trace trace = container.execute(PostHello.class, "Web", "/hello.xhtml;xyz");
 
         // then
         Iterator<Trace.Entry> i = trace.getEntryList().iterator();
@@ -161,9 +163,12 @@ public class JsfRenderIT {
             sb.append(matcher.group(2));
             String postBody = sb.toString().replace(":", "%3A");
             response = asyncHttpClient
+                    // ";xyz" is added to identify the second trace
                     .preparePost(
-                            "http://localhost:" + port + "/hello.xhtml;jsessionid=" + jsessionId)
+                            "http://localhost:" + port + "/hello.xhtml;xyz")
                     .setHeader("Content-Type", "application/x-www-form-urlencoded")
+                    .addCookie(Cookie.newValidCookie("JSESSIONID", jsessionId, "localhost",
+                            jsessionId, null, -1, -1, true, true))
                     .setBody(postBody)
                     .execute()
                     .get();
@@ -173,7 +178,7 @@ public class JsfRenderIT {
                 throw new IllegalStateException("Unexpected status code: " + statusCode);
             }
             // sleep a bit to make sure the "last trace" is not the first http request from above
-            Thread.sleep(200);
+            MILLISECONDS.sleep(200);
         }
     }
 

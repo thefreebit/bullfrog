@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,8 +40,7 @@ glowroot.controller('TransactionPercentilesCtrl', [
     // (see https://github.com/angular/angular.js/pull/12643)
     $scope.$watch('[range.chartFrom, range.chartTo, range.chartRefresh, range.chartAutoRefresh]',
         function (newValues, oldValues) {
-          if (angular.equals(appliedPercentiles,
-                  $scope.layout.agentRollups[$scope.agentRollupId].defaultDisplayedPercentiles)) {
+          if (angular.equals(appliedPercentiles, $scope.agentRollup.defaultPercentiles)) {
             $location.search('percentile', null);
           } else {
             $location.search('percentile', appliedPercentiles);
@@ -104,7 +103,7 @@ glowroot.controller('TransactionPercentilesCtrl', [
         }
         sortNumbers(appliedPercentiles);
       } else {
-        appliedPercentiles = $scope.layout.agentRollups[$scope.agentRollupId].defaultDisplayedPercentiles;
+        appliedPercentiles = $scope.agentRollup.defaultPercentiles;
       }
 
       if (priorAppliedPercentiles !== undefined && !angular.equals(appliedPercentiles, priorAppliedPercentiles)) {
@@ -138,11 +137,15 @@ glowroot.controller('TransactionPercentilesCtrl', [
       },
       tooltipOpts: {
         content: function (label, xval, yval, flotItem) {
+          var transactionCount = $scope.transactionCounts[xval];
+          if (transactionCount === undefined) {
+            return 'No data';
+          }
           var from = xval - chartState.dataPointIntervalMillis;
           // this math is to deal with live aggregate
           from = Math.ceil(from / chartState.dataPointIntervalMillis) * chartState.dataPointIntervalMillis;
           var to = xval;
-          return charts.renderTooltipHtml(from, to, $scope.transactionCounts[xval], flotItem.dataIndex,
+          return charts.renderTooltipHtml(from, to, transactionCount, flotItem.dataIndex,
               flotItem.seriesIndex, chartState.plot, function (value) {
                 return $filter('gtMillis')(value) + ' milliseconds';
               });

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,38 +15,43 @@
  */
 package org.glowroot.central;
 
-import com.google.common.base.Charsets;
-import com.google.common.base.Strings;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Maps;
-import com.google.common.io.CharStreams;
-import io.netty.buffer.ByteBuf;
-import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
-import org.glowroot.ui.ChunkSource;
-import org.glowroot.ui.ChunkSource.ChunkCopier;
-import org.glowroot.ui.CommonHandler;
-import org.glowroot.ui.CommonHandler.CommonRequest;
-import org.glowroot.ui.CommonHandler.CommonResponse;
-
-import javax.annotation.Nullable;
-import javax.servlet.*;
-import javax.servlet.annotation.WebServlet;
-import javax.servlet.http.HttpServlet;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import javax.servlet.ServletConfig;
+import javax.servlet.ServletException;
+import javax.servlet.ServletOutputStream;
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
+import com.google.common.io.CharStreams;
+import io.netty.buffer.ByteBuf;
+import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
+
+import org.glowroot.ui.ChunkSource;
+import org.glowroot.ui.ChunkSource.ChunkCopier;
+import org.glowroot.ui.CommonHandler;
+import org.glowroot.ui.CommonHandler.CommonRequest;
+import org.glowroot.ui.CommonHandler.CommonResponse;
+
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 @WebServlet("/*")
 @SuppressWarnings("serial")
@@ -90,7 +95,7 @@ public class GlowrootServlet extends HttpServlet {
             throw new ServletException(e);
         }
         response.setStatus(commonResponse.getStatus().code());
-        for (Entry<String, String> entry : commonResponse.getHeaders()) {
+        for (Map.Entry<String, String> entry : commonResponse.getHeaders()) {
             response.addHeader(entry.getKey(), entry.getValue());
         }
         Object content = commonResponse.getContent();
@@ -113,7 +118,7 @@ public class GlowrootServlet extends HttpServlet {
                 ServletOutputStream out = res.getOutputStream();
                 ZipOutputStream zipOut = new ZipOutputStream(out);
                 zipOut.putNextEntry(new ZipEntry(zipFileName + ".html"));
-                OutputStreamWriter zipWriter = new OutputStreamWriter(zipOut, Charsets.UTF_8);
+                OutputStreamWriter zipWriter = new OutputStreamWriter(zipOut, UTF_8);
                 ChunkCopier copier = chunkSource.getCopier(zipWriter);
                 while (copier.copyNext()) {
                 }
@@ -194,8 +199,8 @@ public class GlowrootServlet extends HttpServlet {
 
         @Override
         public Map<String, List<String>> getParameters() {
-            Map<String, List<String>> parameters = Maps.newHashMap();
-            for (Entry<String, String[]> entry : request.getParameterMap().entrySet()) {
+            Map<String, List<String>> parameters = new HashMap<>();
+            for (Map.Entry<String, String[]> entry : request.getParameterMap().entrySet()) {
                 parameters.put(entry.getKey(), Arrays.asList(entry.getValue()));
             }
             return parameters;

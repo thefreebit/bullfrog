@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package org.glowroot.agent.plugin.api;
 
 import java.util.concurrent.TimeUnit;
 
-import javax.annotation.Nullable;
+import org.glowroot.agent.plugin.api.checker.Nullable;
 
 public interface ThreadContext {
 
@@ -283,10 +283,6 @@ public interface ThreadContext {
      * the error attribute on the transaction, which must be done with {@link #setTransactionError}
      * or with {@code endWithError} on the root entry.
      * 
-     * Since there is no throwable passed to this variant, a stack trace is captured and displayed
-     * in the UI as a location stack trace (as opposed to an exception stack trace), similar to
-     * {@link TraceEntry#endWithLocationStackTrace(long, TimeUnit)}.
-     * 
      * This method bypasses the regular {@code maxTraceEntriesPerTransaction} check so that errors
      * after {@code maxTraceEntriesPerTransaction} will still be included in the trace. A hard cap (
      * {@code maxTraceEntriesPerTransaction * 2}) on the total number of entries is still applied,
@@ -336,36 +332,6 @@ public interface ThreadContext {
     @Deprecated
     void setServletMessageSupplier(@Nullable MessageSupplier messageSupplier);
 
-    /**
-     * @deprecated Replaced by {@link #setTransactionAsync()}.
-     */
-    @Deprecated
-    void setAsyncTransaction();
-
-    /**
-     * @deprecated Replaced by {@link #setTransactionAsyncComplete()}.
-     */
-    @Deprecated
-    void completeAsyncTransaction();
-
-    /**
-     * @deprecated Replaced by {@link #setTransactionOuter()}.
-     */
-    @Deprecated
-    void setOuterTransaction();
-
-    interface Priority {
-        int CORE_PLUGIN = -100;
-        int USER_PLUGIN = 100;
-        int USER_API = 1000;
-        int USER_CONFIG = 10000;
-        // this is used for very special circumstances, currently only
-        // when setting transaction name from HTTP header "Glowroot-Transaction-Type"
-        // and for setting slow threshold (to zero) for Startup transactions
-        // and for setting slow threshold for user-specific profiling
-        int CORE_MAX = 1000000;
-    }
-
     interface ServletRequestInfo {
         String getMethod();
         String getContextPath();
@@ -375,5 +341,20 @@ public interface ThreadContext {
         @Nullable
         String getPathInfo();
         String getUri();
+    }
+
+    public final class Priority {
+
+        public static final int CORE_PLUGIN = -100;
+        public static final int USER_PLUGIN = 100;
+        public static final int USER_API = 1000;
+        public static final int USER_CONFIG = 10000;
+        // this is used for very special circumstances, currently only
+        // when setting transaction name from HTTP header "Glowroot-Transaction-Type"
+        // and for setting slow threshold (to zero) for Startup transactions
+        // and for setting slow threshold for user-specific profiling
+        public static final int CORE_MAX = 1000000;
+
+        private Priority() {}
     }
 }

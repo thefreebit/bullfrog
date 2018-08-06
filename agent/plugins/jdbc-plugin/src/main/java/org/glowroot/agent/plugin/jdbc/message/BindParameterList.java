@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2015 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,9 @@ package org.glowroot.agent.plugin.jdbc.message;
 
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.NoSuchElementException;
 
-import javax.annotation.Nullable;
-
-import com.google.common.collect.Iterators;
+import org.glowroot.agent.plugin.api.checker.Nullable;
 
 // micro-optimized list for bind parameters
 public class BindParameterList implements Iterable</*@Nullable*/ Object> {
@@ -80,6 +79,30 @@ public class BindParameterList implements Iterable</*@Nullable*/ Object> {
 
     @Override
     public Iterator</*@Nullable*/ Object> iterator() {
-        return Iterators.limit(Iterators.forArray(parameters), size);
+        return new ParameterIterator();
+    }
+
+    private class ParameterIterator implements Iterator</*@Nullable*/ Object> {
+
+        private int i;
+
+        @Override
+        public boolean hasNext() {
+            return i < size;
+        }
+
+        @Override
+        public @Nullable Object next() {
+            if (i < size) {
+                return parameters[i++];
+            } else {
+                throw new NoSuchElementException();
+            }
+        }
+
+        @Override
+        public void remove() {
+            throw new UnsupportedOperationException();
+        }
     }
 }

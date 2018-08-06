@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,19 +19,17 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 
-import javax.annotation.Nullable;
-
-import com.google.common.base.Charsets;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.hash.Hashing;
 import com.google.common.primitives.Doubles;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
-import org.glowroot.common.config.StorageConfig;
+import org.glowroot.common.Constants;
 import org.glowroot.wire.api.model.AggregateOuterClass.Aggregate;
+
+import static com.google.common.base.Charsets.UTF_8;
 
 public class QueryCollector {
 
@@ -40,80 +38,108 @@ public class QueryCollector {
     // first key is query type, second key is query text
     private final Map<String, Map<String, MutableQuery>> queries = Maps.newHashMap();
     private final Map<String, MutableQuery> limitExceededBuckets = Maps.newHashMap();
-    private final int limitPerQueryType;
-    private final int maxMultiplierWhileBuilding;
+    private final int limit;
+    private final int hardLimitMultiplierWhileBuilding;
 
-    public QueryCollector(int limitPerQueryType, int maxMultiplierWhileBuilding) {
-        this.limitPerQueryType = limitPerQueryType;
-        this.maxMultiplierWhileBuilding = maxMultiplierWhileBuilding;
+    private int queryCount;
+
+    public QueryCollector(int limit, int hardLimitMultiplierWhileBuilding) {
+        this.limit = limit;
+        this.hardLimitMultiplierWhileBuilding = hardLimitMultiplierWhileBuilding;
     }
 
-    public List<Aggregate.QueriesByType> toAggregateProto(
-            SharedQueryTextCollector sharedQueryTextCollector) {
-        if (queries.isEmpty()) {
-            return ImmutableList.of();
-        }
-        List<Aggregate.QueriesByType> proto = Lists.newArrayList();
-        for (Entry<String, Map<String, MutableQuery>> outerEntry : queries.entrySet()) {
-            Map<String, MutableQuery> innerMap = outerEntry.getValue();
-            // + 1 is for possible limit exceeded bucket
-            List<Aggregate.Query> queries =
-                    Lists.newArrayListWithCapacity(innerMap.values().size() + 1);
-            for (Entry<String, MutableQuery> innerEntry : innerMap.entrySet()) {
-                queries.add(innerEntry.getValue().toAggregateProto(innerEntry.getKey(),
-                        sharedQueryTextCollector));
+    public List<Aggregate.Query> toAggregateProto(
+            SharedQueryTextCollection sharedQueryTextCollection, boolean includeActive) {
+        // " + queries.size()" is to cover the maximum number of limit exceeded buckets
+        List<Aggregate.Query> allQueries =
+                Lists.newArrayListWithCapacity(Math.min(queryCount, limit) + queries.size());
+        for (Map.Entry<String, Map<String, MutableQuery>> outerEntry : queries.entrySet()) {
+            for (Map.Entry<String, MutableQuery> innerEntry : outerEntry.getValue().entrySet()) {
+                allQueries.add(innerEntry.getValue().toAggregateProto(outerEntry.getKey(),
+                        innerEntry.getKey(), sharedQueryTextCollection, includeActive));
             }
-            if (queries.size() > limitPerQueryType) {
-                sort(queries);
-                List<Aggregate.Query> exceededQueries =
-                        queries.subList(limitPerQueryType, queries.size());
-                queries = Lists.newArrayList(queries.subList(0, limitPerQueryType));
-                MutableQuery limitExceededBucket = limitExceededBuckets.get(outerEntry.getKey());
-                if (limitExceededBucket == null) {
-                    limitExceededBucket = new MutableQuery();
-                }
-                for (Aggregate.Query exceededQuery : exceededQueries) {
-                    limitExceededBucket
-                            .addToTotalDurationNanos((long) exceededQuery.getTotalDurationNanos());
-                    limitExceededBucket.addToExecutionCount(exceededQuery.getExecutionCount());
-                    limitExceededBucket.addToTotalRows(exceededQuery.hasTotalRows(),
-                            exceededQuery.getTotalRows().getValue());
-                }
-                queries.add(limitExceededBucket.toAggregateProto(LIMIT_EXCEEDED_BUCKET,
-                        sharedQueryTextCollector));
-                // need to re-sort now including the limit exceeded bucket
-                sort(queries);
-            }
-            proto.add(Aggregate.QueriesByType.newBuilder()
-                    .setType(outerEntry.getKey())
-                    .addAllQuery(queries)
-                    .build());
         }
-        return proto;
+        if (allQueries.size() <= limit) {
+            // there could be limit exceeded buckets if hardLimitMultiplierWhileBuilding is 1
+            for (Map.Entry<String, MutableQuery> entry : limitExceededBuckets.entrySet()) {
+                allQueries.add(entry.getValue().toAggregateProto(entry.getKey(),
+                        LIMIT_EXCEEDED_BUCKET, sharedQueryTextCollection, includeActive));
+            }
+            sort(allQueries);
+            return allQueries;
+        }
+        sort(allQueries);
+        List<Aggregate.Query> exceededQueries = allQueries.subList(limit, allQueries.size());
+        allQueries = Lists.newArrayList(allQueries.subList(0, limit));
+        // do not modify original limit exceeded buckets since adding exceeded queries below
+        Map<String, MutableQuery> limitExceededBuckets = copyLimitExceededBuckets();
+        for (Aggregate.Query exceededQuery : exceededQueries) {
+            String queryType = exceededQuery.getType();
+            MutableQuery limitExceededBucket = limitExceededBuckets.get(queryType);
+            if (limitExceededBucket == null) {
+                limitExceededBucket = new MutableQuery();
+                limitExceededBuckets.put(queryType, limitExceededBucket);
+            }
+            limitExceededBucket.add(exceededQuery);
+        }
+        for (Map.Entry<String, MutableQuery> entry : limitExceededBuckets.entrySet()) {
+            allQueries.add(entry.getValue().toAggregateProto(entry.getKey(), LIMIT_EXCEEDED_BUCKET,
+                    sharedQueryTextCollection, includeActive));
+        }
+        // need to re-sort now including limit exceeded bucket
+        sort(allQueries);
+        return allQueries;
     }
 
-    public void mergeQuery(String queryType, String queryText, long totalDurationNanos,
-            long executionCount, boolean hasTotalRows, long totalRows) {
+    public void mergeQuery(String queryType, String queryText, double totalDurationNanos,
+            long executionCount, boolean hasTotalRows, long totalRows, boolean active) {
         Map<String, MutableQuery> queriesForType = queries.get(queryType);
         if (queriesForType == null) {
             queriesForType = Maps.newHashMap();
             queries.put(queryType, queriesForType);
         }
-        mergeQuery(queryType, queryText, totalDurationNanos, executionCount, totalRows,
-                hasTotalRows, queriesForType);
+        MutableQuery aggregateQuery = queriesForType.get(queryText);
+        if (aggregateQuery == null) {
+            if (queryCount < limit * hardLimitMultiplierWhileBuilding) {
+                aggregateQuery = new MutableQuery();
+                queriesForType.put(queryText, aggregateQuery);
+                queryCount++;
+            } else {
+                aggregateQuery = getOrCreateLimitExceededBucket(queryType);
+            }
+        }
+        aggregateQuery.addToTotalDurationNanos(totalDurationNanos);
+        aggregateQuery.addToExecutionCount(executionCount);
+        aggregateQuery.addToTotalRows(hasTotalRows, totalRows);
+        aggregateQuery.setActive(active);
+    }
+
+    public void mergeQueriesInto(QueryCollector collector) {
+        for (Map.Entry<String, Map<String, MutableQuery>> outerEntry : queries.entrySet()) {
+            for (Map.Entry<String, MutableQuery> entry : outerEntry.getValue().entrySet()) {
+                MutableQuery query = entry.getValue();
+                collector.mergeQuery(outerEntry.getKey(), entry.getKey(),
+                        query.getTotalDurationNanos(), query.getExecutionCount(),
+                        query.hasTotalRows(), query.getTotalRows(), query.isActive());
+            }
+        }
+        for (Map.Entry<String, MutableQuery> limitExceededBucket : limitExceededBuckets
+                .entrySet()) {
+            collector.mergeLimitExceededBucket(limitExceededBucket.getKey(),
+                    limitExceededBucket.getValue());
+        }
     }
 
     public void mergeQueriesInto(org.glowroot.common.model.QueryCollector collector) {
-        for (Entry<String, Map<String, MutableQuery>> outerEntry : queries.entrySet()) {
-            for (Entry<String, MutableQuery> entry : outerEntry.getValue().entrySet()) {
+        for (Map.Entry<String, Map<String, MutableQuery>> outerEntry : queries.entrySet()) {
+            for (Map.Entry<String, MutableQuery> entry : outerEntry.getValue().entrySet()) {
                 String fullQueryText = entry.getKey();
                 String truncatedQueryText;
                 String fullQueryTextSha1;
-                if (fullQueryText.length() > StorageConfig.AGGREGATE_QUERY_TEXT_TRUNCATE) {
+                if (fullQueryText.length() > Constants.AGGREGATE_QUERY_TEXT_TRUNCATE) {
                     truncatedQueryText =
-                            fullQueryText.substring(0, StorageConfig.AGGREGATE_QUERY_TEXT_TRUNCATE);
-                    fullQueryTextSha1 =
-                            Hashing.sha1().hashString(fullQueryText, Charsets.UTF_8).toString();
+                            fullQueryText.substring(0, Constants.AGGREGATE_QUERY_TEXT_TRUNCATE);
+                    fullQueryTextSha1 = Hashing.sha1().hashString(fullQueryText, UTF_8).toString();
                 } else {
                     truncatedQueryText = fullQueryText;
                     fullQueryTextSha1 = null;
@@ -124,15 +150,22 @@ public class QueryCollector {
                         query.hasTotalRows(), query.getTotalRows());
             }
         }
+        for (Map.Entry<String, MutableQuery> limitExceededBucket : limitExceededBuckets
+                .entrySet()) {
+            MutableQuery query = limitExceededBucket.getValue();
+            collector.mergeQuery(limitExceededBucket.getKey(), LIMIT_EXCEEDED_BUCKET, null,
+                    query.getTotalDurationNanos(), query.getExecutionCount(), query.hasTotalRows(),
+                    query.getTotalRows());
+        }
     }
 
     public @Nullable String getFullQueryText(String fullQueryTextSha1) {
-        for (Entry<String, Map<String, MutableQuery>> entry : queries.entrySet()) {
+        for (Map.Entry<String, Map<String, MutableQuery>> entry : queries.entrySet()) {
             for (String fullQueryText : entry.getValue().keySet()) {
-                if (fullQueryText.length() <= StorageConfig.AGGREGATE_QUERY_TEXT_TRUNCATE) {
+                if (fullQueryText.length() <= Constants.AGGREGATE_QUERY_TEXT_TRUNCATE) {
                     continue;
                 }
-                String sha1 = Hashing.sha1().hashString(fullQueryText, Charsets.UTF_8).toString();
+                String sha1 = Hashing.sha1().hashString(fullQueryText, UTF_8).toString();
                 if (fullQueryTextSha1.equals(sha1)) {
                     return fullQueryText;
                 }
@@ -141,25 +174,30 @@ public class QueryCollector {
         return null;
     }
 
-    private void mergeQuery(String queryType, String queryText, long totalDurationNanos,
-            long executionCount, long totalRows, boolean hasTotalRows,
-            Map<String, MutableQuery> queriesForType) {
-        MutableQuery aggregateQuery = queriesForType.get(queryText);
-        if (aggregateQuery == null) {
-            if (queriesForType.size() < limitPerQueryType * maxMultiplierWhileBuilding) {
-                aggregateQuery = new MutableQuery();
-                queriesForType.put(queryText, aggregateQuery);
-            } else {
-                aggregateQuery = limitExceededBuckets.get(queryType);
-                if (aggregateQuery == null) {
-                    aggregateQuery = new MutableQuery();
-                    limitExceededBuckets.put(queryType, aggregateQuery);
-                }
-            }
+    private void mergeLimitExceededBucket(String queryType, MutableQuery limitExceededBucket) {
+        MutableQuery query = getOrCreateLimitExceededBucket(queryType);
+        query.add(limitExceededBucket);
+    }
+
+    private MutableQuery getOrCreateLimitExceededBucket(String queryType) {
+        MutableQuery query = limitExceededBuckets.get(queryType);
+        if (query == null) {
+            query = new MutableQuery();
+            limitExceededBuckets.put(queryType, query);
         }
-        aggregateQuery.addToTotalDurationNanos(totalDurationNanos);
-        aggregateQuery.addToExecutionCount(executionCount);
-        aggregateQuery.addToTotalRows(hasTotalRows, totalRows);
+        return query;
+    }
+
+    private Map<String, MutableQuery> copyLimitExceededBuckets() {
+        Map<String, MutableQuery> copies = Maps.newHashMap();
+        for (Map.Entry<String, MutableQuery> entry : limitExceededBuckets.entrySet()) {
+            String queryType = entry.getKey();
+            MutableQuery limitExceededBucket = entry.getValue();
+            MutableQuery copy = new MutableQuery();
+            copy.add(limitExceededBucket);
+            copies.put(queryType, copy);
+        }
+        return copies;
     }
 
     private static void sort(List<Aggregate.Query> queries) {
@@ -170,28 +208,5 @@ public class QueryCollector {
                 return Doubles.compare(right.getTotalDurationNanos(), left.getTotalDurationNanos());
             }
         });
-    }
-
-    public static class SharedQueryTextCollector {
-
-        private final Map<String, Integer> sharedQueryTextIndexes = Maps.newHashMap();
-
-        private List<String> latestSharedQueryTexts = Lists.newArrayList();
-
-        public List<String> getAndClearLastestSharedQueryTexts() {
-            List<String> latestSharedQueryTexts = this.latestSharedQueryTexts;
-            this.latestSharedQueryTexts = Lists.newArrayList();
-            return latestSharedQueryTexts;
-        }
-
-        int getIndex(String queryText) {
-            Integer sharedQueryTextIndex = sharedQueryTextIndexes.get(queryText);
-            if (sharedQueryTextIndex == null) {
-                sharedQueryTextIndex = sharedQueryTextIndexes.size();
-                sharedQueryTextIndexes.put(queryText, sharedQueryTextIndex);
-                latestSharedQueryTexts.add(queryText);
-            }
-            return sharedQueryTextIndex;
-        }
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,14 +21,11 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 
-import javax.annotation.Nullable;
-
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
-import com.google.common.reflect.Reflection;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.agent.MainEntryPoint;
-import org.glowroot.agent.init.AgentModule;
 import org.glowroot.agent.init.GlowrootAgentInit;
 import org.glowroot.agent.it.harness.AppUnderTest;
 import org.glowroot.agent.it.harness.ConfigService;
@@ -38,13 +35,10 @@ import org.glowroot.agent.weaving.IsolatedWeavingClassLoader;
 import org.glowroot.wire.api.model.TraceOuterClass.Trace;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class LocalContainer implements Container {
-
-    static {
-        Reflection.initialize(InitLogging.class);
-    }
 
     private final File testDir;
     private final boolean deleteTestDirOnClose;
@@ -91,8 +85,13 @@ public class LocalContainer implements Container {
         Executors.newSingleThreadExecutor().submit(new Callable<Void>() {
             @Override
             public @Nullable Void call() throws Exception {
-                AgentModule.isolatedWeavingClassLoader.set(isolatedWeavingClassLoader);
-                MainEntryPoint.start(properties);
+                ClassLoader loader = Thread.currentThread().getContextClassLoader();
+                Thread.currentThread().setContextClassLoader(isolatedWeavingClassLoader);
+                try {
+                    MainEntryPoint.start(properties);
+                } finally {
+                    Thread.currentThread().setContextClassLoader(loader);
+                }
                 return null;
             }
         }).get();
@@ -122,27 +121,25 @@ public class LocalContainer implements Container {
 
     @Override
     public Trace execute(Class<? extends AppUnderTest> appClass) throws Exception {
-        checkNotNull(traceCollector);
-        executeInternal(appClass);
-        Trace trace = traceCollector.getCompletedTrace(10, SECONDS);
-        traceCollector.clearTrace();
-        return trace;
+        return executeInternal(appClass, null, null);
     }
 
     @Override
     public Trace execute(Class<? extends AppUnderTest> appClass, String transactionType)
             throws Exception {
-        checkNotNull(traceCollector);
-        executeInternal(appClass);
-        Trace trace = traceCollector.getCompletedTrace(transactionType, 10, SECONDS);
-        traceCollector.clearTrace();
-        return trace;
+        return executeInternal(appClass, transactionType, null);
+    }
+
+    @Override
+    public Trace execute(Class<? extends AppUnderTest> appClass, String transactionType,
+            String transactionName) throws Exception {
+        return executeInternal(appClass, transactionType, transactionName);
     }
 
     @Override
     public void executeNoExpectedTrace(Class<? extends AppUnderTest> appClass) throws Exception {
         executeInternal(appClass);
-        Thread.sleep(10);
+        MILLISECONDS.sleep(10);
         if (traceCollector != null && traceCollector.hasTrace()) {
             throw new IllegalStateException("Trace was collected when none was expected");
         }
@@ -189,6 +186,16 @@ public class LocalContainer implements Container {
         }
         // release class loader to prevent PermGen OOM during maven test
         isolatedWeavingClassLoader = null;
+    }
+
+    public Trace executeInternal(Class<? extends AppUnderTest> appClass,
+            @Nullable String transactionType, @Nullable String transactionName) throws Exception {
+        checkNotNull(traceCollector);
+        executeInternal(appClass);
+        Trace trace =
+                traceCollector.getCompletedTrace(transactionType, transactionName, 10, SECONDS);
+        traceCollector.clearTrace();
+        return trace;
     }
 
     private void executeInternal(Class<? extends AppUnderTest> appClass) throws Exception {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,6 @@ import java.lang.reflect.Type;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Map.Entry;
-
-import javax.annotation.Nullable;
 
 import com.google.common.base.CaseFormat;
 import com.google.common.cache.CacheBuilder;
@@ -31,6 +28,7 @@ import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -49,7 +47,7 @@ class QueryStrings {
         checkNotNull(builder);
         Class<?> immutableBuilderClass = builder.getClass();
         Map<String, Method> setters = settersCache.getUnchecked(immutableBuilderClass);
-        for (Entry<String, List<String>> entry : queryParameters.entrySet()) {
+        for (Map.Entry<String, List<String>> entry : queryParameters.entrySet()) {
             String key = entry.getKey();
             key = CaseFormat.LOWER_HYPHEN.to(CaseFormat.LOWER_CAMEL, key);
             // special rule for "-mbean" so that it will convert to "...MBean"
@@ -106,8 +104,8 @@ class QueryStrings {
         } else if (isBoolean(targetClass)) {
             return Boolean.parseBoolean(str);
         } else if (Enum.class.isAssignableFrom(targetClass)) {
-            @SuppressWarnings({"unchecked", "rawtypes"})
-            Enum<?> enumValue = Enum.valueOf((Class<? extends Enum>) targetClass,
+            @SuppressWarnings("unchecked")
+            Enum<? extends Enum<?>> enumValue = Enum.valueOf(targetClass.asSubclass(Enum.class),
                     str.replace('-', '_').toUpperCase(Locale.ENGLISH));
             return enumValue;
         } else {

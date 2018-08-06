@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,8 +20,6 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import javax.annotation.Nullable;
-
 import org.glowroot.agent.plugin.api.Agent;
 import org.glowroot.agent.plugin.api.AuxThreadContext;
 import org.glowroot.agent.plugin.api.Logger;
@@ -29,6 +27,7 @@ import org.glowroot.agent.plugin.api.ThreadContext;
 import org.glowroot.agent.plugin.api.Timer;
 import org.glowroot.agent.plugin.api.TimerName;
 import org.glowroot.agent.plugin.api.TraceEntry;
+import org.glowroot.agent.plugin.api.checker.Nullable;
 import org.glowroot.agent.plugin.api.weaving.BindClassMeta;
 import org.glowroot.agent.plugin.api.weaving.BindParameter;
 import org.glowroot.agent.plugin.api.weaving.BindReceiver;
@@ -44,7 +43,7 @@ import org.glowroot.agent.plugin.api.weaving.Pointcut;
 
 public class ExecutorAspect {
 
-    private static final Logger logger = Agent.getLogger(ExecutorAspect.class);
+    private static final Logger logger = Logger.getLogger(ExecutorAspect.class);
 
     private static final AtomicBoolean isDoneExceptionLogged = new AtomicBoolean();
 
@@ -54,7 +53,7 @@ public class ExecutorAspect {
             "scala.concurrent.forkjoin.ForkJoinTask"})
     public abstract static class RunnableEtcImpl implements RunnableEtcMixin {
 
-        private volatile @Nullable AuxThreadContext glowroot$auxContext;
+        private transient volatile @Nullable AuxThreadContext glowroot$auxContext;
 
         @Override
         public @Nullable AuxThreadContext glowroot$getAuxContext() {
@@ -67,7 +66,8 @@ public class ExecutorAspect {
         }
     }
 
-    @Mixin("org.apache.tomcat.util.net.JIoEndpoint$SocketProcessor")
+    @Mixin({"org.apache.tomcat.util.net.JIoEndpoint$SocketProcessor",
+            "org.apache.http.impl.nio.client.CloseableHttpAsyncClientBase$1"})
     public static class SuppressedRunnableImpl implements SuppressedRunnableEtcMixin {}
 
     // the method names are verbose since they will be mixed in to existing classes
@@ -93,15 +93,62 @@ public class ExecutorAspect {
     public static class ExecuteAdvice {
         @IsEnabled
         public static boolean isEnabled(@BindParameter Object runnableEtc) {
-            // this class may have been loaded before class file transformer was added to jvm
-            return runnableEtc instanceof RunnableEtcMixin
-                    && !(runnableEtc instanceof SuppressedRunnableEtcMixin);
+            return isEnabledCommon(runnableEtc);
         }
         @OnBefore
         public static void onBefore(ThreadContext context, @BindParameter Object runnableEtc) {
-            RunnableEtcMixin runnableMixin = (RunnableEtcMixin) runnableEtc;
-            AuxThreadContext auxContext = context.createAuxThreadContext();
-            runnableMixin.glowroot$setAuxContext(auxContext);
+            // cast is safe because of isEnabled() check above
+            onBeforeCommon(context, (RunnableEtcMixin) runnableEtc);
+        }
+    }
+
+    @Pointcut(superTypeRestriction = "java.lang.Thread", methodName = "<init>",
+            methodParameterTypes = {}, nestingGroup = "executor-execute")
+    public static class ThreadInitAdvice {
+        @OnReturn
+        public static void onReturn(ThreadContext context, @BindReceiver Thread thread) {
+            onThreadInitCommon(context, thread);
+        }
+    }
+
+    @Pointcut(superTypeRestriction = "java.lang.Thread", methodName = "<init>",
+            methodParameterTypes = {"java.lang.String"}, nestingGroup = "executor-execute")
+    public static class ThreadInitWithStringAdvice {
+        @OnReturn
+        public static void onReturn(ThreadContext context, @BindReceiver Thread thread) {
+            onThreadInitCommon(context, thread);
+        }
+    }
+
+    @Pointcut(superTypeRestriction = "java.lang.Thread", methodName = "<init>",
+            methodParameterTypes = {"java.lang.ThreadGroup", "java.lang.String"},
+            nestingGroup = "executor-execute")
+    public static class ThreadInitWithStringAndThreadGroupAdvice {
+        @OnReturn
+        public static void onReturn(ThreadContext context, @BindReceiver Thread thread) {
+            onThreadInitCommon(context, thread);
+        }
+    }
+
+    @Pointcut(className = "java.lang.Thread", methodName = "<init>",
+            methodParameterTypes = {"java.lang.Runnable", ".."}, nestingGroup = "executor-execute")
+    public static class ThreadInitWithRunnableAdvice {
+        @OnReturn
+        public static void onReturn(ThreadContext context, @BindReceiver Thread thread,
+                @BindParameter @Nullable Runnable runnable) {
+            onThreadInitCommon(context, thread, runnable);
+        }
+    }
+
+    @Pointcut(className = "java.lang.Thread", methodName = "<init>",
+            methodParameterTypes = {"java.lang.ThreadGroup", "java.lang.Runnable", ".."},
+            nestingGroup = "executor-execute")
+    public static class ThreadInitWithThreadGroupAdvice {
+        @OnReturn
+        public static void onReturn(ThreadContext context, @BindReceiver Thread thread,
+                @SuppressWarnings("unused") @BindParameter ThreadGroup threadGroup,
+                @BindParameter @Nullable Runnable runnable) {
+            onThreadInitCommon(context, thread, runnable);
         }
     }
 
@@ -111,12 +158,13 @@ public class ExecutorAspect {
             nestingGroup = "executor-add-listener")
     public static class AddListenerAdvice {
         @IsEnabled
-        public static boolean isEnabled(@BindParameter Object runnableEtc) {
-            return ExecuteAdvice.isEnabled(runnableEtc);
+        public static boolean isEnabled(@BindParameter Runnable runnable) {
+            return isEnabledCommon(runnable);
         }
         @OnBefore
-        public static void onBefore(ThreadContext context, @BindParameter Object runnableEtc) {
-            ExecuteAdvice.onBefore(context, runnableEtc);
+        public static void onBefore(ThreadContext context, @BindParameter Runnable runnable) {
+            // cast is safe because of isEnabled() check above
+            onBeforeCommon(context, (RunnableEtcMixin) runnable);
         }
     }
 
@@ -385,6 +433,35 @@ public class ExecutorAspect {
             if (traceEntry != null) {
                 traceEntry.endWithError(t);
             }
+        }
+    }
+
+    private static boolean isEnabledCommon(Object runnableEtc) {
+        // this class may have been loaded before class file transformer was added to jvm
+        return runnableEtc instanceof RunnableEtcMixin
+                && !(runnableEtc instanceof SuppressedRunnableEtcMixin);
+    }
+
+    private static void onBeforeCommon(ThreadContext context, RunnableEtcMixin runnableEtc) {
+        RunnableEtcMixin runnableMixin = runnableEtc;
+        AuxThreadContext auxContext = context.createAuxThreadContext();
+        runnableMixin.glowroot$setAuxContext(auxContext);
+    }
+
+    private static void onThreadInitCommon(ThreadContext context, Thread thread) {
+        if (thread instanceof RunnableEtcMixin && !(thread instanceof SuppressedRunnableEtcMixin)) {
+            onBeforeCommon(context, (RunnableEtcMixin) thread);
+        }
+    }
+
+    private static void onThreadInitCommon(ThreadContext context, Thread thread,
+            @Nullable Runnable runnable) {
+        if (runnable instanceof RunnableEtcMixin
+                && !(runnable instanceof SuppressedRunnableEtcMixin)) {
+            onBeforeCommon(context, (RunnableEtcMixin) runnable);
+        } else if (thread instanceof RunnableEtcMixin
+                && !(thread instanceof SuppressedRunnableEtcMixin)) {
+            onBeforeCommon(context, (RunnableEtcMixin) thread);
         }
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ import java.util.List;
 import java.util.UUID;
 
 import com.datastax.driver.core.Cluster;
-import com.datastax.driver.core.KeyspaceMetadata;
 import com.google.common.collect.ImmutableList;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -27,23 +26,23 @@ import org.junit.Test;
 
 import org.glowroot.central.util.ClusterManager;
 import org.glowroot.central.util.Session;
-import org.glowroot.common.config.CentralStorageConfig;
-import org.glowroot.common.config.CentralWebConfig;
-import org.glowroot.common.config.HttpProxyConfig;
-import org.glowroot.common.config.ImmutableCentralStorageConfig;
-import org.glowroot.common.config.ImmutableCentralWebConfig;
-import org.glowroot.common.config.ImmutableHttpProxyConfig;
-import org.glowroot.common.config.ImmutableLdapConfig;
-import org.glowroot.common.config.ImmutableRoleConfig;
-import org.glowroot.common.config.ImmutableSmtpConfig;
-import org.glowroot.common.config.ImmutableUserConfig;
-import org.glowroot.common.config.LdapConfig;
-import org.glowroot.common.config.RoleConfig;
-import org.glowroot.common.config.SmtpConfig;
-import org.glowroot.common.config.SmtpConfig.ConnectionSecurity;
-import org.glowroot.common.config.UserConfig;
-import org.glowroot.common.repo.ConfigRepository;
 import org.glowroot.common.util.Versions;
+import org.glowroot.common2.config.CentralStorageConfig;
+import org.glowroot.common2.config.CentralWebConfig;
+import org.glowroot.common2.config.HttpProxyConfig;
+import org.glowroot.common2.config.ImmutableCentralStorageConfig;
+import org.glowroot.common2.config.ImmutableCentralWebConfig;
+import org.glowroot.common2.config.ImmutableHttpProxyConfig;
+import org.glowroot.common2.config.ImmutableLdapConfig;
+import org.glowroot.common2.config.ImmutableRoleConfig;
+import org.glowroot.common2.config.ImmutableSmtpConfig;
+import org.glowroot.common2.config.ImmutableUserConfig;
+import org.glowroot.common2.config.LdapConfig;
+import org.glowroot.common2.config.RoleConfig;
+import org.glowroot.common2.config.SmtpConfig;
+import org.glowroot.common2.config.SmtpConfig.ConnectionSecurity;
+import org.glowroot.common2.config.UserConfig;
+import org.glowroot.common2.repo.ConfigRepository;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AdvancedConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig;
@@ -55,6 +54,7 @@ import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.GaugeConfig
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.InstrumentationConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.InstrumentationConfig.CaptureKind;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.InstrumentationConfig.MethodModifier;
+import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.JvmConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.MBeanAttribute;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.TransactionConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.UiConfig;
@@ -75,83 +75,40 @@ public class ConfigRepositoryIT {
     public static void setUp() throws Exception {
         SharedSetupRunListener.startCassandra();
         cluster = Clusters.newCluster();
-        session = new Session(cluster.newSession());
-        session.createKeyspaceIfNotExists("glowroot_unit_tests");
-        session.execute("use glowroot_unit_tests");
-        session.execute("drop table if exists agent_rollup");
-        session.execute("drop table if exists agent_config");
-        session.execute("drop table if exists user");
-        session.execute("drop table if exists role");
-        session.execute("drop table if exists central_config");
-        KeyspaceMetadata keyspaceMetadata =
-                cluster.getMetadata().getKeyspace("glowroot_unit_tests");
+        session = new Session(cluster.newSession(), "glowroot_unit_tests");
+        session.updateSchemaWithRetry("drop table if exists agent_config");
+        session.updateSchemaWithRetry("drop table if exists user");
+        session.updateSchemaWithRetry("drop table if exists role");
+        session.updateSchemaWithRetry("drop table if exists central_config");
+        session.updateSchemaWithRetry("drop table if exists agent");
 
         clusterManager = ClusterManager.create();
-        agentConfigDao = new AgentConfigDao(session, clusterManager);
-        AgentRollupDao agentRollupDao = new AgentRollupDao(session, clusterManager);
         CentralConfigDao centralConfigDao = new CentralConfigDao(session, clusterManager);
-        UserDao userDao = new UserDao(session, keyspaceMetadata, clusterManager);
-        RoleDao roleDao = new RoleDao(session, keyspaceMetadata, clusterManager);
-        configRepository = new ConfigRepositoryImpl(agentRollupDao, agentConfigDao,
-                centralConfigDao, userDao, roleDao, "");
+        agentConfigDao = new AgentConfigDao(session, clusterManager);
+        UserDao userDao = new UserDao(session, clusterManager);
+        RoleDao roleDao = new RoleDao(session, clusterManager);
+        configRepository =
+                new ConfigRepositoryImpl(centralConfigDao, agentConfigDao, userDao, roleDao, "");
     }
 
     @AfterClass
     public static void tearDown() throws Exception {
         clusterManager.close();
         // remove bad data so other tests don't have issue
-        session.execute("drop table agent_rollup");
-        session.execute("drop table agent_config");
-        session.execute("drop table user");
-        session.execute("drop table role");
-        session.execute("drop table central_config");
+        session.updateSchemaWithRetry("drop table if exists agent_config");
+        session.updateSchemaWithRetry("drop table if exists user");
+        session.updateSchemaWithRetry("drop table if exists role");
+        session.updateSchemaWithRetry("drop table if exists central_config");
         session.close();
         cluster.close();
         SharedSetupRunListener.stopCassandra();
     }
 
     @Test
-    public void shouldReadConfigForNonExistentAgentId() throws Exception {
-        String agentId = UUID.randomUUID().toString();
-        assertThat(configRepository.getGaugeConfigs(agentId)).isEmpty();
-        boolean exception = false;
-        try {
-            configRepository.getGaugeConfig(agentId, "dummy");
-        } catch (IllegalStateException e) {
-            exception = true;
-        }
-        assertThat(exception).isTrue();
-        assertThat(configRepository.getAlertConfigs(agentId)).isEmpty();
-        exception = false;
-        try {
-            configRepository.getAlertConfig(agentId, "dummy");
-        } catch (IllegalStateException e) {
-            exception = true;
-        }
-        assertThat(exception).isTrue();
-        assertThat(configRepository.getPluginConfigs(agentId)).isEmpty();
-        exception = false;
-        try {
-            configRepository.getPluginConfig(agentId, "dummy");
-        } catch (IllegalStateException e) {
-            exception = true;
-        }
-        assertThat(exception).isTrue();
-        assertThat(configRepository.getInstrumentationConfigs(agentId)).isEmpty();
-        exception = false;
-        try {
-            configRepository.getInstrumentationConfig(agentId, "dummy");
-        } catch (IllegalStateException e) {
-            exception = true;
-        }
-        assertThat(exception).isTrue();
-    }
-
-    @Test
     public void shouldUpdateTransactionConfig() throws Exception {
         // given
         String agentId = UUID.randomUUID().toString();
-        agentConfigDao.store(agentId, null, AgentConfig.getDefaultInstance());
+        agentConfigDao.store(agentId, AgentConfig.getDefaultInstance());
         TransactionConfig config = configRepository.getTransactionConfig(agentId);
         TransactionConfig updatedConfig = TransactionConfig.newBuilder()
                 .setSlowThresholdMillis(OptionalInt32.newBuilder().setValue(1234))
@@ -169,16 +126,37 @@ public class ConfigRepositoryIT {
     }
 
     @Test
+    public void shouldUpdateJvmConfig() throws Exception {
+        // given
+        String agentId = UUID.randomUUID().toString();
+        agentConfigDao.store(agentId, AgentConfig.getDefaultInstance());
+        JvmConfig config = configRepository.getJvmConfig(agentId);
+        JvmConfig updatedConfig = JvmConfig.newBuilder()
+                .addMaskSystemProperty("x")
+                .addMaskSystemProperty("y")
+                .addMaskSystemProperty("z")
+                .build();
+
+        // when
+        configRepository.updateJvmConfig(agentId, updatedConfig,
+                Versions.getVersion(config));
+        config = configRepository.getJvmConfig(agentId);
+
+        // then
+        assertThat(config).isEqualTo(updatedConfig);
+    }
+
+    @Test
     public void shouldUpdateUiConfig() throws Exception {
         // given
         String agentId = UUID.randomUUID().toString();
-        agentConfigDao.store(agentId, null, AgentConfig.getDefaultInstance());
+        agentConfigDao.store(agentId, AgentConfig.getDefaultInstance());
         UiConfig config = configRepository.getUiConfig(agentId);
         UiConfig updatedConfig = UiConfig.newBuilder()
-                .setDefaultDisplayedTransactionType("xyz")
-                .addDefaultDisplayedPercentile(99.0)
-                .addDefaultDisplayedPercentile(99.9)
-                .addDefaultDisplayedPercentile(99.99)
+                .setDefaultTransactionType("xyz")
+                .addDefaultPercentile(99.0)
+                .addDefaultPercentile(99.9)
+                .addDefaultPercentile(99.99)
                 .build();
 
         // when
@@ -193,7 +171,7 @@ public class ConfigRepositoryIT {
     public void shouldUpdateUserRecordingConfig() throws Exception {
         // given
         String agentId = UUID.randomUUID().toString();
-        agentConfigDao.store(agentId, null, AgentConfig.getDefaultInstance());
+        agentConfigDao.store(agentId, AgentConfig.getDefaultInstance());
         UserRecordingConfig config = configRepository.getUserRecordingConfig(agentId);
         UserRecordingConfig updatedConfig = UserRecordingConfig.newBuilder()
                 .addUser("x")
@@ -215,16 +193,16 @@ public class ConfigRepositoryIT {
     public void shouldUpdateAdvancedConfig() throws Exception {
         // given
         String agentId = UUID.randomUUID().toString();
-        agentConfigDao.store(agentId, null, AgentConfig.getDefaultInstance());
+        agentConfigDao.store(agentId, AgentConfig.getDefaultInstance());
         AdvancedConfig config = configRepository.getAdvancedConfig(agentId);
         AdvancedConfig updatedConfig = AdvancedConfig.newBuilder()
                 .setWeavingTimer(true)
                 .setImmediatePartialStoreThresholdSeconds(OptionalInt32.newBuilder().setValue(1))
-                .setMaxAggregateTransactionsPerType(OptionalInt32.newBuilder().setValue(2))
-                .setMaxAggregateQueriesPerType(OptionalInt32.newBuilder().setValue(3))
-                .setMaxAggregateServiceCallsPerType(OptionalInt32.newBuilder().setValue(4))
+                .setMaxTransactionAggregates(OptionalInt32.newBuilder().setValue(2))
+                .setMaxQueryAggregates(OptionalInt32.newBuilder().setValue(3))
+                .setMaxServiceCallAggregates(OptionalInt32.newBuilder().setValue(4))
                 .setMaxTraceEntriesPerTransaction(OptionalInt32.newBuilder().setValue(5))
-                .setMaxStackTraceSamplesPerTransaction(OptionalInt32.newBuilder().setValue(6))
+                .setMaxProfileSamplesPerTransaction(OptionalInt32.newBuilder().setValue(6))
                 .setMbeanGaugeNotFoundDelaySeconds(OptionalInt32.newBuilder().setValue(7))
                 .build();
 
@@ -240,7 +218,7 @@ public class ConfigRepositoryIT {
     public void shouldCrudGaugeConfig() throws Exception {
         // given
         String agentId = UUID.randomUUID().toString();
-        agentConfigDao.store(agentId, null, AgentConfig.getDefaultInstance());
+        agentConfigDao.store(agentId, AgentConfig.getDefaultInstance());
         GaugeConfig gaugeConfig = GaugeConfig.newBuilder()
                 .setMbeanObjectName("x")
                 .addMbeanAttribute(MBeanAttribute.newBuilder()
@@ -288,7 +266,7 @@ public class ConfigRepositoryIT {
     public void shouldCrudAlertConfig() throws Exception {
         // given
         String agentId = UUID.randomUUID().toString();
-        agentConfigDao.store(agentId, null, AgentConfig.getDefaultInstance());
+        agentConfigDao.store(agentId, AgentConfig.getDefaultInstance());
         AlertConfig alertConfig = AlertConfig.newBuilder()
                 .setCondition(AlertCondition.newBuilder()
                         .setMetricCondition(MetricCondition.newBuilder()
@@ -347,7 +325,7 @@ public class ConfigRepositoryIT {
     public void shouldCrudInstrumentationConfig() throws Exception {
         // given
         String agentId = UUID.randomUUID().toString();
-        agentConfigDao.store(agentId, null, AgentConfig.getDefaultInstance());
+        agentConfigDao.store(agentId, AgentConfig.getDefaultInstance());
         InstrumentationConfig instrumentationConfig = InstrumentationConfig.newBuilder()
                 .setClassName("a")
                 .setMethodName("b")
@@ -536,8 +514,15 @@ public class ConfigRepositoryIT {
                 .addRollupExpirationHours(2)
                 .addRollupExpirationHours(3)
                 .addRollupExpirationHours(4)
+                .addQueryAndServiceCallRollupExpirationHours(5)
+                .addQueryAndServiceCallRollupExpirationHours(6)
+                .addQueryAndServiceCallRollupExpirationHours(7)
+                .addQueryAndServiceCallRollupExpirationHours(8)
+                .addProfileRollupExpirationHours(9)
+                .addProfileRollupExpirationHours(10)
+                .addProfileRollupExpirationHours(11)
+                .addProfileRollupExpirationHours(12)
                 .traceExpirationHours(100)
-                .fullQueryTextExpirationHours(100)
                 .build();
 
         // when

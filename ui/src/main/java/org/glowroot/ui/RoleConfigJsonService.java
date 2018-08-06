@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package org.glowroot.ui;
 
 import java.util.Collection;
 import java.util.List;
-import java.util.Map.Entry;
+import java.util.Map;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Optional;
@@ -31,15 +31,15 @@ import org.immutables.value.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.glowroot.common.config.ImmutableRoleConfig;
-import org.glowroot.common.config.PermissionParser;
-import org.glowroot.common.config.RoleConfig;
-import org.glowroot.common.repo.AgentRollupRepository;
-import org.glowroot.common.repo.AgentRollupRepository.AgentRollup;
-import org.glowroot.common.repo.ConfigRepository;
-import org.glowroot.common.repo.ConfigRepository.CannotDeleteLastRoleException;
-import org.glowroot.common.repo.ConfigRepository.DuplicateRoleNameException;
 import org.glowroot.common.util.ObjectMappers;
+import org.glowroot.common2.config.ImmutableRoleConfig;
+import org.glowroot.common2.config.PermissionParser;
+import org.glowroot.common2.config.RoleConfig;
+import org.glowroot.common2.repo.ActiveAgentRepository;
+import org.glowroot.common2.repo.ActiveAgentRepository.AgentRollup;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.ConfigRepository.CannotDeleteLastRoleException;
+import org.glowroot.common2.repo.ConfigRepository.DuplicateRoleNameException;
 
 import static io.netty.handler.codec.http.HttpResponseStatus.CONFLICT;
 
@@ -58,13 +58,13 @@ class RoleConfigJsonService {
 
     private final boolean central;
     private final ConfigRepository configRepository;
-    private final AgentRollupRepository agentRollupRepository;
+    private final ActiveAgentRepository activeAgentRepository;
 
     RoleConfigJsonService(boolean central, ConfigRepository configRepository,
-            AgentRollupRepository agentRollupRepository) {
+            ActiveAgentRepository activeAgentRepository) {
         this.central = central;
         this.configRepository = configRepository;
-        this.agentRollupRepository = agentRollupRepository;
+        this.activeAgentRepository = activeAgentRepository;
     }
 
     @GET(path = "/backend/admin/roles", permission = "admin:view:role")
@@ -83,7 +83,7 @@ class RoleConfigJsonService {
         }
     }
 
-    @GET(path = "/backend/admin/all-agent-rollups", permission = "admin:edit:role")
+    @GET(path = "/backend/admin/all-active-agent-rollups", permission = "admin:edit:role")
     String getAllAgentRollups() throws Exception {
         return mapper.writeValueAsString(getFlattenedAgentRollups());
     }
@@ -134,13 +134,13 @@ class RoleConfigJsonService {
         ImmutableRoleConfigResponse.Builder response = ImmutableRoleConfigResponse.builder()
                 .config(RoleConfigDto.create(roleConfig, central));
         if (central) {
-            response.allAgentRollups(getFlattenedAgentRollups());
+            response.allActiveAgentRollups(getFlattenedAgentRollups());
         }
         return mapper.writeValueAsString(response.build());
     }
 
     private List<FlattenedAgentRollup> getFlattenedAgentRollups() throws Exception {
-        List<AgentRollup> agentRollups = agentRollupRepository.readAgentRollups();
+        List<AgentRollup> agentRollups = activeAgentRepository.readRecentlyActiveAgentRollups(7);
         List<FlattenedAgentRollup> flattenedAgentRollups = Lists.newArrayList();
         for (AgentRollup agentRollup : agentRollups) {
             flattenedAgentRollups.addAll(getFlattenedAgentRollups(agentRollup, 0));
@@ -154,6 +154,7 @@ class RoleConfigJsonService {
         flattenedAgentRollups.add(ImmutableFlattenedAgentRollup.builder()
                 .id(agentRollup.id())
                 .display(agentRollup.display())
+                .lastDisplayPart(agentRollup.lastDisplayPart())
                 .depth(depth)
                 .build());
         for (AgentRollup childAgentRollup : agentRollup.children()) {
@@ -170,7 +171,7 @@ class RoleConfigJsonService {
     @Value.Immutable
     interface RoleConfigResponse {
         RoleConfigDto config();
-        ImmutableList<FlattenedAgentRollup> allAgentRollups();
+        ImmutableList<FlattenedAgentRollup> allActiveAgentRollups();
     }
 
     @Value.Immutable
@@ -178,6 +179,7 @@ class RoleConfigJsonService {
         int depth();
         String id();
         String display();
+        String lastDisplayPart();
     }
 
     @Value.Immutable
@@ -251,7 +253,7 @@ class RoleConfigJsonService {
                         builder.addPermissions(permission);
                     }
                 }
-                for (Entry<List<String>, Collection<String>> entry : permissionBlocks.asMap()
+                for (Map.Entry<List<String>, Collection<String>> entry : permissionBlocks.asMap()
                         .entrySet()) {
                     builder.addPermissionBlocks(ImmutableRolePermissionBlock.builder()
                             .addAllAgentRollupIds(entry.getKey())

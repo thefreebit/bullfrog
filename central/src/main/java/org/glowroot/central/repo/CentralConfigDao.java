@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,7 @@ package org.glowroot.central.repo;
 
 import java.io.IOException;
 import java.util.Map;
-
-import javax.annotation.Nullable;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.PreparedStatement;
@@ -26,7 +25,7 @@ import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.Row;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Optional;
-import com.google.common.collect.Maps;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,18 +33,15 @@ import org.glowroot.central.util.Cache;
 import org.glowroot.central.util.Cache.CacheLoader;
 import org.glowroot.central.util.ClusterManager;
 import org.glowroot.central.util.Session;
-import org.glowroot.common.repo.ConfigRepository.OptimisticLockException;
 import org.glowroot.common.util.ObjectMappers;
 import org.glowroot.common.util.Versions;
+import org.glowroot.common2.repo.ConfigRepository.OptimisticLockException;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
 class CentralConfigDao {
 
     private static final Logger logger = LoggerFactory.getLogger(CentralConfigDao.class);
-
-    private static final String WITH_LCS =
-            "with compaction = { 'class' : 'LeveledCompactionStrategy' }";
 
     private static final ObjectMapper mapper = ObjectMappers.create();
 
@@ -57,13 +53,13 @@ class CentralConfigDao {
 
     private final Cache<String, Optional<Object>> centralConfigCache;
 
-    private final Map<String, Class<?>> keyTypes = Maps.newConcurrentMap();
+    private final Map<String, Class<?>> keyTypes = new ConcurrentHashMap<>();
 
     CentralConfigDao(Session session, ClusterManager clusterManager) throws Exception {
         this.session = session;
 
-        session.execute("create table if not exists central_config (key varchar,"
-                + " value varchar, primary key (key)) " + WITH_LCS);
+        session.createTableWithLCS("create table if not exists central_config (key varchar, value"
+                + " varchar, primary key (key))");
 
         insertIfNotExistsPS = session
                 .prepare("insert into central_config (key, value) values (?, ?) if not exists");

@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,10 +20,9 @@ import java.lang.management.ThreadInfo;
 import java.util.List;
 import java.util.Random;
 
-import javax.annotation.Nullable;
-
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,6 +31,7 @@ import org.glowroot.agent.plugin.api.config.ConfigListener;
 import org.glowroot.common.util.OnlyUsedByTests;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 public class StackTraceCollector {
 
@@ -59,12 +59,11 @@ public class StackTraceCollector {
         processingThread.start();
 
         configService.addConfigListener(new ConfigListener() {
-            private int currIntervalMillis;
             @Override
             public void onChange() {
                 int intervalMillis = configService.getTransactionConfig().profilingIntervalMillis();
-                if (intervalMillis != currIntervalMillis) {
-                    currIntervalMillis = intervalMillis;
+                // TODO report checker framework issue that occurs without checkNotNull
+                if (intervalMillis != checkNotNull(runnable).currIntervalMillis) {
                     checkNotNull(processingThread);
                     processingThread.interrupt();
                 }
@@ -79,8 +78,7 @@ public class StackTraceCollector {
         processingThread.join();
     }
 
-    static void captureStackTraces(List<ThreadContextImpl> threadContexts,
-            ConfigService configService) {
+    static void captureStackTraces(List<ThreadContextImpl> threadContexts) {
         if (threadContexts.isEmpty()) {
             // critical not to call ThreadMXBean.getThreadInfo() with empty id list
             // see https://bugs.openjdk.java.net/browse/JDK-8074368
@@ -93,48 +91,50 @@ public class StackTraceCollector {
         @Nullable
         ThreadInfo[] threadInfos =
                 ManagementFactory.getThreadMXBean().getThreadInfo(threadIds, Integer.MAX_VALUE);
-        int limit = configService.getAdvancedConfig().maxStackTraceSamplesPerTransaction();
         for (int i = 0; i < threadContexts.size(); i++) {
             ThreadContextImpl threadContext = threadContexts.get(i);
             ThreadInfo threadInfo = threadInfos[i];
             if (threadInfo != null) {
-                threadContext.captureStackTrace(threadInfo, limit);
+                threadContext.captureStackTrace(threadInfo);
             }
         }
     }
 
     private class InternalRunnable implements Runnable {
 
+        private volatile int currIntervalMillis;
         private volatile boolean closed;
 
         @Override
         public void run() {
             // delay for first
-            long remainingInInterval = 0;
+            long remainingMillisInInterval = 0;
             while (!closed) {
-                int intervalMillis = configService.getTransactionConfig().profilingIntervalMillis();
-                if (intervalMillis <= 0) {
+                currIntervalMillis = configService.getTransactionConfig().profilingIntervalMillis();
+                if (currIntervalMillis <= 0) {
                     try {
-                        Thread.sleep(Long.MAX_VALUE);
+                        MILLISECONDS.sleep(Long.MAX_VALUE);
                     } catch (InterruptedException e) {
                         // probably interrupt from config listener (see above)
                         logger.debug(e.getMessage(), e);
                         // re-start loop
-                        remainingInInterval = 0;
+                        remainingMillisInInterval = 0;
                         continue;
                     }
                 }
-                long randomDelayFromIntervalStart = (long) (random.nextFloat() * intervalMillis);
+                long randomDelayMillisFromIntervalStart =
+                        (long) (random.nextFloat() * currIntervalMillis);
                 try {
-                    Thread.sleep(remainingInInterval + randomDelayFromIntervalStart);
+                    MILLISECONDS
+                            .sleep(remainingMillisInInterval + randomDelayMillisFromIntervalStart);
                 } catch (InterruptedException e) {
                     // probably interrupt from config listener (see above)
                     logger.debug(e.getMessage(), e);
                     // re-start loop
-                    remainingInInterval = 0;
+                    remainingMillisInInterval = 0;
                     continue;
                 }
-                remainingInInterval = intervalMillis - randomDelayFromIntervalStart;
+                remainingMillisInInterval = currIntervalMillis - randomDelayMillisFromIntervalStart;
                 try {
                     runInternal();
                 } catch (Throwable t) {
@@ -159,7 +159,7 @@ public class StackTraceCollector {
                 }
                 activeThreadContexts.addAll(transaction.getActiveAuxThreadContexts());
             }
-            captureStackTraces(activeThreadContexts, configService);
+            captureStackTraces(activeThreadContexts);
         }
     }
 }

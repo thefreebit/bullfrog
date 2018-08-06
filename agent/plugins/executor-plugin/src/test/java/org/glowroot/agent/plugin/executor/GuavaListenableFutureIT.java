@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ import org.glowroot.agent.it.harness.TraceEntryMarker;
 import org.glowroot.agent.it.harness.TransactionMarker;
 import org.glowroot.wire.api.model.TraceOuterClass.Trace;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -44,9 +45,9 @@ public class GuavaListenableFutureIT {
 
     @BeforeClass
     public static void setUp() throws Exception {
-        // unshaded doesn't work because glowroot loads guava classes before the Weaver is
-        // registered, so the guava classes don't have a chance to get woven
-        Assume.assumeTrue(isShaded());
+        // unshaded doesn't work under javaagent because glowroot loads guava classes before the
+        // Weaver is registered, so the guava classes don't have a chance to get woven
+        Assume.assumeTrue(isShaded() || !Containers.useJavaagent());
         container = Containers.create();
     }
 
@@ -153,7 +154,7 @@ public class GuavaListenableFutureIT {
             ListenableFuture<Void> future1 = executor.submit(new Callable<Void>() {
                 @Override
                 public Void call() throws InterruptedException {
-                    Thread.sleep(100);
+                    MILLISECONDS.sleep(100);
                     return null;
                 }
             });
@@ -163,7 +164,7 @@ public class GuavaListenableFutureIT {
                     new CreateTraceEntry().traceEntryMarker();
                 }
             }, executor);
-            Thread.sleep(200);
+            MILLISECONDS.sleep(200);
             executor.shutdown();
             executor.awaitTermination(10, SECONDS);
         }
@@ -186,14 +187,14 @@ public class GuavaListenableFutureIT {
                     return null;
                 }
             });
-            Thread.sleep(100);
+            MILLISECONDS.sleep(100);
             future1.addListener(new Runnable() {
                 @Override
                 public void run() {
                     new CreateTraceEntry().traceEntryMarker();
                 }
             }, executor);
-            Thread.sleep(100);
+            MILLISECONDS.sleep(100);
             executor.shutdown();
             executor.awaitTermination(10, SECONDS);
         }
@@ -214,7 +215,7 @@ public class GuavaListenableFutureIT {
             ListenableFuture<Void> future1 = executor.submit(new Callable<Void>() {
                 @Override
                 public Void call() throws InterruptedException {
-                    Thread.sleep(100);
+                    MILLISECONDS.sleep(100);
                     return null;
                 }
             });
@@ -224,7 +225,7 @@ public class GuavaListenableFutureIT {
                     new CreateTraceEntry().traceEntryMarker();
                 }
             }, executor);
-            Thread.sleep(200);
+            MILLISECONDS.sleep(200);
             executor.shutdown();
             executor.awaitTermination(10, SECONDS);
         }
@@ -248,14 +249,14 @@ public class GuavaListenableFutureIT {
                     return null;
                 }
             });
-            Thread.sleep(100);
+            MILLISECONDS.sleep(100);
             future1.addListener(new Runnable() {
                 @Override
                 public void run() {
                     new CreateTraceEntry().traceEntryMarker();
                 }
             }, executor);
-            Thread.sleep(100);
+            MILLISECONDS.sleep(100);
             executor.shutdown();
             executor.awaitTermination(10, SECONDS);
         }
@@ -268,7 +269,7 @@ public class GuavaListenableFutureIT {
 
     static boolean isShaded() {
         try {
-            Class.forName("org.glowroot.agent.shaded.slf4j.Logger");
+            Class.forName("org.glowroot.agent.shaded.org.slf4j.Logger");
             return true;
         } catch (ClassNotFoundException e) {
             return false;

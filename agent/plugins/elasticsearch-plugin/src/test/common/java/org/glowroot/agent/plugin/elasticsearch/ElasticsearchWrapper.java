@@ -1,5 +1,5 @@
 /**
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package org.glowroot.agent.plugin.elasticsearch;
 
+import java.io.EOFException;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -25,17 +26,16 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import com.google.common.base.Charsets;
 import com.google.common.base.Joiner;
 import com.google.common.collect.Lists;
 import com.google.common.io.Files;
 import org.elasticsearch.client.transport.TransportClient;
-import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.rauschig.jarchivelib.ArchiveFormat;
 import org.rauschig.jarchivelib.Archiver;
 import org.rauschig.jarchivelib.ArchiverFactory;
 import org.rauschig.jarchivelib.CompressionType;
 
+import static com.google.common.base.Charsets.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 class ElasticsearchWrapper {
@@ -46,17 +46,17 @@ class ElasticsearchWrapper {
     private static ExecutorService consolePipeExecutorService;
 
     static {
-        boolean elasticsearch5x;
-        try {
-            Class.forName("org.elasticsearch.transport.client.PreBuiltTransportClient");
-            elasticsearch5x = true;
-        } catch (ClassNotFoundException e) {
-            elasticsearch5x = false;
-        }
-        if (elasticsearch5x) {
-            ELASTICSEARCH_VERSION = "5.6.2";
-        } else {
+        String elasticsearchClientVersion =
+                TransportClient.class.getPackage().getImplementationVersion();
+        if (elasticsearchClientVersion.startsWith("2.")) {
             ELASTICSEARCH_VERSION = "2.4.6";
+        } else if (elasticsearchClientVersion.startsWith("5.")) {
+            ELASTICSEARCH_VERSION = "5.6.8";
+        } else if (elasticsearchClientVersion.startsWith("6.")) {
+            ELASTICSEARCH_VERSION = "6.2.4";
+        } else {
+            throw new IllegalStateException(
+                    "Unexpected elasticsearch client version: " + elasticsearchClientVersion);
         }
     }
 
@@ -64,7 +64,13 @@ class ElasticsearchWrapper {
         File baseDir = new File("elasticsearch");
         File elasticsearchDir = new File(baseDir, "elasticsearch-" + ELASTICSEARCH_VERSION);
         if (!elasticsearchDir.exists()) {
-            downloadAndExtract(baseDir);
+            try {
+                downloadAndExtract(baseDir);
+            } catch (EOFException e) {
+                // partial download, try again
+                System.out.println("Retrying...");
+                downloadAndExtract(baseDir);
+            }
         }
         List<String> command = buildCommandLine(elasticsearchDir);
         ProcessBuilder processBuilder = new ProcessBuilder(command);
@@ -80,6 +86,7 @@ class ElasticsearchWrapper {
 
     static void stop() throws Exception {
         process.destroy();
+        process.waitFor();
         consolePipeExecutorService.shutdown();
         if (!consolePipeExecutorService.awaitTermination(30, SECONDS)) {
             throw new IllegalStateException("Could not terminate executor");
@@ -88,9 +95,9 @@ class ElasticsearchWrapper {
 
     private static void downloadAndExtract(File baseDir) throws IOException {
         // using System.out to make sure user sees why there is a big delay here
-        System.out.print("Downloading Elasticsearch " + ELASTICSEARCH_VERSION + " ...");
+        System.out.print("Downloading Elasticsearch " + ELASTICSEARCH_VERSION + "...");
         URL url;
-        if (ELASTICSEARCH_VERSION.startsWith("5.")) {
+        if (ELASTICSEARCH_VERSION.startsWith("5.") || ELASTICSEARCH_VERSION.startsWith("6.")) {
             url = new URL("https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-"
                     + ELASTICSEARCH_VERSION + ".tar.gz");
         } else if (ELASTICSEARCH_VERSION.startsWith("2.")) {
@@ -114,17 +121,17 @@ class ElasticsearchWrapper {
         File elasticsearchDir = new File(baseDir, "elasticsearch-" + ELASTICSEARCH_VERSION);
         File configDir = new File(elasticsearchDir, "config");
         // reduce logging to stdout
-        if (ELASTICSEARCH_VERSION.startsWith("5.")) {
+        if (ELASTICSEARCH_VERSION.startsWith("5.") || ELASTICSEARCH_VERSION.startsWith("6.")) {
             File log4j2PropertiesFile = new File(configDir, "log4j2.properties");
-            String contents = Files.asCharSource(log4j2PropertiesFile, Charsets.UTF_8).read();
+            String contents = Files.asCharSource(log4j2PropertiesFile, UTF_8).read();
             contents = contents.replace("rootLogger.level = info", "rootLogger.level = warn");
-            Files.asCharSink(log4j2PropertiesFile, Charsets.UTF_8).write(contents);
+            Files.asCharSink(log4j2PropertiesFile, UTF_8).write(contents);
         } else if (ELASTICSEARCH_VERSION.startsWith("2.")) {
             File loggingYamlFile = new File(configDir, "logging.yml");
-            String contents = Files.asCharSource(loggingYamlFile, Charsets.UTF_8).read();
+            String contents = Files.asCharSource(loggingYamlFile, UTF_8).read();
             contents = contents.replace("es.logger.level: INFO", "es.logger.level: WARN");
             contents = contents.replace("action: DEBUG", "action: INFO");
-            Files.asCharSink(loggingYamlFile, Charsets.UTF_8).write(contents);
+            Files.asCharSink(loggingYamlFile, UTF_8).write(contents);
         } else {
             throw new IllegalStateException(
                     "Unexpected Elasticsearch version: " + ELASTICSEARCH_VERSION);
@@ -139,8 +146,17 @@ class ElasticsearchWrapper {
         command.add("-Djava.awt.headless=true");
         command.add("-Dfile.encoding=UTF-8");
         command.add("-Djna.nosys=true");
-        if (ELASTICSEARCH_VERSION.startsWith("5.")) {
-            command.add("-Djdk.io.permissionsUseCanonicalPath=true");
+        if (ELASTICSEARCH_VERSION.startsWith("6.")) {
+            command.add("-Dio.netty.noUnsafe=true");
+            command.add("-Dio.netty.noKeySetOptimization=true");
+            command.add("-Dio.netty.recycler.maxCapacityPerThread=0");
+            command.add("-Dlog4j.shutdownHookEnabled=false");
+            command.add("-Dlog4j2.disable.jmx=true");
+            command.add("-Delasticsearch");
+            command.add("-Des.path.home=" + elasticsearchDir.getAbsolutePath());
+            command.add("-Des.path.conf=" + elasticsearchDir.getAbsolutePath() + File.separator
+                    + "config");
+        } else if (ELASTICSEARCH_VERSION.startsWith("5.")) {
             command.add("-Dio.netty.noUnsafe=true");
             command.add("-Dio.netty.noKeySetOptimization=true");
             command.add("-Dio.netty.recycler.maxCapacityPerThread=0");
@@ -148,14 +164,15 @@ class ElasticsearchWrapper {
             command.add("-Dlog4j2.disable.jmx=true");
             command.add("-Dlog4j.skipJansi=true");
             command.add("-Delasticsearch");
+            command.add("-Des.path.home=" + elasticsearchDir.getAbsolutePath());
         } else if (ELASTICSEARCH_VERSION.startsWith("2.")) {
             command.add("-Des-foreground=yes");
             command.add("-Delasticsearch");
+            command.add("-Des.path.home=" + elasticsearchDir.getAbsolutePath());
         } else {
             throw new IllegalStateException(
                     "Unexpected Elasticsearch version: " + ELASTICSEARCH_VERSION);
         }
-        command.add("-Des.path.home=" + elasticsearchDir.getAbsolutePath());
         command.add("-cp");
         command.add(buildClasspath(elasticsearchDir));
         // this is used inside low-entropy docker containers
@@ -185,11 +202,9 @@ class ElasticsearchWrapper {
     }
 
     private static void waitForElasticsearch() throws Exception {
-        TransportClient client = Util.client();
-        client.addTransportAddress(
-                new InetSocketTransportAddress(new InetSocketAddress("127.0.0.1", 9300)));
+        TransportClient client = Util.client(new InetSocketAddress("127.0.0.1", 9300));
         while (client.connectedNodes().isEmpty()) {
-            Thread.sleep(1000);
+            SECONDS.sleep(1);
         }
         client.close();
     }

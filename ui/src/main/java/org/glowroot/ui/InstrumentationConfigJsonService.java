@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,6 @@ package org.glowroot.ui;
 import java.util.List;
 import java.util.Map;
 
-import javax.annotation.Nullable;
-
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,6 +29,7 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
 import com.google.common.primitives.Ints;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,10 +37,11 @@ import org.slf4j.LoggerFactory;
 import org.glowroot.common.live.LiveJvmService;
 import org.glowroot.common.live.LiveJvmService.AgentNotConnectedException;
 import org.glowroot.common.live.LiveWeavingService;
-import org.glowroot.common.repo.ConfigRepository;
 import org.glowroot.common.util.ObjectMappers;
 import org.glowroot.common.util.Versions;
+import org.glowroot.common2.repo.ConfigRepository;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.InstrumentationConfig;
+import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.InstrumentationConfig.AlreadyInTransactionBehavior;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.InstrumentationConfig.CaptureKind;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.InstrumentationConfig.MethodModifier;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.GlobalMeta;
@@ -61,13 +61,15 @@ class InstrumentationConfigJsonService {
     private static final Ordering<InstrumentationConfig> ordering =
             new InstrumentationConfigOrdering();
 
+    private final boolean central;
     private final ConfigRepository configRepository;
     private final @Nullable LiveWeavingService liveWeavingService;
     private final @Nullable LiveJvmService liveJvmService;
 
-    InstrumentationConfigJsonService(ConfigRepository configRepository,
+    InstrumentationConfigJsonService(boolean central, ConfigRepository configRepository,
             @Nullable LiveWeavingService liveWeavingService,
             @Nullable LiveJvmService liveJvmService) {
+        this.central = central;
         this.configRepository = configRepository;
         this.liveWeavingService = liveWeavingService;
         this.liveJvmService = liveJvmService;
@@ -106,30 +108,34 @@ class InstrumentationConfigJsonService {
 
     @GET(path = "/backend/config/preload-classpath-cache",
             permission = "agent:config:view:instrumentation")
-    void preloadClasspathCache(final @BindAgentId String agentId) {
+    void preloadClasspathCache(final @BindAgentId String agentId) throws Exception {
         if (liveWeavingService == null) {
             return;
         }
-        // HttpServer is configured with a very small thread pool to keep number of threads down
-        // (currently only a single thread), so spawn a background thread to perform the preloading
-        // so it doesn't block other http requests
-        Thread thread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    // TODO report checker framework issue that occurs without checkNotNull
-                    checkNotNull(liveWeavingService);
-                    liveWeavingService.preloadClasspathCache(agentId);
-                } catch (AgentNotConnectedException e) {
-                    logger.debug(e.getMessage(), e);
-                } catch (Exception e) {
-                    logger.error(e.getMessage(), e);
+        if (central) {
+            liveWeavingService.preloadClasspathCache(agentId);
+        } else {
+            // HttpServer is configured with a very small thread pool to keep number of threads down
+            // (currently only a single thread), so spawn a background thread to perform the
+            // preloading so it doesn't block other http requests
+            Thread thread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        // TODO report checker framework issue that occurs without checkNotNull
+                        checkNotNull(liveWeavingService);
+                        liveWeavingService.preloadClasspathCache(agentId);
+                    } catch (AgentNotConnectedException e) {
+                        logger.debug(e.getMessage(), e);
+                    } catch (Exception e) {
+                        logger.error(e.getMessage(), e);
+                    }
                 }
-            }
-        });
-        thread.setDaemon(true);
-        thread.setName("Glowroot-Temporary-Thread");
-        thread.start();
+            });
+            thread.setDaemon(true);
+            thread.setName("Glowroot-Temporary-Thread");
+            thread.start();
+        }
     }
 
     @GET(path = "/backend/config/new-instrumentation-check-agent-connected",
@@ -346,6 +352,7 @@ class InstrumentationConfigJsonService {
         abstract String transactionUserTemplate();
         abstract Map<String, String> transactionAttributeTemplates();
         abstract @Nullable Integer transactionSlowThresholdMillis();
+        abstract @Nullable AlreadyInTransactionBehavior alreadyInTransactionBehavior();
         abstract boolean transactionOuter();
         abstract String traceEntryMessageTemplate();
         abstract @Nullable Integer traceEntryStackThresholdMillis();
@@ -383,6 +390,11 @@ class InstrumentationConfigJsonService {
             if (transactionSlowThresholdMillis != null) {
                 builder.setTransactionSlowThresholdMillis(
                         OptionalInt32.newBuilder().setValue(transactionSlowThresholdMillis));
+            }
+            AlreadyInTransactionBehavior alreadyInTransactionBehavior =
+                    alreadyInTransactionBehavior();
+            if (alreadyInTransactionBehavior != null) {
+                builder.setAlreadyInTransactionBehavior(alreadyInTransactionBehavior);
             }
             builder.setTransactionOuter(transactionOuter())
                     .setTraceEntryMessageTemplate(traceEntryMessageTemplate());
@@ -430,6 +442,9 @@ class InstrumentationConfigJsonService {
             if (config.hasTransactionSlowThresholdMillis()) {
                 builder.transactionSlowThresholdMillis(
                         config.getTransactionSlowThresholdMillis().getValue());
+            }
+            if (config.getCaptureKind() == CaptureKind.TRANSACTION) {
+                builder.alreadyInTransactionBehavior(config.getAlreadyInTransactionBehavior());
             }
             builder.transactionOuter(config.getTransactionOuter())
                     .traceEntryMessageTemplate(config.getTraceEntryMessageTemplate());

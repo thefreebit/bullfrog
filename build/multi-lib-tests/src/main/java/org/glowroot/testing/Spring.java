@@ -1,5 +1,5 @@
 /**
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,19 +39,22 @@ public class Spring {
         for (int i = 2; i <= 18; i++) {
             run("3.2." + i + ".RELEASE", "spring-3.2.x");
         }
-        for (int i = 0; i <= 9; i++) {
-            run("4.0." + i + ".RELEASE");
+        run("4.0.0.RELEASE", "spring-4.0.0");
+        for (int i = 1; i <= 9; i++) {
+            run("4.0." + i + ".RELEASE", "spring-4.x");
         }
         for (int i = 0; i <= 9; i++) {
-            run("4.1." + i + ".RELEASE");
+            run("4.1." + i + ".RELEASE", "spring-4.x");
         }
         for (int i = 0; i <= 9; i++) {
-            run("4.2." + i + ".RELEASE");
+            run("4.2." + i + ".RELEASE", "spring-4.x");
         }
-        for (int i = 0; i <= 11; i++) {
-            run("4.3." + i + ".RELEASE");
+        for (int i = 0; i <= 17; i++) {
+            run("4.3." + i + ".RELEASE", "spring-4.x");
         }
-        runJava8("5.0.0.RELEASE");
+        for (int i = 0; i <= 6; i++) {
+            runJava8("5.0." + i + ".RELEASE", "spring-4.x");
+        }
     }
 
     private static void run(String version, String... profiles) throws Exception {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,10 +18,9 @@ package org.glowroot.agent.weaving;
 import java.util.LinkedHashMap;
 import java.util.List;
 
-import javax.annotation.Nullable;
-
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -77,7 +76,7 @@ public class PreInitializeWeavingClasses {
     }
 
     @VisibleForTesting
-    static List<String> usedTypes() {
+    public static List<String> usedTypes() {
         List<String> types = Lists.newArrayList();
         types.addAll(getGuavaUsedTypes());
         types.add("com.google.protobuf.Internal$EnumLite");
@@ -253,20 +252,16 @@ public class PreInitializeWeavingClasses {
 
     private static List<String> getGlowrootUsedTypes() {
         List<String> types = Lists.newArrayList();
+        types.add("org.glowroot.agent.api.Instrumentation$AlreadyInTransactionBehavior");
         types.add("org.glowroot.agent.config.ImmutableInstrumentationConfig");
         types.add("org.glowroot.agent.config.ImmutableInstrumentationConfig$Builder");
         types.add("org.glowroot.agent.config.ImmutableInstrumentationConfig$InitShim");
         types.add("org.glowroot.agent.config.InstrumentationConfig");
-        types.add("org.glowroot.agent.impl.OptionalThreadContextImpl");
         types.add("org.glowroot.agent.impl.NestedTimerMap");
         types.add("org.glowroot.agent.impl.ThreadContextImpl");
         types.add("org.glowroot.agent.impl.TimerImpl");
         types.add("org.glowroot.agent.impl.TransactionRegistry");
-        types.add("org.glowroot.agent.impl.TransactionRegistry$TransactionRegistryHolder");
-        types.add("org.glowroot.agent.impl.TransactionServiceImpl");
-        types.add("org.glowroot.agent.impl.TransactionServiceImpl$TransactionServiceHolder");
         types.add("org.glowroot.agent.model.CommonTimerImpl");
-        types.add("org.glowroot.agent.model.ThreadContextPlus");
         types.add("org.glowroot.agent.model.TimerNameImpl");
         types.add("org.glowroot.agent.plugin.api.MessageSupplier");
         types.add("org.glowroot.agent.plugin.api.MessageSupplier$1");
@@ -274,9 +269,6 @@ public class PreInitializeWeavingClasses {
         types.add("org.glowroot.agent.plugin.api.ThreadContext");
         types.add("org.glowroot.agent.plugin.api.Timer");
         types.add("org.glowroot.agent.plugin.api.TimerName");
-        types.add("org.glowroot.agent.plugin.api.config.ConfigListener");
-        types.add("org.glowroot.agent.plugin.api.util.FastThreadLocal");
-        types.add("org.glowroot.agent.plugin.api.util.FastThreadLocal$Holder");
         types.add("org.glowroot.agent.plugin.api.weaving.BindClassMeta");
         types.add("org.glowroot.agent.plugin.api.weaving.BindMethodMeta");
         types.add("org.glowroot.agent.plugin.api.weaving.BindMethodName");
@@ -301,6 +293,14 @@ public class PreInitializeWeavingClasses {
         types.add("org.glowroot.agent.util.IterableWithSelfRemovableEntries$SelfRemovableEntry");
         types.add("org.glowroot.agent.util.Tickers");
         types.add("org.glowroot.agent.util.Tickers$DummyTicker");
+        types.add("org.glowroot.agent.bytecode.api.Bytecode");
+        types.add("org.glowroot.agent.bytecode.api.BytecodeService");
+        types.add("org.glowroot.agent.bytecode.api.BytecodeServiceHolder");
+        types.add("org.glowroot.agent.bytecode.api.ThreadContextPlus");
+        types.add("org.glowroot.agent.bytecode.api.ThreadContextThreadLocal");
+        types.add("org.glowroot.agent.bytecode.api.ThreadContextThreadLocal$1");
+        types.add("org.glowroot.agent.bytecode.api.ThreadContextThreadLocal$Holder");
+        types.add("org.glowroot.agent.bytecode.api.Util");
         types.add("org.glowroot.agent.weaving.Advice");
         types.add("org.glowroot.agent.weaving.AdviceGenerator");
         types.add("org.glowroot.agent.weaving.Advice$AdviceOrdering");
@@ -326,12 +326,22 @@ public class PreInitializeWeavingClasses {
         types.add("org.glowroot.agent.weaving.ClassLoaders");
         types.add("org.glowroot.agent.weaving.ClassLoaders$LazyDefinedClass");
         types.add("org.glowroot.agent.weaving.ClassNames");
+        types.add("org.glowroot.agent.weaving.FrameDeduppingMethodVisitor");
         types.add("org.glowroot.agent.weaving.Weaver$ActiveWeaving");
-        types.add("org.glowroot.agent.weaving.Weaver$FelixOsgiHackClassVisitor");
-        types.add("org.glowroot.agent.weaving.Weaver$FelixOsgiHackMethodVisitor");
-        types.add("org.glowroot.agent.weaving.Weaver$JBoss4HackClassVisitor");
-        types.add("org.glowroot.agent.weaving.Weaver$JBoss4HackMethodVisitor");
-        types.add("org.glowroot.agent.weaving.GeneratedBytecodeUtil");
+        types.add("org.glowroot.agent.weaving.Weaver$OpenEJBHackClassVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$OpenEJBHackMethodVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$OsgiHackClassVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$OsgiHackMethodVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$HikariCpProxyHackClassVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$HikariCpProxyHackMethodVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$JBossModulesHackClassVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$JBossModulesHackMethodVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$JBossUrlHackClassVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$JBossUrlHackMethodVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$JBossWeldHackClassVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$JBossWeldHackMethodVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$ManagementFactoryHackClassVisitor");
+        types.add("org.glowroot.agent.weaving.Weaver$ManagementFactoryHackMethodVisitor");
         types.add("org.glowroot.agent.weaving.ImmutableAdvice");
         types.add("org.glowroot.agent.weaving.ImmutableAdvice$Builder");
         types.add("org.glowroot.agent.weaving.ImmutableAdvice$InitShim");
@@ -365,27 +375,35 @@ public class PreInitializeWeavingClasses {
                 + "$TraceEntryAnnotationVisitor");
         types.add("org.glowroot.agent.weaving.InstrumentationSeekerClassVisitor"
                 + "$TransactionAnnotationVisitor");
+        types.add("org.glowroot.agent.weaving.JSRInlinerClassVisitor");
         types.add("org.glowroot.agent.weaving.MixinType");
+        types.add("org.glowroot.agent.weaving.PointcutClassVisitor");
+        types.add("org.glowroot.agent.weaving.PointcutClassVisitor$PointcutAnnotationVisitor");
+        types.add("org.glowroot.agent.weaving.PointcutClassVisitor$PointcutMethodVisitor");
         types.add("org.glowroot.agent.weaving.PublicFinalMethod");
         types.add("org.glowroot.agent.weaving.ShimType");
         types.add("org.glowroot.agent.weaving.ThinClassVisitor");
         types.add("org.glowroot.agent.weaving.ThinClassVisitor$AnnotationCaptureMethodVisitor");
+        types.add("org.glowroot.agent.weaving.ThinClassVisitor$PointcutAnnotationVisitor");
+        types.add("org.glowroot.agent.weaving.ThinClassVisitor$RemoteAnnotationVisitor");
+        types.add("org.glowroot.agent.weaving.ThinClassVisitor$ValueAnnotationVisitor");
         types.add("org.glowroot.agent.weaving.ThinClassVisitor$ThinClass");
         types.add("org.glowroot.agent.weaving.ThinClassVisitor$ThinMethod");
         types.add("org.glowroot.agent.weaving.Weaver");
-        types.add("org.glowroot.agent.weaving.Weaver$ComputeFramesClassWriter");
-        types.add("org.glowroot.agent.weaving.Weaver$JSRInlinerClassVisitor");
         types.add("org.glowroot.agent.weaving.WeavingClassFileTransformer");
         types.add("org.glowroot.agent.weaving.WeavingClassVisitor");
         types.add("org.glowroot.agent.weaving.WeavingClassVisitor$InitMixins");
         types.add("org.glowroot.agent.weaving.WeavingClassVisitor$MethodMetaGroup");
         types.add("org.glowroot.agent.weaving.WeavingMethodVisitor");
         types.add("org.glowroot.agent.weaving.WeavingMethodVisitor$CatchHandler");
-        types.add("org.glowroot.common.util.Patterns");
         types.add("org.glowroot.wire.api.model.AgentConfigOuterClass$AgentConfig"
                 + "$InstrumentationConfig$CaptureKind");
         types.add("org.glowroot.wire.api.model.AgentConfigOuterClass$AgentConfig"
                 + "$InstrumentationConfig$CaptureKind$1");
+        types.add("org.glowroot.wire.api.model.AgentConfigOuterClass$AgentConfig"
+                + "$InstrumentationConfig$AlreadyInTransactionBehavior");
+        types.add("org.glowroot.wire.api.model.AgentConfigOuterClass$AgentConfig"
+                + "$InstrumentationConfig$AlreadyInTransactionBehavior$1");
         return types;
     }
 
@@ -394,6 +412,7 @@ public class PreInitializeWeavingClasses {
         types.add("org.objectweb.asm.AnnotationVisitor");
         types.add("org.objectweb.asm.AnnotationWriter");
         types.add("org.objectweb.asm.Attribute");
+        types.add("org.objectweb.asm.Attribute$Set");
         types.add("org.objectweb.asm.ByteVector");
         types.add("org.objectweb.asm.ClassReader");
         types.add("org.objectweb.asm.ClassVisitor");
@@ -406,13 +425,15 @@ public class PreInitializeWeavingClasses {
         types.add("org.objectweb.asm.Frame");
         types.add("org.objectweb.asm.Handle");
         types.add("org.objectweb.asm.Handler");
-        types.add("org.objectweb.asm.Item");
         types.add("org.objectweb.asm.Label");
         types.add("org.objectweb.asm.MethodVisitor");
         types.add("org.objectweb.asm.MethodWriter");
         types.add("org.objectweb.asm.ModuleVisitor");
         types.add("org.objectweb.asm.ModuleWriter");
         types.add("org.objectweb.asm.Opcodes");
+        types.add("org.objectweb.asm.Symbol");
+        types.add("org.objectweb.asm.SymbolTable");
+        types.add("org.objectweb.asm.SymbolTable$Entry");
         types.add("org.objectweb.asm.Type");
         types.add("org.objectweb.asm.TypePath");
         types.add("org.objectweb.asm.TypeReference");
@@ -430,16 +451,6 @@ public class PreInitializeWeavingClasses {
         types.add("org.objectweb.asm.signature.SignatureReader");
         types.add("org.objectweb.asm.signature.SignatureVisitor");
         types.add("org.objectweb.asm.signature.SignatureWriter");
-        types.add("org.objectweb.asm.tree.analysis.Analyzer");
-        types.add("org.objectweb.asm.tree.analysis.AnalyzerException");
-        types.add("org.objectweb.asm.tree.analysis.BasicInterpreter");
-        types.add("org.objectweb.asm.tree.analysis.BasicValue");
-        types.add("org.objectweb.asm.tree.analysis.BasicVerifier");
-        types.add("org.objectweb.asm.tree.analysis.Frame");
-        types.add("org.objectweb.asm.tree.analysis.Interpreter");
-        types.add("org.objectweb.asm.tree.analysis.SimpleVerifier");
-        types.add("org.objectweb.asm.tree.analysis.Subroutine");
-        types.add("org.objectweb.asm.tree.analysis.Value");
         types.add("org.objectweb.asm.tree.AbstractInsnNode");
         types.add("org.objectweb.asm.tree.AnnotationNode");
         types.add("org.objectweb.asm.tree.ClassNode");
@@ -473,24 +484,13 @@ public class PreInitializeWeavingClasses {
         types.add("org.objectweb.asm.tree.TryCatchBlockNode");
         types.add("org.objectweb.asm.tree.TypeAnnotationNode");
         types.add("org.objectweb.asm.tree.TypeInsnNode");
+        types.add("org.objectweb.asm.tree.Util");
         types.add("org.objectweb.asm.tree.VarInsnNode");
-        types.add("org.objectweb.asm.util.CheckAnnotationAdapter");
-        types.add("org.objectweb.asm.util.CheckClassAdapter");
-        types.add("org.objectweb.asm.util.CheckFieldAdapter");
-        types.add("org.objectweb.asm.util.CheckMethodAdapter");
-        types.add("org.objectweb.asm.util.CheckMethodAdapter$1");
-        types.add("org.objectweb.asm.util.CheckModuleAdapter");
-        types.add("org.objectweb.asm.util.Printer");
-        types.add("org.objectweb.asm.util.Textifiable");
-        types.add("org.objectweb.asm.util.Textifier");
-        types.add("org.objectweb.asm.util.TraceAnnotationVisitor");
-        types.add("org.objectweb.asm.util.TraceMethodVisitor");
-        types.add("org.objectweb.asm.util.TraceSignatureVisitor");
         return types;
     }
 
     @VisibleForTesting
-    static List<String> maybeUsedTypes() {
+    public static List<String> maybeUsedTypes() {
         List<String> types = Lists.newArrayList();
         // these are special classes generated by javac (but not by the eclipse compiler) to handle
         // accessing the private constructor in an enclosed type
@@ -519,10 +519,14 @@ public class PreInitializeWeavingClasses {
         types.add("org.glowroot.agent.weaving.InstrumentationSeekerClassVisitor$1");
         types.add("org.glowroot.agent.weaving.MethodMetaGroup$1");
         types.add("org.glowroot.agent.weaving.ThinClassVisitor$1");
+        types.add("org.glowroot.agent.weaving.PointcutClassVisitor$1");
         types.add("org.glowroot.agent.weaving.Weaver$1");
         types.add("org.glowroot.agent.weaving.Weaver$2");
         types.add("org.glowroot.agent.weaving.Weaver$FelixOsgiHackClassVisitor$1");
+        types.add("org.glowroot.agent.weaving.Weaver$EclipseOsgiHackClassVisitor$1");
         types.add("org.glowroot.agent.weaving.WeavingClassVisitor$1");
+        // this is referenced and picked up via org.glowroot.agent.weaving.Weaver$1
+        types.add("org.glowroot.agent.plugin.api.config.ConfigListener");
         // this is a special class generated by javac (but not by the eclipse compiler) to handle
         // enum switch statements
         // (see http://stackoverflow.com/questions/1834632/java-enum-and-additional-class-files)
@@ -558,7 +562,6 @@ public class PreInitializeWeavingClasses {
         // org.glowroot.shaded.objectweb.asm.ClassReader.accept(Unknown Source)~[na:0.5-SNAPSHOT]
         // org.glowroot.shaded.objectweb.asm.ClassReader.accept(Unknown Source)~[na:0.5-SNAPSHOT]
         // org.glowroot.weaving.Weaver.weaveInternal(Weaver.java:115)[na:0.5-SNAPSHOT]
-        // org.glowroot.weaving.Weaver.weave$glowroot$timer$glowroot$weaving$0(Weaver.java:88)[na:0.5-SNAPSHOT]
         // org.glowroot.weaving.Weaver.weave(Weaver.java:78)[na:0.5-SNAPSHOT]
         // org.glowroot.weaving.WeavingClassFileTransformer.transformInternal(WeavingClassFileTransformer.java:113)[na:0.5-SNAPSHOT]
         // org.glowroot.weaving.WeavingClassFileTransformer.transform(WeavingClassFileTransformer.java:76)[na:0.5-SNAPSHOT]

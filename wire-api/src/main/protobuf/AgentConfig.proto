@@ -8,7 +8,11 @@ option java_package = "org.glowroot.wire.api.model";
 
 message AgentConfig {
 
+  string agent_version = 1;
+
+  GeneralConfig general_config = 16;
   TransactionConfig transaction_config = 2;
+  JvmConfig jvm_config = 17;
   UiConfig ui_config = 3;
   UserRecordingConfig user_recording_config = 4;
   AdvancedConfig advanced_config = 5;
@@ -20,15 +24,31 @@ message AgentConfig {
   repeated PluginConfig plugin_config = 12;
   repeated InstrumentationConfig instrumentation_config = 13;
 
+  // only stored in central
+  message GeneralConfig {
+    string display = 1;
+  }
+
   message TransactionConfig {
     OptionalInt32 slow_threshold_millis = 1; // optional used due to non-zero default value
     OptionalInt32 profiling_interval_millis = 2; // optional used due to non-zero default value
     bool capture_thread_stats = 3;
+    repeated SlowThreshold slow_threshold = 4;
+  }
+
+  message SlowThreshold {
+    string transaction_type = 1;
+    string transaction_name = 2;
+    int32 threshold_millis = 3;
+  }
+
+  message JvmConfig {
+    repeated string mask_system_property = 1;
   }
 
   message UiConfig {
-    string default_displayed_transaction_type = 1;
-    repeated double default_displayed_percentile = 2;
+    string default_transaction_type = 1;
+    repeated double default_percentile = 2;
     repeated string default_gauge_name = 3;
   }
 
@@ -41,11 +61,11 @@ message AgentConfig {
     bool weaving_timer = 1;
     // optionals used below due to non-zero default value
     OptionalInt32 immediate_partial_store_threshold_seconds = 2;
-    OptionalInt32 max_aggregate_transactions_per_type = 3;
-    OptionalInt32 max_aggregate_queries_per_type = 4;
-    OptionalInt32 max_aggregate_service_calls_per_type = 5;
+    OptionalInt32 max_transaction_aggregates = 3;
+    OptionalInt32 max_query_aggregates = 4;
+    OptionalInt32 max_service_call_aggregates = 5;
     OptionalInt32 max_trace_entries_per_transaction = 6;
-    OptionalInt32 max_stack_trace_samples_per_transaction = 7;
+    OptionalInt32 max_profile_samples_per_transaction = 7;
     OptionalInt32 mbean_gauge_not_found_delay_seconds = 8;
   }
 
@@ -56,8 +76,8 @@ message AgentConfig {
 
   message SyntheticMonitorConfig {
     string id = 1;
-    string display = 2;
     SyntheticMonitorKind kind = 3;
+    string display = 2; // optional for type ping, required for type java
     string ping_url = 4;
     string java_source = 5;
 
@@ -91,7 +111,7 @@ message AgentConfig {
 
   message AlertConfig {
 
-    // condition and notification are split out into their own messages because it is convenient to
+    // condition and notification are split out into their own messages because it is convenient
     // for passing them around and storing them separately from their AlertConfig
     // (e.g. the condition is used and stored separately as unique key to track incidents
     // independent of any notifications, including any changes to the notifications)
@@ -116,7 +136,8 @@ message AgentConfig {
         double threshold = 100;
         bool lower_bound_threshold = 101;
         int32 time_period_seconds = 102;
-        int64 min_transaction_count = 103;
+        int64 min_transaction_count = 103; // not applicable for all metric conditions
+                                           // see AlertingService.hasMinTransactionCount()
         // OptionalInt32 consecutive_time_periods = 104; // e.g. two consecutive time periods
       }
 
@@ -177,6 +198,7 @@ message AgentConfig {
     string trace_entry_message_template = 13;
     OptionalInt32 trace_entry_stack_threshold_millis = 14; // absent means N/A
     bool trace_entry_capture_self_nested = 15;
+    AlreadyInTransactionBehavior already_in_transaction_behavior = 26;
     string transaction_type = 16;
     string transaction_name_template = 17;
     string transaction_user_template = 18;
@@ -197,6 +219,12 @@ message AgentConfig {
       TRACE_ENTRY = 1;
       TIMER = 2;
       OTHER = 3;
+    }
+
+    enum AlreadyInTransactionBehavior {
+      CAPTURE_TRACE_ENTRY = 0;
+      CAPTURE_NEW_TRANSACTION = 1;
+      DO_NOTHING = 2;
     }
   }
 

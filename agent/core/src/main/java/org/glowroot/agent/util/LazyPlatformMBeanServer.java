@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,9 @@
 package org.glowroot.agent.util;
 
 import java.lang.management.ManagementFactory;
-import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Set;
 
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 import javax.management.InstanceAlreadyExistsException;
 import javax.management.MBeanInfo;
@@ -34,7 +32,7 @@ import com.google.common.base.Stopwatch;
 import com.google.common.collect.Lists;
 import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
-import org.checkerframework.checker.nullness.qual.RequiresNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +40,7 @@ import org.slf4j.LoggerFactory;
 import org.glowroot.common.util.OnlyUsedByTests;
 import org.glowroot.common.util.Styles;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 // this is needed for jboss-modules because calling ManagementFactory.getPlatformMBeanServer()
@@ -68,8 +67,12 @@ public class LazyPlatformMBeanServer {
 
     private volatile @MonotonicNonNull MBeanServer platformMBeanServer;
 
-    public static LazyPlatformMBeanServer create() throws Exception {
-        LazyPlatformMBeanServer lazyPlatformMBeanServer = new LazyPlatformMBeanServer();
+    private final Object platformMBeanServerAvailability = new Object();
+    @GuardedBy("platformMBeanServerAvailability")
+    private boolean platformMBeanServerAvailable;
+
+    public static LazyPlatformMBeanServer create(@Nullable String mainClass) throws Exception {
+        LazyPlatformMBeanServer lazyPlatformMBeanServer = new LazyPlatformMBeanServer(mainClass);
         if (!lazyPlatformMBeanServer.waitForContainerToCreatePlatformMBeanServer) {
             // it is useful to init right away in this case in order to avoid condition where really
             // should wait for container, but works most of the time by luck due to timing of when
@@ -79,11 +82,15 @@ public class LazyPlatformMBeanServer {
         return lazyPlatformMBeanServer;
     }
 
-    private LazyPlatformMBeanServer() {
-        boolean oldJBoss = AppServerDetection.isOldJBoss();
+    private LazyPlatformMBeanServer(@Nullable String mainClass) {
+        boolean jbossModules = "org.jboss.modules.Main".equals(mainClass);
+        boolean wildflySwarm = "org.wildfly.swarm.bootstrap.Main".equals(mainClass);
+        boolean oldJBoss = "org.jboss.Main".equals(mainClass);
+        boolean glassfish = "com.sun.enterprise.glassfish.bootstrap.ASMain".equals(mainClass);
+        boolean weblogic = "weblogic.Server".equals(mainClass);
+        boolean websphere = "com.ibm.wsspi.bootstrap.WSPreLauncher".equals(mainClass);
         waitForContainerToCreatePlatformMBeanServer =
-                AppServerDetection.isJBossModules() || oldJBoss || AppServerDetection.isGlassfish()
-                        || AppServerDetection.isWebLogic() || AppServerDetection.isWebSphere();
+                jbossModules || wildflySwarm || oldJBoss || glassfish || weblogic || websphere;
         needsManualPatternMatching = oldJBoss;
     }
 
@@ -101,7 +108,7 @@ public class LazyPlatformMBeanServer {
                 toBeUnregistered.add(objectName);
             } else {
                 try {
-                    safeRegisterMBean(object, objectName);
+                    safeRegisterMBean(platformMBeanServer, object, objectName);
                     toBeUnregistered.add(objectName);
                 } catch (Throwable t) {
                     logger.warn(t.getMessage(), t);
@@ -150,10 +157,81 @@ public class LazyPlatformMBeanServer {
         }
     }
 
-    @RequiresNonNull("platformMBeanServer")
-    private void safeRegisterMBean(Object object, ObjectName name) {
+    public void setPlatformMBeanServerAvailable() {
+        synchronized (platformMBeanServerAvailability) {
+            platformMBeanServerAvailable = true;
+            platformMBeanServerAvailability.notifyAll();
+        }
+    }
+
+    @EnsuresNonNull("platformMBeanServer")
+    private void ensureInit() throws Exception {
+        if (platformMBeanServer != null) {
+            return;
+        }
+        // don't hold initListeners lock while waiting for platform mbean server to be created
+        // as this blocks lazyRegisterMBean
+        if (waitForContainerToCreatePlatformMBeanServer) {
+            waitForContainerToCreatePlatformMBeanServer();
+        }
+        synchronized (initListeners) {
+            if (platformMBeanServer != null) {
+                return;
+            }
+            platformMBeanServer = init();
+        }
+    }
+
+    private void waitForContainerToCreatePlatformMBeanServer() throws Exception {
+        synchronized (platformMBeanServerAvailability) {
+            if (platformMBeanServerAvailable) {
+                return;
+            }
+            Stopwatch stopwatch = Stopwatch.createStarted();
+            // looping to guard against "spurious wakeup" from Object.wait()
+            while (!platformMBeanServerAvailable) {
+                long remaining = SECONDS.toMillis(60) - stopwatch.elapsed(MILLISECONDS);
+                if (remaining < 1000) {
+                    // less that one second remaining
+                    break;
+                }
+                platformMBeanServerAvailability.wait(remaining);
+            }
+            if (!platformMBeanServerAvailable) {
+                logger.error("platform mbean server was never created by container");
+            }
+        }
+    }
+
+    private MBeanServer init() {
+        MBeanServer platformMBeanServer = ManagementFactory.getPlatformMBeanServer();
+        for (InitListener initListener : initListeners) {
+            try {
+                initListener.postInit(platformMBeanServer);
+            } catch (Throwable t) {
+                logger.error(t.getMessage(), t);
+            }
+        }
+        initListeners.clear();
+        for (ObjectNamePair objectNamePair : toBeRegistered) {
+            safeRegisterMBean(platformMBeanServer, objectNamePair.object(),
+                    objectNamePair.name());
+        }
+        toBeRegistered.clear();
+        return platformMBeanServer;
+    }
+
+    @OnlyUsedByTests
+    public void close() throws Exception {
+        ensureInit();
+        for (ObjectName name : toBeUnregistered) {
+            platformMBeanServer.unregisterMBean(name);
+        }
+    }
+
+    private static void safeRegisterMBean(MBeanServer mbeanServer, Object object, ObjectName name) {
         try {
-            platformMBeanServer.registerMBean(object, name);
+            mbeanServer.registerMBean(object, name);
         } catch (InstanceAlreadyExistsException e) {
             // this happens during unit tests when a non-shared local container is used
             // (so that then there are two local containers in the same jvm)
@@ -173,55 +251,6 @@ public class LazyPlatformMBeanServer {
         } catch (Throwable t) {
             logger.warn(t.getMessage(), t);
         }
-    }
-
-    @OnlyUsedByTests
-    public void close() throws Exception {
-        ensureInit();
-        for (ObjectName name : toBeUnregistered) {
-            platformMBeanServer.unregisterMBean(name);
-        }
-    }
-
-    @EnsuresNonNull("platformMBeanServer")
-    private void ensureInit() throws Exception {
-        synchronized (initListeners) {
-            if (platformMBeanServer != null) {
-                return;
-            }
-            if (waitForContainerToCreatePlatformMBeanServer) {
-                waitForContainerToCreatePlatformMBeanServer(Stopwatch.createUnstarted());
-            }
-            platformMBeanServer = ManagementFactory.getPlatformMBeanServer();
-            for (InitListener initListener : initListeners) {
-                try {
-                    initListener.postInit(platformMBeanServer);
-                } catch (Throwable t) {
-                    logger.error(t.getMessage(), t);
-                }
-            }
-            initListeners.clear();
-            for (ObjectNamePair objectNamePair : toBeRegistered) {
-                safeRegisterMBean(objectNamePair.object(), objectNamePair.name());
-            }
-            toBeRegistered.clear();
-        }
-    }
-
-    private void waitForContainerToCreatePlatformMBeanServer(Stopwatch stopwatch) throws Exception {
-        String platformMBeanServerFieldName =
-                AppServerDetection.isIbmJvm() ? "platformServer" : "platformMBeanServer";
-        Field platformMBeanServerField =
-                ManagementFactory.class.getDeclaredField(platformMBeanServerFieldName);
-        platformMBeanServerField.setAccessible(true);
-        stopwatch.start();
-        while (stopwatch.elapsed(SECONDS) < 60) {
-            if (platformMBeanServerField.get(null) != null) {
-                return;
-            }
-            Thread.sleep(100);
-        }
-        logger.error("platform mbean server was never created by container");
     }
 
     public interface InitListener {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,7 @@ package org.glowroot.agent.plugin.api;
 
 import java.util.concurrent.TimeUnit;
 
-import javax.annotation.Nullable;
-
+import org.glowroot.agent.plugin.api.checker.Nullable;
 import org.glowroot.agent.plugin.api.weaving.OnReturn;
 
 /**
@@ -66,11 +65,6 @@ public interface TraceEntry {
 
     /**
      * End the entry and mark the trace entry as an error with the specified throwable.
-     * 
-     * A stack trace is captured and displayed in the UI as a location stack trace (as opposed to an
-     * exception stack trace), similar to {@link #endWithLocationStackTrace(long, TimeUnit)}. Unless
-     * this is the root trace entry in which case no location stack trace is captured / displayed
-     * (since location stack trace is typically not mysterious for root trace entries).
      * 
      * If this is the root entry, then the error flag on the transaction is set.
      * 
@@ -127,10 +121,4 @@ public interface TraceEntry {
      */
     @Nullable
     Object getMessageSupplier();
-
-    /**
-     * @deprecated Replaced by {@link #endWithLocationStackTrace(long, TimeUnit)}.
-     */
-    @Deprecated
-    void endWithStackTrace(long threshold, TimeUnit unit);
 }

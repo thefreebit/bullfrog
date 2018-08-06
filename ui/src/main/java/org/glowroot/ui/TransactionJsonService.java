@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,9 +20,6 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
-
-import javax.annotation.Nullable;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -33,6 +30,7 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Ordering;
 import com.google.common.io.CharStreams;
 import com.google.common.primitives.Doubles;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 
 import org.glowroot.common.live.ImmutableOverallQuery;
@@ -44,16 +42,19 @@ import org.glowroot.common.live.LiveAggregateRepository.TransactionQuery;
 import org.glowroot.common.model.LazyHistogram;
 import org.glowroot.common.model.MutableProfile;
 import org.glowroot.common.model.MutableQuery;
+import org.glowroot.common.model.MutableServiceCall;
 import org.glowroot.common.model.OverallSummaryCollector.OverallSummary;
 import org.glowroot.common.model.Result;
 import org.glowroot.common.model.TransactionSummaryCollector.SummarySortOrder;
 import org.glowroot.common.model.TransactionSummaryCollector.TransactionSummary;
-import org.glowroot.common.repo.AggregateRepository;
-import org.glowroot.common.repo.ConfigRepository;
-import org.glowroot.common.repo.Utils;
-import org.glowroot.common.repo.util.RollupLevelService;
+import org.glowroot.common.util.CaptureTimes;
 import org.glowroot.common.util.Clock;
 import org.glowroot.common.util.ObjectMappers;
+import org.glowroot.common2.repo.AggregateRepository;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.Utils;
+import org.glowroot.common2.repo.util.RollupLevelService;
+import org.glowroot.common2.repo.util.RollupLevelService.DataKind;
 import org.glowroot.ui.AggregateMerging.MergedAggregate;
 import org.glowroot.ui.AggregateMerging.PercentileValue;
 import org.glowroot.wire.api.model.AggregateOuterClass.Aggregate;
@@ -87,12 +88,20 @@ class TransactionJsonService {
     String getOverview(@BindAgentRollupId String agentRollupId,
             @BindRequest TransactionDataRequest request, @BindAutoRefresh boolean autoRefresh)
             throws Exception {
-        TransactionQuery query = toChartQuery(request);
+        TransactionQuery query = toChartQuery(request, DataKind.GENERAL);
         long liveCaptureTime = clock.currentTimeMillis();
         List<OverviewAggregate> overviewAggregates =
                 transactionCommonService.getOverviewAggregates(agentRollupId, query, autoRefresh);
-        List<DataSeries> dataSeriesList =
-                getDataSeriesForTimerChart(request, overviewAggregates, liveCaptureTime);
+        if (overviewAggregates.isEmpty() && query.rollupLevel() < getLargestRollupLevel()) {
+            // fall back to largest aggregates in case expiration settings have recently changed
+            query = withLargestRollupLevel(query);
+            overviewAggregates = transactionCommonService.getOverviewAggregates(agentRollupId,
+                    query, autoRefresh);
+        }
+        long dataPointIntervalMillis =
+                configRepository.getRollupConfigs().get(query.rollupLevel()).intervalMillis();
+        List<DataSeries> dataSeriesList = getDataSeriesForTimerChart(request, overviewAggregates,
+                dataPointIntervalMillis, liveCaptureTime);
         Map<Long, Long> transactionCounts = getTransactionCounts(overviewAggregates);
         // TODO more precise aggregate when from/to not on rollup grid
         List<OverviewAggregate> overviewAggregatesForMerging = Lists.newArrayList();
@@ -110,6 +119,7 @@ class TransactionJsonService {
         try {
             jg.writeStartObject();
             jg.writeObjectField("dataSeries", dataSeriesList);
+            jg.writeNumberField("dataPointIntervalMillis", dataPointIntervalMillis);
             jg.writeObjectField("transactionCounts", transactionCounts);
             jg.writeObjectField("mergedAggregate", mergedAggregate);
             jg.writeEndObject();
@@ -123,12 +133,21 @@ class TransactionJsonService {
     String getPercentiles(@BindAgentRollupId String agentRollupId,
             @BindRequest TransactionPercentileRequest request, @BindAutoRefresh boolean autoRefresh)
             throws Exception {
-        TransactionQuery query = toChartQuery(request);
+        TransactionQuery query = toChartQuery(request, DataKind.GENERAL);
         long liveCaptureTime = clock.currentTimeMillis();
         List<PercentileAggregate> percentileAggregates =
                 transactionCommonService.getPercentileAggregates(agentRollupId, query, autoRefresh);
-        PercentileData percentileData = getDataSeriesForPercentileChart(request,
-                percentileAggregates, request.percentile(), liveCaptureTime);
+        if (percentileAggregates.isEmpty() && query.rollupLevel() < getLargestRollupLevel()) {
+            // fall back to largest aggregates in case expiration settings have recently changed
+            query = withLargestRollupLevel(query);
+            percentileAggregates = transactionCommonService.getPercentileAggregates(agentRollupId,
+                    query, autoRefresh);
+        }
+        long dataPointIntervalMillis =
+                configRepository.getRollupConfigs().get(query.rollupLevel()).intervalMillis();
+        PercentileData percentileData =
+                getDataSeriesForPercentileChart(request, percentileAggregates, request.percentile(),
+                        dataPointIntervalMillis, liveCaptureTime);
         Map<Long, Long> transactionCounts = getTransactionCounts2(percentileAggregates);
 
         StringBuilder sb = new StringBuilder();
@@ -136,6 +155,7 @@ class TransactionJsonService {
         try {
             jg.writeStartObject();
             jg.writeObjectField("dataSeries", percentileData.dataSeriesList());
+            jg.writeNumberField("dataPointIntervalMillis", dataPointIntervalMillis);
             jg.writeObjectField("transactionCounts", transactionCounts);
             jg.writeObjectField("mergedAggregate", percentileData.mergedAggregate());
             jg.writeEndObject();
@@ -149,12 +169,20 @@ class TransactionJsonService {
     String getThroughput(@BindAgentRollupId String agentRollupId,
             @BindRequest TransactionDataRequest request, @BindAutoRefresh boolean autoRefresh)
             throws Exception {
-        TransactionQuery query = toChartQuery(request);
+        TransactionQuery query = toChartQuery(request, DataKind.GENERAL);
         long liveCaptureTime = clock.currentTimeMillis();
         List<ThroughputAggregate> throughputAggregates =
                 transactionCommonService.getThroughputAggregates(agentRollupId, query, autoRefresh);
-        List<DataSeries> dataSeriesList =
-                getDataSeriesForThroughputChart(request, throughputAggregates, liveCaptureTime);
+        if (throughputAggregates.isEmpty() && query.rollupLevel() < getLargestRollupLevel()) {
+            // fall back to largest aggregates in case expiration settings have recently changed
+            query = withLargestRollupLevel(query);
+            throughputAggregates = transactionCommonService.getThroughputAggregates(agentRollupId,
+                    query, autoRefresh);
+        }
+        long dataPointIntervalMillis =
+                configRepository.getRollupConfigs().get(query.rollupLevel()).intervalMillis();
+        List<DataSeries> dataSeriesList = getDataSeriesForThroughputChart(request,
+                throughputAggregates, dataPointIntervalMillis, liveCaptureTime);
         // TODO more precise aggregate when from/to not on rollup grid
         long transactionCount = 0;
         for (ThroughputAggregate throughputAggregate : throughputAggregates) {
@@ -169,6 +197,7 @@ class TransactionJsonService {
         try {
             jg.writeStartObject();
             jg.writeObjectField("dataSeries", dataSeriesList);
+            jg.writeNumberField("dataPointIntervalMillis", dataPointIntervalMillis);
             jg.writeNumberField("transactionCount", transactionCount);
             jg.writeNumberField("transactionsPerMin",
                     60000.0 * transactionCount / (request.to() - request.from()));
@@ -182,21 +211,24 @@ class TransactionJsonService {
     @GET(path = "/backend/transaction/queries", permission = "agent:transaction:queries")
     String getQueries(@BindAgentRollupId String agentRollupId,
             @BindRequest TransactionDataRequest request) throws Exception {
-        TransactionQuery query = toQuery(request);
-        Map<String, List<MutableQuery>> queries =
+        TransactionQuery query = toQuery(request, DataKind.QUERY);
+        List<MutableQuery> queries =
                 transactionCommonService.getMergedQueries(agentRollupId, query);
+        if (queries.isEmpty() && query.rollupLevel() < getLargestRollupLevel()) {
+            // fall back to largest aggregates in case expiration settings have recently changed
+            query = withLargestRollupLevel(query);
+            queries = transactionCommonService.getMergedQueries(agentRollupId, query);
+        }
         List<Query> queryList = Lists.newArrayList();
-        for (Entry<String, List<MutableQuery>> entry : queries.entrySet()) {
-            for (MutableQuery loopQuery : entry.getValue()) {
-                queryList.add(ImmutableQuery.builder()
-                        .queryType(entry.getKey())
-                        .truncatedQueryText(loopQuery.getTruncatedText())
-                        .fullQueryTextSha1(loopQuery.getFullTextSha1())
-                        .totalDurationNanos(loopQuery.getTotalDurationNanos())
-                        .executionCount(loopQuery.getExecutionCount())
-                        .totalRows(loopQuery.hasTotalRows() ? loopQuery.getTotalRows() : null)
-                        .build());
-            }
+        for (MutableQuery loopQuery : queries) {
+            queryList.add(ImmutableQuery.builder()
+                    .queryType(loopQuery.getType())
+                    .truncatedQueryText(loopQuery.getTruncatedText())
+                    .fullQueryTextSha1(loopQuery.getFullTextSha1())
+                    .totalDurationNanos(loopQuery.getTotalDurationNanos())
+                    .executionCount(loopQuery.getExecutionCount())
+                    .totalRows(loopQuery.hasTotalRows() ? loopQuery.getTotalRows() : null)
+                    .build());
         }
         if (queryList.isEmpty() && aggregateRepository.shouldHaveQueries(agentRollupId, query)) {
             return "{\"overwritten\":true}";
@@ -235,19 +267,22 @@ class TransactionJsonService {
     @GET(path = "/backend/transaction/service-calls", permission = "agent:transaction:serviceCalls")
     String getServiceCalls(@BindAgentRollupId String agentRollupId,
             @BindRequest TransactionDataRequest request) throws Exception {
-        TransactionQuery query = toQuery(request);
-        List<Aggregate.ServiceCallsByType> queries =
+        TransactionQuery query = toQuery(request, DataKind.SERVICE_CALL);
+        List<MutableServiceCall> serviceCalls =
                 transactionCommonService.getMergedServiceCalls(agentRollupId, query);
+        if (serviceCalls.isEmpty() && query.rollupLevel() < getLargestRollupLevel()) {
+            // fall back to largest aggregates in case expiration settings have recently changed
+            query = withLargestRollupLevel(query);
+            serviceCalls = transactionCommonService.getMergedServiceCalls(agentRollupId, query);
+        }
         List<ServiceCall> serviceCallList = Lists.newArrayList();
-        for (Aggregate.ServiceCallsByType queriesByType : queries) {
-            for (Aggregate.ServiceCall aggServiceCall : queriesByType.getServiceCallList()) {
-                serviceCallList.add(ImmutableServiceCall.builder()
-                        .type(queriesByType.getType())
-                        .text(aggServiceCall.getText())
-                        .totalDurationNanos(aggServiceCall.getTotalDurationNanos())
-                        .executionCount(aggServiceCall.getExecutionCount())
-                        .build());
-            }
+        for (MutableServiceCall loopServiceCall : serviceCalls) {
+            serviceCallList.add(ImmutableServiceCall.builder()
+                    .type(loopServiceCall.getType())
+                    .text(loopServiceCall.getText())
+                    .totalDurationNanos(loopServiceCall.getTotalDurationNanos())
+                    .executionCount(loopServiceCall.getExecutionCount())
+                    .build());
         }
         Collections.sort(serviceCallList, new Comparator<ServiceCall>() {
             @Override
@@ -273,10 +308,17 @@ class TransactionJsonService {
     @GET(path = "/backend/transaction/profile", permission = "agent:transaction:profile")
     String getProfile(@BindAgentRollupId String agentRollupId,
             @BindRequest TransactionProfileRequest request) throws Exception {
-        TransactionQuery query = toQuery(request);
+        TransactionQuery query = toQuery(request, DataKind.PROFILE);
         MutableProfile profile =
                 transactionCommonService.getMergedProfile(agentRollupId, query, request.auxiliary(),
                         request.include(), request.exclude(), request.truncateBranchPercentage());
+        if (profile.isEmpty() && query.rollupLevel() < getLargestRollupLevel()) {
+            // fall back to largest aggregates in case expiration settings have recently changed
+            query = withLargestRollupLevel(query);
+            profile = transactionCommonService.getMergedProfile(agentRollupId, query,
+                    request.auxiliary(), request.include(), request.exclude(),
+                    request.truncateBranchPercentage());
+        }
         boolean hasUnfilteredMainThreadProfile;
         boolean hasUnfilteredAuxThreadProfile;
         if (request.auxiliary()) {
@@ -323,14 +365,23 @@ class TransactionJsonService {
                 .transactionType(request.transactionType())
                 .from(request.from())
                 .to(request.to())
-                .rollupLevel(rollupLevelService.getRollupLevelForView(request.from(), request.to()))
+                .rollupLevel(rollupLevelService.getRollupLevelForView(request.from(), request.to(),
+                        DataKind.GENERAL))
                 .build();
         OverallSummary overallSummary =
                 transactionCommonService.readOverallSummary(agentRollupId, query, autoRefresh);
+        if (overallSummary.transactionCount() == 0) {
+            // fall back to largest aggregates in case expiration settings have recently changed
+            query = ImmutableOverallQuery.builder()
+                    .copyFrom(query)
+                    .rollupLevel(getLargestRollupLevel())
+                    .build();
+            overallSummary =
+                    transactionCommonService.readOverallSummary(agentRollupId, query, autoRefresh);
+        }
         Result<TransactionSummary> queryResult = transactionCommonService
                 .readTransactionSummaries(agentRollupId, query, request.sortOrder(),
                         request.limit(), autoRefresh);
-
         StringBuilder sb = new StringBuilder();
         JsonGenerator jg = mapper.getFactory().createGenerator(CharStreams.asWriter(sb));
         try {
@@ -348,15 +399,23 @@ class TransactionJsonService {
     @GET(path = "/backend/transaction/flame-graph", permission = "agent:transaction:profile")
     String getFlameGraph(@BindAgentRollupId String agentRollupId,
             @BindRequest FlameGraphRequest request) throws Exception {
-        TransactionQuery query = toQuery(request);
+        TransactionQuery query = toQuery(request, DataKind.PROFILE);
         MutableProfile profile =
                 transactionCommonService.getMergedProfile(agentRollupId, query, request.auxiliary(),
                         request.include(), request.exclude(), request.truncateBranchPercentage());
+        if (profile.isEmpty() && query.rollupLevel() < getLargestRollupLevel()) {
+            // fall back to largest aggregates in case expiration settings have recently changed
+            query = withLargestRollupLevel(query);
+            profile = transactionCommonService.getMergedProfile(agentRollupId, query,
+                    request.auxiliary(), request.include(), request.exclude(),
+                    request.truncateBranchPercentage());
+        }
         return profile.toFlameGraphJson();
     }
 
-    private TransactionQuery toChartQuery(RequestBase request) throws Exception {
-        int rollupLevel = rollupLevelService.getRollupLevelForView(request.from(), request.to());
+    private TransactionQuery toChartQuery(RequestBase request, DataKind dataKind) throws Exception {
+        int rollupLevel =
+                rollupLevelService.getRollupLevelForView(request.from(), request.to(), dataKind);
         long rollupIntervalMillis =
                 configRepository.getRollupConfigs().get(rollupLevel).intervalMillis();
         // read the closest rollup to the left and right of chart, in order to display line sloping
@@ -372,49 +431,44 @@ class TransactionJsonService {
                 .build();
     }
 
-    private TransactionQuery toQuery(RequestBase request) throws Exception {
+    private TransactionQuery toQuery(RequestBase request, DataKind dataKind) throws Exception {
         return ImmutableTransactionQuery.builder()
                 .transactionType(request.transactionType())
                 .transactionName(request.transactionName())
                 .from(request.from())
                 .to(request.to())
-                .rollupLevel(rollupLevelService.getRollupLevelForView(request.from(), request.to()))
+                .rollupLevel(rollupLevelService.getRollupLevelForView(request.from(), request.to(),
+                        dataKind))
                 .build();
     }
 
-    private Map<Long, Long> getTransactionCounts(List<OverviewAggregate> overviewAggregates) {
-        Map<Long, Long> transactionCounts = Maps.newHashMap();
-        for (OverviewAggregate overviewAggregate : overviewAggregates) {
-            transactionCounts.put(overviewAggregate.captureTime(),
-                    overviewAggregate.transactionCount());
-        }
-        return transactionCounts;
+    private TransactionQuery withLargestRollupLevel(TransactionQuery query) {
+        return ImmutableTransactionQuery.builder()
+                .copyFrom(query)
+                .rollupLevel(getLargestRollupLevel())
+                .build();
     }
 
-    private Map<Long, Long> getTransactionCounts2(List<PercentileAggregate> percentileAggregates) {
-        Map<Long, Long> transactionCounts = Maps.newHashMap();
-        for (PercentileAggregate percentileAggregate : percentileAggregates) {
-            transactionCounts.put(percentileAggregate.captureTime(),
-                    percentileAggregate.transactionCount());
-        }
-        return transactionCounts;
+    private int getLargestRollupLevel() {
+        return configRepository.getRollupConfigs().size() - 1;
     }
 
-    private List<DataSeries> getDataSeriesForTimerChart(TransactionDataRequest request,
-            List<OverviewAggregate> aggregates, long liveCaptureTime) throws Exception {
-        if (aggregates.isEmpty()) {
-            return Lists.newArrayList();
+    private boolean isProfileOverwritten(TransactionProfileRequest request, String agentRollupId,
+            TransactionQuery query) throws Exception {
+        if (request.auxiliary()
+                && aggregateRepository.shouldHaveAuxThreadProfile(agentRollupId, query)) {
+            return true;
         }
-        List<StackedPoint> stackedPoints = Lists.newArrayList();
-        for (OverviewAggregate aggregate : aggregates) {
-            stackedPoints.add(StackedPoint.create(aggregate));
+        if (!request.auxiliary()
+                && aggregateRepository.shouldHaveMainThreadProfile(agentRollupId, query)) {
+            return true;
         }
-        return getTimerDataSeries(request, stackedPoints, liveCaptureTime);
+        return false;
     }
 
-    private PercentileData getDataSeriesForPercentileChart(TransactionPercentileRequest request,
-            List<PercentileAggregate> percentileAggregates, List<Double> percentiles,
-            long liveCaptureTime) throws Exception {
+    private static PercentileData getDataSeriesForPercentileChart(
+            TransactionPercentileRequest request, List<PercentileAggregate> percentileAggregates,
+            List<Double> percentiles, long dataPointIntervalMillis, long liveCaptureTime) {
         if (percentileAggregates.isEmpty()) {
             return ImmutablePercentileData.builder()
                     .mergedAggregate(ImmutablePercentileMergedAggregate.builder()
@@ -423,8 +477,8 @@ class TransactionJsonService {
                             .build())
                     .build();
         }
-        DataSeriesHelper dataSeriesHelper = new DataSeriesHelper(liveCaptureTime,
-                rollupLevelService.getDataPointIntervalMillis(request.from(), request.to()));
+        DataSeriesHelper dataSeriesHelper =
+                new DataSeriesHelper(liveCaptureTime, dataPointIntervalMillis);
         List<DataSeries> dataSeriesList = Lists.newArrayList();
         for (double percentile : percentiles) {
             dataSeriesList
@@ -485,13 +539,12 @@ class TransactionJsonService {
                 .build();
     }
 
-    private List<DataSeries> getDataSeriesForThroughputChart(TransactionDataRequest request,
-            List<ThroughputAggregate> throughputAggregates, long liveCaptureTime) throws Exception {
+    private static List<DataSeries> getDataSeriesForThroughputChart(TransactionDataRequest request,
+            List<ThroughputAggregate> throughputAggregates, long dataPointIntervalMillis,
+            long liveCaptureTime) {
         if (throughputAggregates.isEmpty()) {
             return Lists.newArrayList();
         }
-        long dataPointIntervalMillis =
-                rollupLevelService.getDataPointIntervalMillis(request.from(), request.to());
         DataSeriesHelper dataSeriesHelper =
                 new DataSeriesHelper(liveCaptureTime, dataPointIntervalMillis);
         DataSeries dataSeries = new DataSeries("throughput");
@@ -508,7 +561,7 @@ class TransactionJsonService {
             }
             long from = throughputAggregate.captureTime() - dataPointIntervalMillis;
             // this math is to deal with live aggregate
-            from = Utils.getRollupCaptureTime(from, dataPointIntervalMillis);
+            from = CaptureTimes.getRollup(from, dataPointIntervalMillis);
             double transactionsPerMin = 60000.0 * throughputAggregate.transactionCount()
                     / (throughputAggregate.captureTime() - from);
             dataSeries.add(throughputAggregate.captureTime(), transactionsPerMin);
@@ -521,10 +574,23 @@ class TransactionJsonService {
         return dataSeriesList;
     }
 
-    private List<DataSeries> getTimerDataSeries(TransactionDataRequest request,
-            List<StackedPoint> stackedPoints, long liveCaptureTime) throws Exception {
-        DataSeriesHelper dataSeriesHelper = new DataSeriesHelper(liveCaptureTime,
-                rollupLevelService.getDataPointIntervalMillis(request.from(), request.to()));
+    private static List<DataSeries> getDataSeriesForTimerChart(TransactionDataRequest request,
+            List<OverviewAggregate> aggregates, long dataPointIntervalMillis,
+            long liveCaptureTime) {
+        if (aggregates.isEmpty()) {
+            return Lists.newArrayList();
+        }
+        List<StackedPoint> stackedPoints = Lists.newArrayList();
+        for (OverviewAggregate aggregate : aggregates) {
+            stackedPoints.add(StackedPoint.create(aggregate));
+        }
+        return getTimerDataSeries(request, stackedPoints, dataPointIntervalMillis, liveCaptureTime);
+    }
+
+    private static List<DataSeries> getTimerDataSeries(TransactionDataRequest request,
+            List<StackedPoint> stackedPoints, long dataPointIntervalMillis, long liveCaptureTime) {
+        DataSeriesHelper dataSeriesHelper =
+                new DataSeriesHelper(liveCaptureTime, dataPointIntervalMillis);
         final int topX = 5;
         List<String> timerNames = getTopTimerNames(stackedPoints, topX + 1);
         List<DataSeries> dataSeriesList = Lists.newArrayList();
@@ -577,40 +643,50 @@ class TransactionJsonService {
         return dataSeriesList;
     }
 
-    private boolean isProfileOverwritten(TransactionProfileRequest request, String agentRollupId,
-            TransactionQuery query) throws Exception {
-        if (request.auxiliary()
-                && aggregateRepository.shouldHaveAuxThreadProfile(agentRollupId, query)) {
-            return true;
+    private static Map<Long, Long> getTransactionCounts(
+            List<OverviewAggregate> overviewAggregates) {
+        Map<Long, Long> transactionCounts = Maps.newHashMap();
+        for (OverviewAggregate overviewAggregate : overviewAggregates) {
+            transactionCounts.put(overviewAggregate.captureTime(),
+                    overviewAggregate.transactionCount());
         }
-        if (!request.auxiliary()
-                && aggregateRepository.shouldHaveMainThreadProfile(agentRollupId, query)) {
-            return true;
+        return transactionCounts;
+    }
+
+    private static Map<Long, Long> getTransactionCounts2(
+            List<PercentileAggregate> percentileAggregates) {
+        Map<Long, Long> transactionCounts = Maps.newHashMap();
+        for (PercentileAggregate percentileAggregate : percentileAggregates) {
+            transactionCounts.put(percentileAggregate.captureTime(),
+                    percentileAggregate.transactionCount());
         }
-        return false;
+        return transactionCounts;
     }
 
     // calculate top 5 timers
     private static List<String> getTopTimerNames(List<StackedPoint> stackedPoints, int topX) {
         MutableDoubleMap<String> timerTotals = new MutableDoubleMap<String>();
         for (StackedPoint stackedPoint : stackedPoints) {
-            for (Entry<String, MutableDouble> entry : stackedPoint.getStackedTimers().entrySet()) {
+            for (Map.Entry<String, MutableDouble> entry : stackedPoint.getStackedTimers()
+                    .entrySet()) {
                 timerTotals.add(entry.getKey(), entry.getValue().doubleValue());
             }
         }
-        Ordering<Entry<String, MutableDouble>> valueOrdering =
-                Ordering.natural().onResultOf(new Function<Entry<String, MutableDouble>, Double>() {
-                    @Override
-                    public Double apply(@Nullable Entry<String, MutableDouble> entry) {
-                        checkNotNull(entry);
-                        return entry.getValue().doubleValue();
-                    }
-                });
+        Ordering<Map.Entry<String, MutableDouble>> valueOrdering =
+                Ordering.natural()
+                        .onResultOf(new Function<Map.Entry<String, MutableDouble>, Double>() {
+                            @Override
+                            public Double apply(
+                                    Map. /*@Nullable*/ Entry<String, MutableDouble> entry) {
+                                checkNotNull(entry);
+                                return entry.getValue().doubleValue();
+                            }
+                        });
         List<String> timerNames = Lists.newArrayList();
         @SuppressWarnings("assignment.type.incompatible")
-        List<Entry<String, MutableDouble>> topTimerTotals =
+        List<Map.Entry<String, MutableDouble>> topTimerTotals =
                 valueOrdering.greatestOf(timerTotals.entrySet(), topX);
-        for (Entry<String, MutableDouble> entry : topTimerTotals) {
+        for (Map.Entry<String, MutableDouble> entry : topTimerTotals) {
             timerNames.add(entry.getKey());
         }
         return timerNames;

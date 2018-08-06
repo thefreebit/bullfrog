@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,7 @@ package org.glowroot.common.model;
 import com.google.common.collect.Ordering;
 import com.google.common.primitives.Doubles;
 
-import org.glowroot.wire.api.model.AggregateOuterClass.Aggregate;
-
-class MutableServiceCall {
+public class MutableServiceCall {
 
     static final Ordering<MutableServiceCall> byTotalDurationDesc =
             new Ordering<MutableServiceCall>() {
@@ -30,13 +28,30 @@ class MutableServiceCall {
                 }
             };
 
-    private final String serviceCallText;
-
+    private final String type;
+    private final String text;
     private double totalDurationNanos;
     private long executionCount;
 
-    MutableServiceCall(String serviceCallText) {
-        this.serviceCallText = serviceCallText;
+    MutableServiceCall(String type, String text) {
+        this.type = type;
+        this.text = text;
+    }
+
+    public String getType() {
+        return type;
+    }
+
+    public String getText() {
+        return text;
+    }
+
+    public double getTotalDurationNanos() {
+        return totalDurationNanos;
+    }
+
+    public long getExecutionCount() {
+        return executionCount;
     }
 
     void addToTotalDurationNanos(double totalDurationNanos) {
@@ -47,16 +62,8 @@ class MutableServiceCall {
         this.executionCount += executionCount;
     }
 
-    void addTo(MutableServiceCall serviceCall) {
-        this.totalDurationNanos += serviceCall.totalDurationNanos;
-        this.executionCount += serviceCall.executionCount;
-    }
-
-    Aggregate.ServiceCall toProto() {
-        return Aggregate.ServiceCall.newBuilder()
-                .setText(serviceCallText)
-                .setTotalDurationNanos(totalDurationNanos)
-                .setExecutionCount(executionCount)
-                .build();
+    void add(MutableServiceCall serviceCall) {
+        addToTotalDurationNanos(serviceCall.totalDurationNanos);
+        addToExecutionCount(serviceCall.executionCount);
     }
 }

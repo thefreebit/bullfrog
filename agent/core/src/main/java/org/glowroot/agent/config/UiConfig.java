@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,41 +18,39 @@ package org.glowroot.agent.config;
 import com.google.common.collect.ImmutableList;
 import org.immutables.value.Value;
 
-import org.glowroot.common.config.ConfigDefaults;
+import org.glowroot.common.ConfigDefaults;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig;
 
 @Value.Immutable
 public abstract class UiConfig {
 
     @Value.Default
-    public String defaultDisplayedTransactionType() {
-        return ConfigDefaults.DEFAULT_DISPLAYED_TRANSACTION_TYPE;
+    public String defaultTransactionType() {
+        return ConfigDefaults.UI_DEFAULT_TRANSACTION_TYPE;
     }
 
     @Value.Default
-    public ImmutableList<Double> defaultDisplayedPercentiles() {
-        return ImmutableList.of(ConfigDefaults.DEFAULT_DISPLAYED_PERCENTILE_1,
-                ConfigDefaults.DEFAULT_DISPLAYED_PERCENTILE_2,
-                ConfigDefaults.DEFAULT_DISPLAYED_PERCENTILE_3);
+    public ImmutableList<Double> defaultPercentiles() {
+        return ConfigDefaults.UI_DEFAULT_PERCENTILES;
     }
 
     @Value.Default
     public ImmutableList<String> defaultGaugeNames() {
-        return ImmutableList.of("java.lang:type=Memory:HeapMemoryUsage.used");
+        return ConfigDefaults.UI_DEFAULT_GAUGE_NAMES;
     }
 
     public AgentConfig.UiConfig toProto() {
         return AgentConfig.UiConfig.newBuilder()
-                .setDefaultDisplayedTransactionType(defaultDisplayedTransactionType())
-                .addAllDefaultDisplayedPercentile(defaultDisplayedPercentiles())
+                .setDefaultTransactionType(defaultTransactionType())
+                .addAllDefaultPercentile(defaultPercentiles())
                 .addAllDefaultGaugeName(defaultGaugeNames())
                 .build();
     }
 
     public static UiConfig create(AgentConfig.UiConfig config) {
         return ImmutableUiConfig.builder()
-                .defaultDisplayedTransactionType(config.getDefaultDisplayedTransactionType())
-                .defaultDisplayedPercentiles(config.getDefaultDisplayedPercentileList())
+                .defaultTransactionType(config.getDefaultTransactionType())
+                .defaultPercentiles(config.getDefaultPercentileList())
                 .addAllDefaultGaugeNames(config.getDefaultGaugeNameList())
                 .build();
     }

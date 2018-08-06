@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,12 @@ import java.math.BigInteger;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Iterator;
-import java.util.Map.Entry;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
 
-import javax.annotation.Nullable;
-
+import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import com.google.common.net.MediaType;
@@ -33,17 +33,18 @@ import io.netty.handler.codec.http.cookie.Cookie;
 import io.netty.handler.codec.http.cookie.DefaultCookie;
 import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
 import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.serial.Serial;
 import org.immutables.value.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.glowroot.common.config.LdapConfig;
-import org.glowroot.common.config.RoleConfig;
-import org.glowroot.common.config.RoleConfig.SimplePermission;
-import org.glowroot.common.config.UserConfig;
-import org.glowroot.common.repo.ConfigRepository;
 import org.glowroot.common.util.Clock;
+import org.glowroot.common2.config.LdapConfig;
+import org.glowroot.common2.config.RoleConfig;
+import org.glowroot.common2.config.RoleConfig.SimplePermission;
+import org.glowroot.common2.config.UserConfig;
+import org.glowroot.common2.repo.ConfigRepository;
 import org.glowroot.ui.CommonHandler.CommonRequest;
 import org.glowroot.ui.CommonHandler.CommonResponse;
 import org.glowroot.ui.LdapAuthentication.AuthenticationException;
@@ -58,7 +59,7 @@ class HttpSessionManager {
     private static final Logger auditLogger = LoggerFactory.getLogger("audit");
 
     private final boolean central;
-    private final boolean offline;
+    private final boolean offlineViewer;
     private final ConfigRepository configRepository;
     private final Clock clock;
     private final LayoutService layoutService;
@@ -66,10 +67,10 @@ class HttpSessionManager {
     private final SecureRandom secureRandom = new SecureRandom();
     private final ConcurrentMap<String, ImmutableSession> sessionMap;
 
-    HttpSessionManager(boolean central, boolean offline, ConfigRepository configRepository,
+    HttpSessionManager(boolean central, boolean offlineViewer, ConfigRepository configRepository,
             Clock clock, LayoutService layoutService, SessionMapFactory sessionMapFactory) {
         this.central = central;
-        this.offline = offline;
+        this.offlineViewer = offlineViewer;
         this.configRepository = configRepository;
         this.clock = clock;
         this.layoutService = layoutService;
@@ -124,7 +125,7 @@ class HttpSessionManager {
     }
 
     Authentication getAuthentication(CommonRequest request, boolean touch) throws Exception {
-        if (offline) {
+        if (offlineViewer) {
             return getOfflineViewerAuthentication();
         }
         String sessionId = getSessionId(request);
@@ -170,17 +171,13 @@ class HttpSessionManager {
         UserConfig userConfig = getUserConfigCaseInsensitive("anonymous");
         return ImmutableAuthentication.builder()
                 .central(central)
-                .offline(false)
+                .offlineViewer(false)
                 .anonymous(true)
                 .ldap(false)
                 .caseAmbiguousUsername("anonymous")
                 .roles(userConfig == null ? ImmutableSet.<String>of() : userConfig.roles())
                 .configRepository(configRepository)
                 .build();
-    }
-
-    private CommonResponse buildIncorrectLoginResponse() {
-        return new CommonResponse(OK, MediaType.JSON_UTF_8, "{\"incorrectLogin\":true}");
     }
 
     private CommonResponse createSession(String username, Set<String> roles, boolean ldap)
@@ -210,8 +207,8 @@ class HttpSessionManager {
 
     private Authentication getOfflineViewerAuthentication() {
         return ImmutableAuthentication.builder()
-                .central(false) // offline only applies to embedded
-                .offline(true)
+                .central(false) // offline viewer only applies to embedded
+                .offlineViewer(true)
                 .anonymous(true)
                 .ldap(false)
                 .caseAmbiguousUsername("anonymous")
@@ -232,7 +229,7 @@ class HttpSessionManager {
         long currentTimeMillis = clock.currentTimeMillis();
         long timeoutMillis =
                 MINUTES.toMillis(configRepository.getWebConfig().sessionTimeoutMinutes());
-        Iterator<Entry<String, ImmutableSession>> i = sessionMap.entrySet().iterator();
+        Iterator<Map.Entry<String, ImmutableSession>> i = sessionMap.entrySet().iterator();
         while (i.hasNext()) {
             Session session = i.next().getValue();
             if (session.isTimedOut(currentTimeMillis, timeoutMillis)) {
@@ -254,19 +251,23 @@ class HttpSessionManager {
         return LdapAuthentication.getGlowrootRoles(ldapGroupDns, ldapConfig);
     }
 
-    private void auditFailedLogin(String username) {
+    private static CommonResponse buildIncorrectLoginResponse() {
+        return new CommonResponse(OK, MediaType.JSON_UTF_8, "{\"incorrectLogin\":true}");
+    }
+
+    private static void auditFailedLogin(String username) {
         auditLogger.info("{} - failed login", username);
     }
 
-    private void auditSuccessfulLogin(String username) {
+    private static void auditSuccessfulLogin(String username) {
         auditLogger.info("{} - successful login", username);
     }
 
-    private void auditLogout(String username) {
+    private static void auditLogout(String username) {
         auditLogger.info("{} - logout", username);
     }
 
-    private void auditSessionTimeout(String username) {
+    private static void auditSessionTimeout(String username) {
         auditLogger.info("{} - session timeout", username);
     }
 
@@ -292,7 +293,7 @@ class HttpSessionManager {
         Authentication createAuthentication(boolean central, ConfigRepository configRepository) {
             return ImmutableAuthentication.builder()
                     .central(central)
-                    .offline(false)
+                    .offlineViewer(false)
                     .anonymous(false) // sessions are only for non-anonymous authentication
                     .ldap(ldap())
                     .caseAmbiguousUsername(caseAmbiguousUsername())
@@ -310,7 +311,7 @@ class HttpSessionManager {
     abstract static class Authentication {
 
         abstract boolean central();
-        abstract boolean offline();
+        abstract boolean offlineViewer();
         abstract boolean anonymous();
         abstract boolean ldap();
         abstract String caseAmbiguousUsername(); // the case is exactly as user entered during login
@@ -320,31 +321,64 @@ class HttpSessionManager {
 
         boolean isPermitted(String agentRollupId, String permission) throws Exception {
             if (permission.startsWith("agent:")) {
-                return isAgentPermitted(agentRollupId, permission);
+                return isPermittedForAgentRollup(agentRollupId, permission);
             } else {
                 return isAdminPermitted(permission);
             }
         }
 
-        boolean isAgentPermitted(String agentRollupId, String permission) throws Exception {
+        boolean isPermittedForAgentRollup(String agentRollupId, String permission)
+                throws Exception {
             checkState(permission.startsWith("agent:"));
-            if (offline()) {
+            if (offlineViewer()) {
                 return !permission.startsWith("agent:config:edit:");
             }
             if (permission.equals("agent:trace")) {
                 // special case for now
-                return isAgentPermitted(agentRollupId, "agent:transaction:traces")
-                        || isAgentPermitted(agentRollupId, "agent:error:traces");
+                return isPermittedForAgentRollup(agentRollupId, "agent:transaction:traces")
+                        || isPermittedForAgentRollup(agentRollupId, "agent:error:traces");
             }
             return isPermitted(SimplePermission.create(agentRollupId, permission));
         }
 
         boolean isAdminPermitted(String permission) throws Exception {
             checkState(permission.startsWith("admin:"));
-            if (offline()) {
+            if (offlineViewer()) {
                 return permission.equals("admin:view") || permission.startsWith("admin:view:");
             }
             return isPermitted(SimplePermission.create(permission));
+        }
+
+        // only used by LayoutService
+        boolean hasAnyPermissionImpliedBy(String permission) throws Exception {
+            checkState(permission.equals("agent") || permission.startsWith("agent:"));
+            if (offlineViewer()) {
+                return !permission.startsWith("agent:config:edit:");
+            }
+            List<String> permissionParts = Splitter.on(':').splitToList(permission);
+            for (RoleConfig roleConfig : configRepository().getRoleConfigs()) {
+                if (roles().contains(roleConfig.name())
+                        && roleConfig.hasAnyPermissionImpliedBy(permissionParts)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // only used by LayoutService
+        boolean isPermittedForSomeAgentRollup(String permission) throws Exception {
+            checkState(permission.startsWith("agent:"));
+            if (offlineViewer()) {
+                return !permission.startsWith("agent:config:edit:");
+            }
+            List<String> permissionParts = Splitter.on(':').splitToList(permission);
+            for (RoleConfig roleConfig : configRepository().getRoleConfigs()) {
+                if (roles().contains(roleConfig.name())
+                        && roleConfig.isPermittedForSomeAgentRollup(permissionParts)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private boolean isPermitted(SimplePermission permission) throws Exception {

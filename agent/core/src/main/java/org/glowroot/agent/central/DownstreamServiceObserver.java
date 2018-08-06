@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import javax.annotation.Nullable;
-
 import com.google.common.base.Stopwatch;
 import io.grpc.stub.StreamObserver;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,8 +50,9 @@ import org.glowroot.wire.api.model.DownstreamServiceOuterClass.CentralRequest;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.CentralRequest.MessageCase;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.EntriesResponse;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.ExceptionResponse;
+import org.glowroot.wire.api.model.DownstreamServiceOuterClass.ExplicitGcDisabledResponse;
+import org.glowroot.wire.api.model.DownstreamServiceOuterClass.ForceGcResponse;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.FullTraceResponse;
-import org.glowroot.wire.api.model.DownstreamServiceOuterClass.GcResponse;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.GlobalMeta;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.GlobalMetaResponse;
 import org.glowroot.wire.api.model.DownstreamServiceOuterClass.HeaderResponse;
@@ -88,6 +88,7 @@ import org.glowroot.wire.api.model.ProfileOuterClass.Profile;
 import org.glowroot.wire.api.model.TraceOuterClass.Trace;
 
 import static com.google.common.base.Preconditions.checkState;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 class DownstreamServiceObserver implements StreamObserver<CentralRequest> {
@@ -201,7 +202,7 @@ class DownstreamServiceObserver implements StreamObserver<CentralRequest> {
     private void onNextInternal(CentralRequest request) throws Exception {
         StreamObserver<AgentResponse> responseObserver = currResponseObserver;
         while (responseObserver == null) {
-            Thread.sleep(10);
+            MILLISECONDS.sleep(10);
             responseObserver = currResponseObserver;
         }
         switch (request.getMessageCase()) {
@@ -223,8 +224,11 @@ class DownstreamServiceObserver implements StreamObserver<CentralRequest> {
             case HEAP_HISTOGRAM_REQUEST:
                 heapHistogramAndRespond(request, responseObserver);
                 return;
-            case GC_REQUEST:
-                gcAndRespond(request, responseObserver);
+            case EXPLICIT_GC_DISABLED_REQUEST:
+                explicitGcDisabledAndRespond(request, responseObserver);
+                return;
+            case FORCE_GC_REQUEST:
+                forceGcAndRespond(request, responseObserver);
                 return;
             case MBEAN_DUMP_REQUEST:
                 mbeanDumpAndRespond(request, responseObserver);
@@ -433,10 +437,11 @@ class DownstreamServiceObserver implements StreamObserver<CentralRequest> {
                 .build());
     }
 
-    private void gcAndRespond(CentralRequest request,
+    private void explicitGcDisabledAndRespond(CentralRequest request,
             StreamObserver<AgentResponse> responseObserver) {
+        boolean disabled;
         try {
-            liveJvmService.gc("");
+            disabled = liveJvmService.isExplicitGcDisabled("");
         } catch (Exception e) {
             logger.error(e.getMessage(), e);
             sendExceptionResponse(request, responseObserver);
@@ -444,7 +449,23 @@ class DownstreamServiceObserver implements StreamObserver<CentralRequest> {
         }
         responseObserver.onNext(AgentResponse.newBuilder()
                 .setRequestId(request.getRequestId())
-                .setGcResponse(GcResponse.getDefaultInstance())
+                .setExplicitGcDisabledResponse(ExplicitGcDisabledResponse.newBuilder()
+                        .setDisabled(disabled))
+                .build());
+    }
+
+    private void forceGcAndRespond(CentralRequest request,
+            StreamObserver<AgentResponse> responseObserver) {
+        try {
+            liveJvmService.forceGC("");
+        } catch (Exception e) {
+            logger.error(e.getMessage(), e);
+            sendExceptionResponse(request, responseObserver);
+            return;
+        }
+        responseObserver.onNext(AgentResponse.newBuilder()
+                .setRequestId(request.getRequestId())
+                .setForceGcResponse(ForceGcResponse.getDefaultInstance())
                 .build());
     }
 
@@ -648,7 +669,7 @@ class DownstreamServiceObserver implements StreamObserver<CentralRequest> {
             StreamObserver<AgentResponse> responseObserver) throws Exception {
         Trace.Header header;
         try {
-            header = liveTraceRepository.getHeader("", "", request.getHeaderRequest().getTraceId());
+            header = liveTraceRepository.getHeader("", request.getHeaderRequest().getTraceId());
         } catch (Exception e) {
             logger.error(e.getMessage(), e);
             sendExceptionResponse(request, responseObserver);
@@ -672,8 +693,7 @@ class DownstreamServiceObserver implements StreamObserver<CentralRequest> {
             StreamObserver<AgentResponse> responseObserver) throws Exception {
         Entries entries;
         try {
-            entries = liveTraceRepository.getEntries("", "",
-                    request.getEntriesRequest().getTraceId());
+            entries = liveTraceRepository.getEntries("", request.getEntriesRequest().getTraceId());
         } catch (Exception e) {
             logger.error(e.getMessage(), e);
             sendExceptionResponse(request, responseObserver);
@@ -695,7 +715,7 @@ class DownstreamServiceObserver implements StreamObserver<CentralRequest> {
             StreamObserver<AgentResponse> responseObserver) throws Exception {
         Profile profile;
         try {
-            profile = liveTraceRepository.getMainThreadProfile("", "",
+            profile = liveTraceRepository.getMainThreadProfile("",
                     request.getMainThreadProfileRequest().getTraceId());
         } catch (Exception e) {
             logger.error(e.getMessage(), e);
@@ -720,7 +740,7 @@ class DownstreamServiceObserver implements StreamObserver<CentralRequest> {
             StreamObserver<AgentResponse> responseObserver) throws Exception {
         Profile profile;
         try {
-            profile = liveTraceRepository.getAuxThreadProfile("", "",
+            profile = liveTraceRepository.getAuxThreadProfile("",
                     request.getAuxThreadProfileRequest().getTraceId());
         } catch (Exception e) {
             logger.error(e.getMessage(), e);
@@ -745,7 +765,7 @@ class DownstreamServiceObserver implements StreamObserver<CentralRequest> {
             StreamObserver<AgentResponse> responseObserver) throws Exception {
         Trace trace;
         try {
-            trace = liveTraceRepository.getFullTrace("", "",
+            trace = liveTraceRepository.getFullTrace("",
                     request.getFullTraceRequest().getTraceId());
         } catch (Exception e) {
             logger.error(e.getMessage(), e);
@@ -766,27 +786,27 @@ class DownstreamServiceObserver implements StreamObserver<CentralRequest> {
                 .build());
     }
 
-    private void sendExceptionResponse(CentralRequest request,
-            StreamObserver<AgentResponse> responseObserver) {
-        responseObserver.onNext(AgentResponse.newBuilder()
-                .setRequestId(request.getRequestId())
-                .setExceptionResponse(ExceptionResponse.getDefaultInstance())
-                .build());
-    }
-
     @OnlyUsedByTests
     void close() throws InterruptedException {
         StreamObserver<AgentResponse> responseObserver = currResponseObserver;
         while (responseObserver == null) {
-            Thread.sleep(10);
+            MILLISECONDS.sleep(10);
             responseObserver = currResponseObserver;
         }
         responseObserver.onCompleted();
         Stopwatch stopwatch = Stopwatch.createStarted();
         while (stopwatch.elapsed(SECONDS) < 10 && !closedByCentralCollector) {
-            Thread.sleep(10);
+            MILLISECONDS.sleep(10);
         }
         checkState(closedByCentralCollector);
+    }
+
+    private static void sendExceptionResponse(CentralRequest request,
+            StreamObserver<AgentResponse> responseObserver) {
+        responseObserver.onNext(AgentResponse.newBuilder()
+                .setRequestId(request.getRequestId())
+                .setExceptionResponse(ExceptionResponse.getDefaultInstance())
+                .build());
     }
 
     private static @Nullable String getRootCauseMessage(Throwable t) {

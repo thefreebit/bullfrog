@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,10 @@ package org.glowroot.agent.live;
 
 import java.io.IOException;
 import java.util.List;
-
-import javax.annotation.Nullable;
+import java.util.Set;
 
 import com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.agent.impl.AggregateIntervalCollector;
 import org.glowroot.agent.impl.Aggregator;
@@ -92,6 +92,11 @@ public class LiveAggregateRepositoryImpl implements LiveAggregateRepository {
             revisedTo = Math.min(revisedTo, intervalCollector.getCaptureTime() - 1);
         }
         return revisedTo;
+    }
+
+    @Override
+    public Set<String> getTransactionTypes(String agentId) {
+        return aggregator.getTransactionTypes();
     }
 
     @Override
@@ -186,8 +191,7 @@ public class LiveAggregateRepositoryImpl implements LiveAggregateRepository {
 
     @Override
     public long mergeInServiceCalls(String agentId, TransactionQuery query,
-            ServiceCallCollector collector)
-            throws IOException {
+            ServiceCallCollector collector) throws IOException {
         List<AggregateIntervalCollector> intervalCollectors =
                 aggregator.getOrderedIntervalCollectorsInRange(query.from(), query.to());
         long revisedTo = query.to();

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,28 +20,28 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import javax.annotation.Nullable;
-
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Optional;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
 import com.google.common.io.CharStreams;
-import com.google.common.primitives.Ints;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 
-import org.glowroot.common.repo.ConfigRepository;
-import org.glowroot.common.repo.util.Compilations;
-import org.glowroot.common.repo.util.Compilations.CompilationException;
-import org.glowroot.common.repo.util.Encryption;
-import org.glowroot.common.repo.util.LazySecretKey;
-import org.glowroot.common.repo.util.LazySecretKey.SymmetricEncryptionKeyMissingException;
 import org.glowroot.common.util.ObjectMappers;
 import org.glowroot.common.util.Versions;
+import org.glowroot.common2.config.MoreConfigDefaults;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.util.Compilations;
+import org.glowroot.common2.repo.util.Compilations.CompilationException;
+import org.glowroot.common2.repo.util.Encryption;
+import org.glowroot.common2.repo.util.LazySecretKey;
+import org.glowroot.common2.repo.util.LazySecretKey.SymmetricEncryptionKeyMissingException;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.SyntheticMonitorConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.SyntheticMonitorConfig.SyntheticMonitorKind;
 
@@ -59,10 +59,8 @@ class SyntheticMonitorConfigJsonService {
             new Ordering<SyntheticMonitorConfig>() {
                 @Override
                 public int compare(SyntheticMonitorConfig left, SyntheticMonitorConfig right) {
-                    if (left.getKindValue() == right.getKindValue()) {
-                        return left.getDisplay().compareToIgnoreCase(right.getDisplay());
-                    }
-                    return Ints.compare(left.getKindValue(), right.getKindValue());
+                    return MoreConfigDefaults.getDisplayOrDefault(left)
+                            .compareToIgnoreCase(MoreConfigDefaults.getDisplayOrDefault(right));
                 }
             };
 
@@ -86,12 +84,12 @@ class SyntheticMonitorConfigJsonService {
             }
             return mapper.writeValueAsString(SyntheticMonitorConfigDto.create(config));
         } else {
-            List<SyntheticMonitorConfigDto> configDtos = Lists.newArrayList();
+            List<SyntheticMonitorConfigListDto> configDtos = Lists.newArrayList();
             List<SyntheticMonitorConfig> configs =
                     configRepository.getSyntheticMonitorConfigs(agentRollupId);
             configs = orderingByDisplay.immutableSortedCopy(configs);
             for (SyntheticMonitorConfig config : configs) {
-                configDtos.add(SyntheticMonitorConfigDto.create(config));
+                configDtos.add(SyntheticMonitorConfigListDto.create(config));
             }
             return mapper.writeValueAsString(configDtos);
         }
@@ -148,7 +146,7 @@ class SyntheticMonitorConfigJsonService {
         configRepository.deleteSyntheticMonitorConfig(agentRollupId, request.id().get());
     }
 
-    private @Nullable String validate(SyntheticMonitorConfig config) throws Exception {
+    private static @Nullable String validate(SyntheticMonitorConfig config) throws Exception {
         if (config.getKind() == SyntheticMonitorKind.JAVA) {
             // only used by central
             Class<?> javaSource;
@@ -175,7 +173,7 @@ class SyntheticMonitorConfigJsonService {
         return null;
     }
 
-    private String buildCompilationErrorResponse(List<String> compilationErrors)
+    private static String buildCompilationErrorResponse(List<String> compilationErrors)
             throws IOException {
         StringBuilder sb = new StringBuilder();
         JsonGenerator jg = mapper.getFactory().createGenerator(CharStreams.asWriter(sb));
@@ -199,10 +197,24 @@ class SyntheticMonitorConfigJsonService {
     }
 
     @Value.Immutable
-    abstract static class SyntheticMonitorConfigDto {
+    abstract static class SyntheticMonitorConfigListDto {
 
         abstract String display();
+        abstract String id();
+
+        private static SyntheticMonitorConfigListDto create(SyntheticMonitorConfig config) {
+            return ImmutableSyntheticMonitorConfigListDto.builder()
+                    .display(MoreConfigDefaults.getDisplayOrDefault(config))
+                    .id(config.getId())
+                    .build();
+        }
+    }
+
+    @Value.Immutable
+    abstract static class SyntheticMonitorConfigDto {
+
         abstract SyntheticMonitorKind kind();
+        abstract @Nullable String display();
         abstract @Nullable String pingUrl();
         abstract @Nullable String javaSource();
         abstract Optional<String> id(); // absent for insert operations
@@ -210,7 +222,7 @@ class SyntheticMonitorConfigJsonService {
 
         private SyntheticMonitorConfig convert(LazySecretKey lazySecretKey) throws Exception {
             SyntheticMonitorConfig.Builder builder = SyntheticMonitorConfig.newBuilder()
-                    .setDisplay(display())
+                    .setDisplay(Strings.nullToEmpty(display()))
                     .setKind(kind());
             String pingUrl = pingUrl();
             if (pingUrl != null) {

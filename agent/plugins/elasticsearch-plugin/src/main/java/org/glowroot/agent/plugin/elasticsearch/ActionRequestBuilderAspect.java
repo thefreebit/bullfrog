@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,29 +15,25 @@
  */
 package org.glowroot.agent.plugin.elasticsearch;
 
-import javax.annotation.Nullable;
-
 import org.glowroot.agent.plugin.api.Agent;
 import org.glowroot.agent.plugin.api.AsyncQueryEntry;
 import org.glowroot.agent.plugin.api.QueryEntry;
 import org.glowroot.agent.plugin.api.QueryMessageSupplier;
 import org.glowroot.agent.plugin.api.ThreadContext;
 import org.glowroot.agent.plugin.api.TimerName;
+import org.glowroot.agent.plugin.api.checker.Nullable;
 import org.glowroot.agent.plugin.api.config.ConfigListener;
 import org.glowroot.agent.plugin.api.config.ConfigService;
-import org.glowroot.agent.plugin.api.weaving.BindParameter;
 import org.glowroot.agent.plugin.api.weaving.BindReceiver;
 import org.glowroot.agent.plugin.api.weaving.BindReturn;
 import org.glowroot.agent.plugin.api.weaving.BindThrowable;
 import org.glowroot.agent.plugin.api.weaving.BindTraveler;
-import org.glowroot.agent.plugin.api.weaving.Mixin;
-import org.glowroot.agent.plugin.api.weaving.OnAfter;
 import org.glowroot.agent.plugin.api.weaving.OnBefore;
 import org.glowroot.agent.plugin.api.weaving.OnReturn;
 import org.glowroot.agent.plugin.api.weaving.OnThrow;
 import org.glowroot.agent.plugin.api.weaving.Pointcut;
 import org.glowroot.agent.plugin.api.weaving.Shim;
-import org.glowroot.agent.plugin.elasticsearch.ListenableActionFutureAspect.ListenableActionFutureMixin;
+import org.glowroot.agent.plugin.elasticsearch.ActionFutureAspect.ActionFutureMixin;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
@@ -68,28 +64,12 @@ public class ActionRequestBuilderAspect {
         ActionRequest glowroot$request();
     }
 
-    // the field and method names are verbose since they will be mixed in to existing classes
-    @Mixin("org.elasticsearch.action.search.SearchRequestBuilder")
-    public abstract static class SearchRequestBuilderImpl implements SearchRequestBuilder {
+    @Shim("org.elasticsearch.action.search.SearchRequestBuilder")
+    public interface SearchRequestBuilder {
 
-        private @Nullable Object glowroot$queryBuilder;
-
-        @Override
-        public @Nullable Object glowroot$getQueryBuilder() {
-            return glowroot$queryBuilder;
-        }
-
-        @Override
-        public void glowroot$setQueryBuilder(@Nullable Object queryBuilder) {
-            glowroot$queryBuilder = queryBuilder;
-        }
-    }
-
-    // the method names are verbose since they will be mixed in to existing classes
-    public interface SearchRequestBuilder extends ActionRequestBuilder {
+        @Shim("org.elasticsearch.search.builder.SearchSourceBuilder sourceBuilder()")
         @Nullable
-        Object glowroot$getQueryBuilder();
-        void glowroot$setQueryBuilder(@Nullable Object queryBuilder);
+        Object glowroot$sourceBuilder();
     }
 
     @Shim("org.elasticsearch.action.ActionRequest")
@@ -185,7 +165,7 @@ public class ActionRequestBuilderAspect {
                     getQueryMessageSupplier(actionRequestBuilder), timerName);
         }
         @OnReturn
-        public static void onReturn(@BindReturn @Nullable ListenableActionFutureMixin future,
+        public static void onReturn(@BindReturn @Nullable ActionFutureMixin future,
                 @BindTraveler @Nullable AsyncQueryEntry asyncQueryEntry) {
             if (asyncQueryEntry == null) {
                 return;
@@ -220,18 +200,6 @@ public class ActionRequestBuilderAspect {
         }
     }
 
-    @Pointcut(className = "org.elasticsearch.action.search.SearchRequestBuilder",
-            methodName = "setQuery",
-            methodParameterTypes = {"org.elasticsearch.index.query.QueryBuilder"},
-            nestingGroup = "elasticsearch")
-    public static class SetQueryAdvice {
-        @OnAfter
-        public static void onAfter(@BindReceiver SearchRequestBuilder searchRequestBuilder,
-                @BindParameter @Nullable Object queryBuilder) {
-            searchRequestBuilder.glowroot$setQueryBuilder(queryBuilder);
-        }
-    }
-
     private static String getQueryText(ActionRequestBuilder actionRequestBuilder) {
         ActionRequest actionRequest = actionRequestBuilder.glowroot$request();
         if (actionRequest instanceof IndexRequest) {
@@ -248,45 +216,43 @@ public class ActionRequestBuilderAspect {
             return "DELETE " + request.index() + '/' + request.type();
         } else if (actionRequest instanceof SearchRequest) {
             SearchRequest request = (SearchRequest) actionRequest;
-            StringBuilder sb = new StringBuilder("SEARCH ");
-            @Nullable
-            String[] indices = request.indices();
-            @Nullable
-            String[] types = request.types();
-            if (indices != null && indices.length > 0) {
-                if (types != null && types.length > 0) {
-                    appendTo(sb, indices);
-                    sb.append('/');
-                    appendTo(sb, types);
-                } else {
-                    appendTo(sb, indices);
-                }
-            } else {
-                if (types != null && types.length > 0) {
-                    sb.append("_any/");
-                    appendTo(sb, types);
-                } else {
-                    sb.append('/');
-                }
-            }
-            Object source =
-                    ((SearchRequestBuilder) actionRequestBuilder).glowroot$getQueryBuilder();
-            if (source == null) {
-                return sb.toString();
-            } else if (source instanceof BytesReference) {
-                sb.append(' ');
-                sb.append(((BytesReference) source).toUtf8());
-                return sb.toString();
-            } else {
-                sb.append(' ');
-                sb.append(source);
-                return sb.toString();
-            }
+            return getQueryText(request, (SearchRequestBuilder) actionRequestBuilder);
         } else if (actionRequest == null) {
             return "(action request was null)";
         } else {
             return actionRequest.getClass().getName();
         }
+    }
+
+    private static String getQueryText(SearchRequest request,
+            SearchRequestBuilder actionRequestBuilder) {
+        StringBuilder sb = new StringBuilder("SEARCH ");
+        @Nullable
+        String[] indices = request.indices();
+        @Nullable
+        String[] types = request.types();
+        if (indices != null && indices.length > 0) {
+            if (types != null && types.length > 0) {
+                appendTo(sb, indices);
+                sb.append('/');
+                appendTo(sb, types);
+            } else {
+                appendTo(sb, indices);
+            }
+        } else {
+            if (types != null && types.length > 0) {
+                sb.append("_any/");
+                appendTo(sb, types);
+            } else {
+                sb.append('/');
+            }
+        }
+        Object sourceBuilder = actionRequestBuilder.glowroot$sourceBuilder();
+        if (sourceBuilder != null) {
+            sb.append(' ');
+            sb.append(sourceBuilder);
+        }
+        return sb.toString();
     }
 
     private static QueryMessageSupplier getQueryMessageSupplier(

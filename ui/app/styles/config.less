@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@
 .help-block {
   // override bootstrap styling to give a bit more space
   margin-top: 10px;
+  color: #767676; // override bootstrap to meet accessibility contrast ratio
 }
 
 .panel-heading h2 {
@@ -93,7 +94,7 @@
 .has-error .help-block {
   // override bootstrap default which turns help blocks red
   // see bootstrap issue #1939
-  color: lighten(@text-color, 25%) !important;
+  color: #767676 !important;
 }
 
 .gt-send-email-fieldset {
@@ -101,12 +102,8 @@
   margin-right: 0;
 }
 
-.gt-role-permission-block-remove {
-  margin-top: 18px;
-}
-
-.gt-ldap-role-mapping-block-remove {
-  margin-top: 30px;
+.btn-default:not(.btn-primary) .gt-role-inactive-agent {
+  .gt-red;
 }
 
 .gt-synthetic-java-source textarea {
@@ -153,20 +150,6 @@
   .gt-sometimes-legend-padding-smtp {
     padding-left: 38px;
   }
-
-  .gt-role-permission-block-remove {
-    float: right;
-    margin-top: 0;
-  }
-
-  .gt-role-permission-block-last-checkbox {
-    float: left;
-  }
-
-  .gt-ldap-role-mapping-block-remove {
-    float: right;
-    margin-top: 60px;
-  }
 }
 
 @media (min-width: @screen-sm-min) {
@@ -180,5 +163,27 @@
   .modal-dialog.gt-modal-dialog-lg {
     width: 800px;
     margin: 30px auto;
+  }
+}
+
+.gt-config-return-outer-div {
+  .clearfix;
+}
+
+.gt-config-return-link {
+  display: block;
+  float: right;
+  margin: -10px 0 6px;
+  font-size: 16px;
+}
+
+@media (min-width: @screen-md-min) {
+  .gt-config-return-outer-div {
+    height: 0;
+  }
+  .gt-config-return-link {
+    position: relative;
+    top: -28px;
+    margin: 0;
   }
 }

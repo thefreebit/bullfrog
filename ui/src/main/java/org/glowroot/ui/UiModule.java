@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2017 the original author or authors.
+ * Copyright 2011-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,37 +20,36 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-import javax.annotation.Nullable;
-
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.base.Ticker;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.builder.Builder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.glowroot.common.config.EmbeddedWebConfig;
 import org.glowroot.common.live.LiveAggregateRepository;
 import org.glowroot.common.live.LiveJvmService;
 import org.glowroot.common.live.LiveTraceRepository;
 import org.glowroot.common.live.LiveWeavingService;
-import org.glowroot.common.repo.AgentRollupRepository;
-import org.glowroot.common.repo.AggregateRepository;
-import org.glowroot.common.repo.ConfigRepository;
-import org.glowroot.common.repo.EnvironmentRepository;
-import org.glowroot.common.repo.GaugeValueRepository;
-import org.glowroot.common.repo.IncidentRepository;
-import org.glowroot.common.repo.RepoAdmin;
-import org.glowroot.common.repo.SyntheticResultRepository;
-import org.glowroot.common.repo.TraceAttributeNameRepository;
-import org.glowroot.common.repo.TraceRepository;
-import org.glowroot.common.repo.TransactionTypeRepository;
-import org.glowroot.common.repo.util.HttpClient;
-import org.glowroot.common.repo.util.MailService;
-import org.glowroot.common.repo.util.RollupLevelService;
 import org.glowroot.common.util.Clock;
+import org.glowroot.common2.config.EmbeddedWebConfig;
+import org.glowroot.common2.repo.ActiveAgentRepository;
+import org.glowroot.common2.repo.AggregateRepository;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.EnvironmentRepository;
+import org.glowroot.common2.repo.GaugeValueRepository;
+import org.glowroot.common2.repo.IncidentRepository;
+import org.glowroot.common2.repo.RepoAdmin;
+import org.glowroot.common2.repo.SyntheticResultRepository;
+import org.glowroot.common2.repo.TraceAttributeNameRepository;
+import org.glowroot.common2.repo.TraceRepository;
+import org.glowroot.common2.repo.TransactionTypeRepository;
+import org.glowroot.common2.repo.util.HttpClient;
+import org.glowroot.common2.repo.util.MailService;
+import org.glowroot.common2.repo.util.RollupLevelService;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -68,7 +67,7 @@ public class UiModule {
     public static UiModule createUiModule(
             boolean central,
             boolean servlet,
-            boolean offline,
+            boolean offlineViewer,
             @Nullable String bindAddress, // only used for central
             @Nullable Integer port, // only used for central
             @Nullable Boolean https, // only used for central
@@ -81,7 +80,7 @@ public class UiModule {
             Clock clock,
             @Nullable LiveJvmService liveJvmService,
             final ConfigRepository configRepository,
-            AgentRollupRepository agentRollupRepository,
+            ActiveAgentRepository activeAgentRepository,
             EnvironmentRepository environmentRepository,
             TransactionTypeRepository transactionTypeRepository,
             AggregateRepository aggregateRepository,
@@ -103,40 +102,47 @@ public class UiModule {
         TransactionCommonService transactionCommonService = new TransactionCommonService(
                 aggregateRepository, liveAggregateRepository, configRepository, clock);
         TraceCommonService traceCommonService =
-                new TraceCommonService(traceRepository, liveTraceRepository, agentRollupRepository);
+                new TraceCommonService(traceRepository, liveTraceRepository, configRepository);
         ErrorCommonService errorCommonService =
                 new ErrorCommonService(aggregateRepository, liveAggregateRepository);
         MailService mailService = new MailService();
 
-        AdminJsonService adminJsonService = new AdminJsonService(central, confDir, sharedConfDir,
-                configRepository, repoAdmin, liveAggregateRepository, mailService, httpClient);
+        AdminJsonService adminJsonService = new AdminJsonService(central, offlineViewer, confDir,
+                sharedConfDir, configRepository, repoAdmin, liveAggregateRepository, mailService,
+                httpClient);
+
+        LayoutService layoutService = new LayoutService(central, offlineViewer, version,
+                configRepository, transactionTypeRepository, traceAttributeNameRepository,
+                liveAggregateRepository);
 
         List<Object> jsonServices = Lists.newArrayList();
+        jsonServices.add(new LayoutJsonService(activeAgentRepository, layoutService));
         jsonServices.add(new TransactionJsonService(transactionCommonService, aggregateRepository,
                 configRepository, rollupLevelService, clock));
         jsonServices.add(new TracePointJsonService(traceRepository, liveTraceRepository,
                 configRepository, ticker, clock));
         jsonServices.add(new TraceJsonService(traceCommonService));
         jsonServices.add(new ErrorJsonService(errorCommonService, transactionCommonService,
-                traceRepository, rollupLevelService, clock));
+                traceRepository, configRepository, rollupLevelService, clock));
         jsonServices.add(new GaugeValueJsonService(gaugeValueRepository, rollupLevelService,
-                agentRollupRepository, configRepository));
-        jsonServices.add(new JvmJsonService(environmentRepository, liveJvmService));
-        jsonServices.add(new IncidentJsonService(incidentRepository,
-                configRepository, clock));
-        jsonServices.add(new ReportJsonService(aggregateRepository, agentRollupRepository,
-                gaugeValueRepository, rollupLevelService));
-        jsonServices.add(new ConfigJsonService(agentRollupRepository, gaugeValueRepository,
+                configRepository));
+        jsonServices
+                .add(new JvmJsonService(environmentRepository, configRepository, liveJvmService));
+        jsonServices
+                .add(new IncidentJsonService(central, incidentRepository, configRepository, clock));
+        jsonServices.add(new ReportJsonService(configRepository, activeAgentRepository,
+                transactionTypeRepository, aggregateRepository, gaugeValueRepository,
+                rollupLevelService));
+        jsonServices.add(new ConfigJsonService(transactionTypeRepository, gaugeValueRepository,
                 configRepository));
         jsonServices
                 .add(new AlertConfigJsonService(configRepository, gaugeValueRepository, central));
-        jsonServices.add(new AgentConfigJsonService(configRepository, agentRollupRepository));
         jsonServices.add(new UserConfigJsonService(configRepository));
         jsonServices
-                .add(new RoleConfigJsonService(central, configRepository, agentRollupRepository));
+                .add(new RoleConfigJsonService(central, configRepository, activeAgentRepository));
         jsonServices.add(new GaugeConfigJsonService(configRepository, liveJvmService));
-        jsonServices.add(new InstrumentationConfigJsonService(configRepository, liveWeavingService,
-                liveJvmService));
+        jsonServices.add(new InstrumentationConfigJsonService(central, configRepository,
+                liveWeavingService, liveJvmService));
         jsonServices.add(adminJsonService);
 
         if (central) {
@@ -146,11 +152,7 @@ public class UiModule {
             jsonServices.add(new SyntheticMonitorConfigJsonService(configRepository));
         }
 
-        LayoutService layoutService =
-                new LayoutService(central, servlet, offline, version, configRepository,
-                        agentRollupRepository, transactionTypeRepository,
-                        traceAttributeNameRepository);
-        HttpSessionManager httpSessionManager = new HttpSessionManager(central, offline,
+        HttpSessionManager httpSessionManager = new HttpSessionManager(central, offlineViewer,
                 configRepository, clock, layoutService, sessionMapFactory);
         IndexHtmlHttpService indexHtmlHttpService = new IndexHtmlHttpService(layoutService);
         TraceDetailHttpService traceDetailHttpService =
@@ -159,6 +161,7 @@ public class UiModule {
                 new TraceExportHttpService(traceCommonService, version);
         GlowrootLogHttpService glowrootLogHttpService =
                 new GlowrootLogHttpService(logDir, logFileNamePattern);
+        HealthCheckHttpService healthCheckHttpService = new HealthCheckHttpService(repoAdmin);
 
         Map<Pattern, HttpService> httpServices = Maps.newHashMap();
         // http services
@@ -176,11 +179,13 @@ public class UiModule {
         // as the download url for the export file
         httpServices.put(Pattern.compile("^/export/trace$"), traceExportHttpService);
         httpServices.put(Pattern.compile("^/backend/trace/entries$"), traceDetailHttpService);
+        httpServices.put(Pattern.compile("^/backend/trace/queries$"), traceDetailHttpService);
         httpServices.put(Pattern.compile("^/backend/trace/main-thread-profile$"),
                 traceDetailHttpService);
         httpServices.put(Pattern.compile("^/backend/trace/aux-thread-profile$"),
                 traceDetailHttpService);
         httpServices.put(Pattern.compile("^/log$"), glowrootLogHttpService);
+        httpServices.put(Pattern.compile("^/health$"), healthCheckHttpService);
 
         if (central) {
             httpServices.put(Pattern.compile("^/synthetic-monitors$"), indexHtmlHttpService);
@@ -197,7 +202,7 @@ public class UiModule {
             if (central) {
                 httpServer = new HttpServer(checkNotNull(bindAddress), checkNotNull(https),
                         Suppliers.ofInstance(checkNotNull(contextPath)), numWorkerThreads,
-                        commonHandler, confDir, sharedConfDir);
+                        commonHandler, confDir, sharedConfDir, central, offlineViewer);
                 initialPort = checkNotNull(port);
             } else {
                 final EmbeddedWebConfig initialWebConfig = configRepository.getEmbeddedWebConfig();
@@ -214,7 +219,7 @@ public class UiModule {
                 };
                 httpServer = new HttpServer(initialWebConfig.bindAddress(),
                         initialWebConfig.https(), contextPathSupplier, numWorkerThreads,
-                        commonHandler, confDir, sharedConfDir);
+                        commonHandler, confDir, sharedConfDir, central, offlineViewer);
                 initialPort = initialWebConfig.port();
             }
             adminJsonService.setHttpServer(httpServer);
@@ -239,7 +244,7 @@ public class UiModule {
     }
 
     // used by tests and by central ui
-    public void close() {
+    public void close() throws Exception {
         if (httpServer != null) {
             httpServer.close();
         }

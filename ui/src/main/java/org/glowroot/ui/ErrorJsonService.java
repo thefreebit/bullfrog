@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,15 +18,15 @@ package org.glowroot.ui;
 import java.util.List;
 import java.util.Map;
 
-import javax.annotation.Nullable;
-
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.io.CharStreams;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 
 import org.glowroot.common.live.ImmutableOverallQuery;
@@ -38,18 +38,20 @@ import org.glowroot.common.model.OverallErrorSummaryCollector.OverallErrorSummar
 import org.glowroot.common.model.Result;
 import org.glowroot.common.model.TransactionErrorSummaryCollector.ErrorSummarySortOrder;
 import org.glowroot.common.model.TransactionErrorSummaryCollector.TransactionErrorSummary;
-import org.glowroot.common.repo.ImmutableErrorMessageFilter;
-import org.glowroot.common.repo.ImmutableTraceQuery;
-import org.glowroot.common.repo.TraceRepository;
-import org.glowroot.common.repo.TraceRepository.ErrorMessageCount;
-import org.glowroot.common.repo.TraceRepository.ErrorMessageFilter;
-import org.glowroot.common.repo.TraceRepository.ErrorMessagePoint;
-import org.glowroot.common.repo.TraceRepository.ErrorMessageResult;
-import org.glowroot.common.repo.TraceRepository.TraceQuery;
-import org.glowroot.common.repo.util.RollupLevelService;
 import org.glowroot.common.util.Clock;
 import org.glowroot.common.util.ObjectMappers;
 import org.glowroot.common.util.Styles;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.ImmutableErrorMessageFilter;
+import org.glowroot.common2.repo.ImmutableTraceQuery;
+import org.glowroot.common2.repo.TraceRepository;
+import org.glowroot.common2.repo.TraceRepository.ErrorMessageCount;
+import org.glowroot.common2.repo.TraceRepository.ErrorMessageFilter;
+import org.glowroot.common2.repo.TraceRepository.ErrorMessagePoint;
+import org.glowroot.common2.repo.TraceRepository.ErrorMessageResult;
+import org.glowroot.common2.repo.TraceRepository.TraceQuery;
+import org.glowroot.common2.repo.util.RollupLevelService;
+import org.glowroot.common2.repo.util.RollupLevelService.DataKind;
 
 @JsonService
 class ErrorJsonService {
@@ -64,15 +66,17 @@ class ErrorJsonService {
     private final ErrorCommonService errorCommonService;
     private final TransactionCommonService transactionCommonService;
     private final TraceRepository traceRepository;
+    private final ConfigRepository configRepository;
     private final RollupLevelService rollupLevelService;
     private final Clock clock;
 
     ErrorJsonService(ErrorCommonService errorCommonService,
             TransactionCommonService transactionCommonService, TraceRepository traceRepository,
-            RollupLevelService rollupLevelService, Clock clock) {
+            ConfigRepository configRepository, RollupLevelService rollupLevelService, Clock clock) {
         this.errorCommonService = errorCommonService;
         this.transactionCommonService = transactionCommonService;
         this.traceRepository = traceRepository;
+        this.configRepository = configRepository;
         this.rollupLevelService = rollupLevelService;
         this.clock = clock;
     }
@@ -92,8 +96,8 @@ class ErrorJsonService {
                 .transactionName(request.transactionName())
                 .from(request.from())
                 .to(request.to())
-                .rollupLevel(rollupLevelService.getRollupLevelForView(request.from(),
-                        request.to()))
+                .rollupLevel(rollupLevelService.getRollupLevelForView(request.from(), request.to(),
+                        DataKind.GENERAL))
                 .build();
         ErrorMessageFilter filter = ImmutableErrorMessageFilter.builder()
                 .addAllIncludes(request.include())
@@ -102,6 +106,15 @@ class ErrorJsonService {
         long liveCaptureTime = clock.currentTimeMillis();
         List<ThroughputAggregate> throughputAggregates = transactionCommonService
                 .getThroughputAggregates(agentRollupId, transactionQuery, autoRefresh);
+        if (throughputAggregates.isEmpty()
+                && transactionQuery.rollupLevel() < getLargestRollupLevel()) {
+            // fall back to largest aggregates in case expiration settings have recently changed
+            transactionQuery = withLargestRollupLevel(transactionQuery);
+            throughputAggregates = transactionCommonService.getThroughputAggregates(agentRollupId,
+                    transactionQuery, autoRefresh);
+        }
+        long dataPointIntervalMillis = configRepository.getRollupConfigs()
+                .get(transactionQuery.rollupLevel()).intervalMillis();
         DataSeries dataSeries = new DataSeries(null);
         Map<Long, Long[]> dataSeriesExtra = Maps.newHashMap();
         Map<Long, Long> transactionCountMap = Maps.newHashMap();
@@ -112,13 +125,10 @@ class ErrorJsonService {
         List<ErrorMessageCount> records = Lists.newArrayList();
         boolean moreAvailable = false;
         if (!throughputAggregates.isEmpty()) {
-            long maxCaptureTime =
-                    throughputAggregates.get(throughputAggregates.size() - 1).captureTime();
-            long resolutionMillis =
-                    rollupLevelService.getDataPointIntervalMillis(query.from(), query.to());
+            long maxCaptureTime = Iterables.getLast(throughputAggregates).captureTime();
             ErrorMessageResult result = traceRepository.readErrorMessages(agentRollupId,
                     ImmutableTraceQuery.builder().copyFrom(query).to(maxCaptureTime).build(),
-                    filter, resolutionMillis, request.errorMessageLimit());
+                    filter, dataPointIntervalMillis, request.errorMessageLimit());
             List<ErrorPoint> errorPoints = Lists.newArrayList();
             for (ErrorMessagePoint traceErrorPoint : result.points()) {
                 long captureTime = traceErrorPoint.captureTime();
@@ -134,7 +144,8 @@ class ErrorJsonService {
                             traceErrorPoint.errorCount(), transactionCount));
                 }
             }
-            populateDataSeries(query, errorPoints, dataSeries, dataSeriesExtra, liveCaptureTime);
+            populateDataSeries(query, errorPoints, dataSeries, dataSeriesExtra,
+                    dataPointIntervalMillis, liveCaptureTime);
             records = result.counts().records();
             moreAvailable = result.counts().moreAvailable();
         }
@@ -143,6 +154,7 @@ class ErrorJsonService {
         try {
             jg.writeStartObject();
             jg.writeObjectField("dataSeries", dataSeries);
+            jg.writeNumberField("dataPointIntervalMillis", dataPointIntervalMillis);
             jg.writeObjectField("dataSeriesExtra", dataSeriesExtra);
             jg.writeObjectField("errorMessages", records);
             jg.writeBooleanField("moreErrorMessagesAvailable", moreAvailable);
@@ -161,14 +173,23 @@ class ErrorJsonService {
                 .transactionType(request.transactionType())
                 .from(request.from())
                 .to(request.to())
-                .rollupLevel(rollupLevelService.getRollupLevelForView(request.from(), request.to()))
+                .rollupLevel(rollupLevelService.getRollupLevelForView(request.from(), request.to(),
+                        DataKind.GENERAL))
                 .build();
         OverallErrorSummary overallSummary =
                 errorCommonService.readOverallErrorSummary(agentRollupId, query, autoRefresh);
+        if (overallSummary.transactionCount() == 0) {
+            // fall back to largest aggregates in case expiration settings have recently changed
+            query = ImmutableOverallQuery.builder()
+                    .copyFrom(query)
+                    .rollupLevel(getLargestRollupLevel())
+                    .build();
+            overallSummary =
+                    errorCommonService.readOverallErrorSummary(agentRollupId, query, autoRefresh);
+        }
         Result<TransactionErrorSummary> queryResult =
                 errorCommonService.readTransactionErrorSummaries(agentRollupId, query,
                         request.sortOrder(), request.limit(), autoRefresh);
-
         StringBuilder sb = new StringBuilder();
         JsonGenerator jg = mapper.getFactory().createGenerator(CharStreams.asWriter(sb));
         try {
@@ -183,11 +204,22 @@ class ErrorJsonService {
         return sb.toString();
     }
 
-    private void populateDataSeries(TraceQuery query, List<ErrorPoint> errorPoints,
-            DataSeries dataSeries, Map<Long, Long[]> dataSeriesExtra, long liveCaptureTime)
-            throws Exception {
-        DataSeriesHelper dataSeriesHelper = new DataSeriesHelper(liveCaptureTime,
-                rollupLevelService.getDataPointIntervalMillis(query.from(), query.to()));
+    private TransactionQuery withLargestRollupLevel(TransactionQuery query) {
+        return ImmutableTransactionQuery.builder()
+                .copyFrom(query)
+                .rollupLevel(getLargestRollupLevel())
+                .build();
+    }
+
+    private int getLargestRollupLevel() {
+        return configRepository.getRollupConfigs().size() - 1;
+    }
+
+    private static void populateDataSeries(TraceQuery query, List<ErrorPoint> errorPoints,
+            DataSeries dataSeries, Map<Long, Long[]> dataSeriesExtra, long dataPointIntervalMillis,
+            long liveCaptureTime) {
+        DataSeriesHelper dataSeriesHelper =
+                new DataSeriesHelper(liveCaptureTime, dataPointIntervalMillis);
         ErrorPoint lastErrorPoint = null;
         for (ErrorPoint errorPoint : errorPoints) {
             if (lastErrorPoint == null) {

@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,39 +15,40 @@
  */
 package org.glowroot.central.repo;
 
+import java.io.EOFException;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.exceptions.NoHostAvailableException;
-import com.google.common.base.Charsets;
-import com.google.common.collect.Lists;
 import com.google.common.io.Files;
 import org.rauschig.jarchivelib.ArchiveFormat;
 import org.rauschig.jarchivelib.Archiver;
 import org.rauschig.jarchivelib.ArchiverFactory;
 import org.rauschig.jarchivelib.CompressionType;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 // see copies of this class in glowroot-agent-cassandra-plugin and glowroot-webdriver-tests
 class CassandraWrapper {
 
-    private static final String CASSANDRA_VERSION;
+    static final String CASSANDRA_VERSION;
 
     static {
         if (System.getProperty("os.name").startsWith("Windows")) {
             // Cassandra 2.1 has issues on Windows
             // see https://issues.apache.org/jira/browse/CASSANDRA-10673
-            CASSANDRA_VERSION = "2.2.10";
+            CASSANDRA_VERSION = "2.2.12";
         } else {
-            CASSANDRA_VERSION = "2.1.18";
+            CASSANDRA_VERSION = "2.1.20";
         }
     }
 
@@ -58,7 +59,13 @@ class CassandraWrapper {
         File baseDir = new File("cassandra");
         File cassandraDir = new File(baseDir, "apache-cassandra-" + CASSANDRA_VERSION);
         if (!cassandraDir.exists()) {
-            downloadAndExtract(baseDir);
+            try {
+                downloadAndExtract(baseDir);
+            } catch (EOFException e) {
+                // partial download, try again
+                System.out.println("Retrying...");
+                downloadAndExtract(baseDir);
+            }
         }
         List<String> command = buildCommandLine(cassandraDir);
         ProcessBuilder processBuilder = new ProcessBuilder(command);
@@ -74,6 +81,7 @@ class CassandraWrapper {
 
     static void stop() throws Exception {
         process.destroy();
+        process.waitFor();
         consolePipeExecutorService.shutdown();
         if (!consolePipeExecutorService.awaitTermination(10, SECONDS)) {
             throw new IllegalStateException("Could not terminate executor");
@@ -82,7 +90,7 @@ class CassandraWrapper {
 
     private static void downloadAndExtract(File baseDir) throws IOException {
         // using System.out to make sure user sees why there is a big delay here
-        System.out.print("Downloading Cassandra " + CASSANDRA_VERSION + " ...");
+        System.out.print("Downloading Cassandra " + CASSANDRA_VERSION + "...");
         URL url = new URL("http://www.apache.org/dist/cassandra/" + CASSANDRA_VERSION
                 + "/apache-cassandra-" + CASSANDRA_VERSION + "-bin.tar.gz");
         InputStream in = url.openStream();
@@ -98,22 +106,22 @@ class CassandraWrapper {
         File confDir = new File(cassandraDir, "conf");
         // reduce logging to stdout
         File logbackXmlFile = new File(confDir, "logback.xml");
-        String xml = Files.asCharSource(logbackXmlFile, Charsets.UTF_8).read();
+        String xml = Files.asCharSource(logbackXmlFile, UTF_8).read();
         xml = xml.replace("<root level=\"INFO\">", "<root level=\"ERROR\">");
         xml = xml.replace("<logger name=\"org.apache.cassandra\" level=\"DEBUG\"/>", "");
-        Files.asCharSink(logbackXmlFile, Charsets.UTF_8).write(xml);
+        Files.asCharSink(logbackXmlFile, UTF_8).write(xml);
         // long timeouts needed on slow travis ci machines
         File yamlFile = new File(confDir, "cassandra.yaml");
-        String yaml = Files.asCharSource(yamlFile, Charsets.UTF_8).read();
+        String yaml = Files.asCharSource(yamlFile, UTF_8).read();
         yaml = yaml.replaceAll("(?m)^read_request_timeout_in_ms: .*$",
                 "read_request_timeout_in_ms: 30000");
         yaml = yaml.replaceAll("(?m)^write_request_timeout_in_ms: .*$",
                 "write_request_timeout_in_ms: 30000");
-        Files.asCharSink(yamlFile, Charsets.UTF_8).write(yaml);
+        Files.asCharSink(yamlFile, UTF_8).write(yaml);
     }
 
     private static List<String> buildCommandLine(File cassandraDir) {
-        List<String> command = Lists.newArrayList();
+        List<String> command = new ArrayList<>();
         String javaExecutable =
                 System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
         command.add(javaExecutable);
@@ -159,17 +167,17 @@ class CassandraWrapper {
                 return;
             } catch (NoHostAvailableException e) {
                 cluster.close();
-                Thread.sleep(1000);
+                SECONDS.sleep(1);
             }
         }
     }
 
-    private static class ConsoleOutputPipe implements Runnable {
+    static class ConsoleOutputPipe implements Runnable {
 
         private final InputStream in;
         private final OutputStream out;
 
-        private ConsoleOutputPipe(InputStream in, OutputStream out) {
+        ConsoleOutputPipe(InputStream in, OutputStream out) {
             this.in = in;
             this.out = out;
         }

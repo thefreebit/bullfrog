@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,15 +26,11 @@ import java.sql.SQLException;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import javax.annotation.Nullable;
-
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.base.Charsets;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -47,6 +43,7 @@ import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,6 +53,7 @@ import org.glowroot.common.util.Clock;
 import org.glowroot.common.util.ObjectMappers;
 import org.glowroot.ui.HttpSessionManager.Authentication;
 
+import static com.google.common.base.Charsets.UTF_8;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
@@ -157,11 +155,23 @@ public class CommonHandler {
         Authentication authentication =
                 httpSessionManager.getAuthentication(request, touchSession);
         Glowroot.setTransactionUser(authentication.caseAmbiguousUsername());
+        // need to grab agent-rollup-id up here before it is removed from query parameters
+        String agentRollupId = getAgentRollupIdFromRequest(request);
         response = handleRequest(request, authentication);
-        if (request.getPath().startsWith("/backend/")
-                && !request.getPath().equals("/backend/layout")) {
-            response.setHeader("Glowroot-Layout-Version",
-                    layoutService.getLayoutVersion(authentication));
+        if (request.getPath().startsWith("/backend/")) {
+            if (!request.getPath().equals("/backend/layout")) {
+                response.setHeader("Glowroot-Layout-Version",
+                        layoutService.getLayoutVersion(authentication));
+            }
+            if (!request.getPath().equals("/backend/agent-rollup-layout")
+                    && agentRollupId != null) {
+                String agentRollupLayoutVersion = layoutService
+                        .getAgentRollupLayoutVersion(authentication, agentRollupId);
+                if (agentRollupLayoutVersion != null) {
+                    response.setHeader("Glowroot-Agent-Rollup-Layout-Version",
+                            agentRollupLayoutVersion);
+                }
+            }
         }
         return response;
     }
@@ -189,12 +199,27 @@ public class CommonHandler {
             CommonResponse response = new CommonResponse(OK);
             response.setHeader("Glowroot-Layout-Version",
                     layoutService.getLayoutVersion(authentication));
+            List<String> agentRollupIds = request.getParameters("agent-rollup-id");
+            if (agentRollupIds != null && agentRollupIds.size() == 1) {
+                String agentRollupLayoutVersion = layoutService
+                        .getAgentRollupLayoutVersion(authentication, agentRollupIds.get(0));
+                if (agentRollupLayoutVersion != null) {
+                    response.setHeader("Glowroot-Agent-Rollup-Layout-Version",
+                            agentRollupLayoutVersion);
+                }
+            }
             return response;
         }
         if (path.equals("/backend/layout")) {
             Authentication authentication = httpSessionManager.getAuthentication(request, false);
             return new CommonResponse(OK, MediaType.JSON_UTF_8,
                     layoutService.getLayoutJson(authentication));
+        }
+        if (path.equals("/backend/agent-rollup-layout")) {
+            Authentication authentication = httpSessionManager.getAuthentication(request, false);
+            String agentRollupId = request.getParameters("agent-rollup-id").get(0);
+            return new CommonResponse(OK, MediaType.JSON_UTF_8,
+                    layoutService.getAgentRollupLayoutJson(agentRollupId, authentication));
         }
         return null;
     }
@@ -214,7 +239,7 @@ public class CommonHandler {
     }
 
     private @Nullable HttpService getHttpService(String path) {
-        for (Entry<Pattern, HttpService> entry : httpServices.entrySet()) {
+        for (Map.Entry<Pattern, HttpService> entry : httpServices.entrySet()) {
             Matcher matcher = entry.getKey().matcher(path);
             if (matcher.matches()) {
                 return entry.getValue();
@@ -230,9 +255,9 @@ public class CommonHandler {
             // service does not require any permission
             return httpService.handleRequest(request, authentication);
         }
-        List<String> agentRollupIds = request.getParameters("agent-rollup-id");
-        String agentRollupId = agentRollupIds.isEmpty() ? "" : agentRollupIds.get(0);
-        if (!authentication.isPermitted(agentRollupId, permission)) {
+        List<String> agentIds = request.getParameters("agent-id");
+        String agentId = agentIds.isEmpty() ? "" : agentIds.get(0);
+        if (!authentication.isPermitted(agentId, permission)) {
             return handleNotAuthorized(request, authentication);
         }
         return httpService.handleRequest(request, authentication);
@@ -266,10 +291,15 @@ public class CommonHandler {
             if (central && agentId.isEmpty()) {
                 throw new JsonServiceException(BAD_REQUEST, "agent-id query parameter is empty");
             }
+            if (agentId.endsWith("::")) {
+                throw new JsonServiceException(BAD_REQUEST,
+                        "agent rollup id received when expecting an agent id");
+            }
             parameterTypes.add(String.class);
             parameters.add(agentId);
             queryParameters.remove("agent-id");
-            permitted = authentication.isAgentPermitted(agentId, jsonServiceMapping.permission());
+            permitted = authentication.isPermittedForAgentRollup(agentId,
+                    jsonServiceMapping.permission());
         } else if (jsonServiceMapping.bindAgentRollup()) {
             List<String> agentRollupIds = queryParameters.get("agent-rollup-id");
             if (agentRollupIds == null) {
@@ -281,7 +311,8 @@ public class CommonHandler {
             parameters.add(agentRollupId);
             queryParameters.remove("agent-rollup-id");
             permitted =
-                    authentication.isAgentPermitted(agentRollupId, jsonServiceMapping.permission());
+                    authentication.isPermittedForAgentRollup(agentRollupId,
+                            jsonServiceMapping.permission());
         } else {
             permitted = jsonServiceMapping.permission().isEmpty()
                     || authentication.isAdminPermitted(jsonServiceMapping.permission());
@@ -325,20 +356,6 @@ public class CommonHandler {
                     "Query timed out (timeout is configurable under Configuration > Advanced)");
         }
         return newHttpResponseWithStackTrace(e, INTERNAL_SERVER_ERROR, null);
-    }
-
-    private CommonResponse buildJsonResponse(@Nullable Object responseObject) {
-        if (responseObject == null) {
-            return new CommonResponse(OK, MediaType.JSON_UTF_8, "");
-        } else if (responseObject instanceof CommonResponse) {
-            return (CommonResponse) responseObject;
-        } else if (responseObject instanceof String) {
-            return new CommonResponse(OK, MediaType.JSON_UTF_8, (String) responseObject);
-        } else {
-            logger.warn("unexpected type of json service response: {}",
-                    responseObject.getClass().getName());
-            return new CommonResponse(INTERNAL_SERVER_ERROR);
-        }
     }
 
     private CommonResponse handleNotAuthorized(CommonRequest request,
@@ -395,6 +412,32 @@ public class CommonHandler {
             return new Date(clock.currentTimeMillis() + FIVE_MINUTES);
         } else {
             return null;
+        }
+    }
+
+    private static @Nullable String getAgentRollupIdFromRequest(CommonRequest request) {
+        List<String> agentIds = request.getParameters("agent-id");
+        if (agentIds != null && agentIds.size() == 1) {
+            return agentIds.get(0);
+        }
+        List<String> agentRollupIds = request.getParameters("agent-rollup-id");
+        if (agentRollupIds != null && agentRollupIds.size() == 1) {
+            return agentRollupIds.get(0);
+        }
+        return null;
+    }
+
+    private static CommonResponse buildJsonResponse(@Nullable Object responseObject) {
+        if (responseObject == null) {
+            return new CommonResponse(OK, MediaType.JSON_UTF_8, "");
+        } else if (responseObject instanceof CommonResponse) {
+            return (CommonResponse) responseObject;
+        } else if (responseObject instanceof String) {
+            return new CommonResponse(OK, MediaType.JSON_UTF_8, (String) responseObject);
+        } else {
+            logger.warn("unexpected type of json service response: {}",
+                    responseObject.getClass().getName());
+            return new CommonResponse(INTERNAL_SERVER_ERROR);
         }
     }
 
@@ -608,7 +651,7 @@ public class CommonHandler {
         private boolean closeConnectionAfterPortChange;
 
         CommonResponse(HttpResponseStatus status, MediaType mediaType, String content) {
-            this(status, mediaType, Unpooled.copiedBuffer(content, Charsets.UTF_8), true);
+            this(status, mediaType, Unpooled.copiedBuffer(content, UTF_8), true);
         }
 
         CommonResponse(HttpResponseStatus status, MediaType mediaType, ChunkSource content) {

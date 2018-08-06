@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,11 +33,9 @@ import static org.openqa.selenium.By.xpath;
 class GlobalNavbar {
 
     private final WebDriver driver;
-    private final boolean central;
 
-    GlobalNavbar(WebDriver driver, boolean central) {
+    GlobalNavbar(WebDriver driver) {
         this.driver = driver;
-        this.central = central;
     }
 
     WebElement getTransactionsLink() {
@@ -52,14 +50,14 @@ class GlobalNavbar {
         return getNavbarLink(driver, linkText("JVM"));
     }
 
+    WebElement getReportingLink() {
+        return getNavbarLink(driver, linkText("Reporting"));
+    }
+
     WebElement getConfigLink() {
         getNavbarLink(driver, id("gtGearsMenuToggle")).click();
         WebElement gearsMenu = Utils.withWait(driver, id("gtGearsMenu"));
-        if (central) {
-            return Utils.withWait(driver, gearsMenu, linkText("Agent configuration"));
-        } else {
-            return Utils.withWait(driver, gearsMenu, linkText("Configuration"));
-        }
+        return Utils.withWait(driver, gearsMenu, linkText("Configuration"));
     }
 
     WebElement getAdminConfigLink() {

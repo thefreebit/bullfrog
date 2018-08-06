@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,18 +15,20 @@
  */
 package org.glowroot.agent.impl;
 
+import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
+import java.util.Set;
 
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.agent.collector.Collector;
 import org.glowroot.agent.collector.Collector.AggregateReader;
 import org.glowroot.agent.collector.Collector.AggregateVisitor;
-import org.glowroot.agent.model.QueryCollector.SharedQueryTextCollector;
+import org.glowroot.agent.model.SharedQueryTextCollection;
 import org.glowroot.agent.model.ThreadProfile;
 import org.glowroot.common.live.LiveAggregateRepository.OverviewAggregate;
 import org.glowroot.common.live.LiveAggregateRepository.PercentileAggregate;
@@ -39,7 +41,7 @@ import org.glowroot.common.model.QueryCollector;
 import org.glowroot.common.model.ServiceCallCollector;
 import org.glowroot.common.model.TransactionErrorSummaryCollector;
 import org.glowroot.common.model.TransactionSummaryCollector;
-import org.glowroot.common.repo.Utils;
+import org.glowroot.common.util.CaptureTimes;
 import org.glowroot.common.util.Clock;
 import org.glowroot.wire.api.model.AggregateOuterClass.Aggregate;
 
@@ -48,9 +50,9 @@ public class AggregateIntervalCollector {
     private static final String LIMIT_EXCEEDED_BUCKET = "LIMIT EXCEEDED BUCKET";
 
     private final long captureTime;
-    private final int maxAggregateTransactionsType;
-    private final int maxAggregateQueriesPerType;
-    private final int maxAggregateServiceCallsPerType;
+    private final int maxTransactionAggregates;
+    private final int maxQueryAggregates;
+    private final int maxServiceCallAggregates;
     private final Clock clock;
 
     @GuardedBy("lock")
@@ -59,12 +61,12 @@ public class AggregateIntervalCollector {
     private final Object lock = new Object();
 
     AggregateIntervalCollector(long currentTime, long aggregateIntervalMillis,
-            int maxAggregateTransactionsType, int maxAggregateQueriesPerType,
-            int maxAggregateServiceCallsPerType, Clock clock) {
-        captureTime = Utils.getRollupCaptureTime(currentTime, aggregateIntervalMillis);
-        this.maxAggregateTransactionsType = maxAggregateTransactionsType;
-        this.maxAggregateQueriesPerType = maxAggregateQueriesPerType;
-        this.maxAggregateServiceCallsPerType = maxAggregateServiceCallsPerType;
+            int maxTransactionAggregates, int maxQueryAggregates, int maxServiceCallAggregates,
+            Clock clock) {
+        captureTime = CaptureTimes.getRollup(currentTime, aggregateIntervalMillis);
+        this.maxTransactionAggregates = maxTransactionAggregates;
+        this.maxQueryAggregates = maxQueryAggregates;
+        this.maxServiceCallAggregates = maxServiceCallAggregates;
         this.clock = clock;
     }
 
@@ -228,6 +230,14 @@ public class AggregateIntervalCollector {
         }
     }
 
+    // TODO report checker framework issue that occurs without this suppression
+    @SuppressWarnings("return.type.incompatible")
+    Set<String> getTransactionTypes() {
+        synchronized (lock) {
+            return typeCollectors.keySet();
+        }
+    }
+
     void flush(Collector collector) throws Exception {
         collector.collectAggregates(new AggregatesImpl(captureTime));
     }
@@ -238,6 +248,7 @@ public class AggregateIntervalCollector {
         }
     }
 
+    @GuardedBy("lock")
     private IntervalTypeCollector getTypeCollector(String transactionType) {
         IntervalTypeCollector typeCollector;
         typeCollector = typeCollectors.get(transactionType);
@@ -248,6 +259,7 @@ public class AggregateIntervalCollector {
         return typeCollector;
     }
 
+    @GuardedBy("lock")
     private @Nullable AggregateCollector getAggregateCollector(String transactionType,
             @Nullable String transactionName) {
         IntervalTypeCollector intervalTypeCollector = typeCollectors.get(transactionType);
@@ -268,8 +280,8 @@ public class AggregateIntervalCollector {
                 Maps.newConcurrentMap();
 
         private IntervalTypeCollector() {
-            overallAggregateCollector = new AggregateCollector(null, maxAggregateQueriesPerType,
-                    maxAggregateServiceCallsPerType);
+            overallAggregateCollector =
+                    new AggregateCollector(null, maxQueryAggregates, maxServiceCallAggregates);
         }
 
         private void add(Transaction transaction) {
@@ -277,7 +289,7 @@ public class AggregateIntervalCollector {
             AggregateCollector transactionAggregateCollector =
                     transactionAggregateCollectors.get(transaction.getTransactionName());
             if (transactionAggregateCollector == null) {
-                if (transactionAggregateCollectors.size() < maxAggregateTransactionsType) {
+                if (transactionAggregateCollectors.size() < maxTransactionAggregates) {
                     transactionAggregateCollector =
                             createTransactionAggregateCollector(transaction.getTransactionName());
                 } else {
@@ -294,7 +306,7 @@ public class AggregateIntervalCollector {
 
         private AggregateCollector createTransactionAggregateCollector(String transactionName) {
             AggregateCollector transactionAggregateCollector = new AggregateCollector(
-                    transactionName, maxAggregateQueriesPerType, maxAggregateServiceCallsPerType);
+                    transactionName, maxQueryAggregates, maxServiceCallAggregates);
             transactionAggregateCollectors.put(transactionName, transactionAggregateCollector);
             return transactionAggregateCollector;
         }
@@ -348,9 +360,10 @@ public class AggregateIntervalCollector {
         @Override
         public void accept(AggregateVisitor aggregateVisitor) throws Exception {
             synchronized (lock) {
-                SharedQueryTextCollector sharedQueryTextCollector = new SharedQueryTextCollector();
+                SharedQueryTextCollectionImpl sharedQueryTextCollector =
+                        new SharedQueryTextCollectionImpl();
                 ScratchBuffer scratchBuffer = new ScratchBuffer();
-                for (Entry<String, IntervalTypeCollector> e : typeCollectors.entrySet()) {
+                for (Map.Entry<String, IntervalTypeCollector> e : typeCollectors.entrySet()) {
                     String transactionType = e.getKey();
                     IntervalTypeCollector intervalTypeCollector = e.getValue();
                     Aggregate overallAggregate = intervalTypeCollector.overallAggregateCollector
@@ -358,7 +371,7 @@ public class AggregateIntervalCollector {
                     aggregateVisitor.visitOverallAggregate(transactionType,
                             sharedQueryTextCollector.getAndClearLastestSharedQueryTexts(),
                             overallAggregate);
-                    for (Entry<String, AggregateCollector> f : intervalTypeCollector.transactionAggregateCollectors
+                    for (Map.Entry<String, AggregateCollector> f : intervalTypeCollector.transactionAggregateCollectors
                             .entrySet()) {
                         Aggregate transactionAggregate =
                                 f.getValue().build(sharedQueryTextCollector, scratchBuffer);
@@ -368,6 +381,30 @@ public class AggregateIntervalCollector {
                     }
                 }
             }
+        }
+    }
+
+    private static class SharedQueryTextCollectionImpl implements SharedQueryTextCollection {
+
+        private final Map<String, Integer> sharedQueryTextIndexes = Maps.newHashMap();
+
+        private List<String> latestSharedQueryTexts = Lists.newArrayList();
+
+        public List<String> getAndClearLastestSharedQueryTexts() {
+            List<String> latestSharedQueryTexts = this.latestSharedQueryTexts;
+            this.latestSharedQueryTexts = Lists.newArrayList();
+            return latestSharedQueryTexts;
+        }
+
+        @Override
+        public int getSharedQueryTextIndex(String queryText) {
+            Integer sharedQueryTextIndex = sharedQueryTextIndexes.get(queryText);
+            if (sharedQueryTextIndex == null) {
+                sharedQueryTextIndex = sharedQueryTextIndexes.size();
+                sharedQueryTextIndexes.put(queryText, sharedQueryTextIndex);
+                latestSharedQueryTexts.add(queryText);
+            }
+            return sharedQueryTextIndex;
         }
     }
 }

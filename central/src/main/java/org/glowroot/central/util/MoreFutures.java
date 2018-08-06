@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,14 @@
  */
 package org.glowroot.central.util;
 
-import java.util.List;
+import java.util.Collection;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 
+import com.datastax.driver.core.exceptions.DriverException;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -34,7 +37,7 @@ public class MoreFutures {
     private MoreFutures() {}
 
     // not using guava Futures.allAsList().get() because it logs every error
-    public static void waitForAll(List<? extends Future<?>> futures) throws Exception {
+    public static void waitForAll(Collection<? extends Future<?>> futures) throws Exception {
         Exception exception = null;
         for (Future<?> future : futures) {
             if (exception != null) {
@@ -48,18 +51,22 @@ public class MoreFutures {
                 }
             }
         }
-        if (exception != null) {
-            throw exception;
+        if (exception == null) {
+            return;
         }
+        if (exception instanceof ExecutionException) {
+            throw unwrapDriverException((ExecutionException) exception);
+        }
+        throw exception;
     }
 
-    public static <V> CompletableFuture<?> onFailure(ListenableFuture<V> future,
+    public static <V> CompletableFuture<V> onFailure(ListenableFuture<V> future,
             Runnable onFailure) {
-        CompletableFuture</*@Nullable*/ Void> chainedFuture = new CompletableFuture<>();
+        CompletableFuture<V> chainedFuture = new CompletableFuture<>();
         Futures.addCallback(future, new FutureCallback<V>() {
             @Override
             public void onSuccess(V result) {
-                chainedFuture.complete(null);
+                chainedFuture.complete(result);
             }
             @Override
             public void onFailure(Throwable t) {
@@ -71,7 +78,8 @@ public class MoreFutures {
         return chainedFuture;
     }
 
-    public static CompletableFuture<?> onFailure(CompletableFuture<?> future, Runnable onFailure) {
+    public static <V> CompletableFuture<V> onFailure(CompletableFuture<V> future,
+            Runnable onFailure) {
         return future.whenComplete((result, t) -> {
             if (t != null) {
                 onFailure.run();
@@ -79,12 +87,12 @@ public class MoreFutures {
         });
     }
 
-    public static <V> CompletableFuture<?> toCompletableFuture(ListenableFuture<V> future) {
-        CompletableFuture</*@Nullable*/ Void> chainedFuture = new CompletableFuture<>();
+    public static <V> CompletableFuture<V> toCompletableFuture(ListenableFuture<V> future) {
+        CompletableFuture<V> chainedFuture = new CompletableFuture<>();
         Futures.addCallback(future, new FutureCallback<V>() {
             @Override
             public void onSuccess(V result) {
-                chainedFuture.complete(null);
+                chainedFuture.complete(result);
             }
             @Override
             public void onFailure(Throwable t) {
@@ -93,5 +101,28 @@ public class MoreFutures {
             }
         }, MoreExecutors.directExecutor());
         return chainedFuture;
+    }
+
+    public static <V> CompletableFuture<V> submitAsync(Callable<V> callable,
+            ExecutorService executor) {
+        CompletableFuture<V> future = new CompletableFuture<>();
+        executor.execute(() -> {
+            try {
+                future.complete(callable.call());
+            } catch (Throwable t) {
+                future.completeExceptionally(t);
+            }
+        });
+        return future;
+    }
+
+    public static Exception unwrapDriverException(ExecutionException e) {
+        Throwable cause = e.getCause();
+        if (cause instanceof DriverException) {
+            // see com.datastax.driver.core.DriverThrowables.propagateCause()
+            return ((DriverException) cause).copy();
+        } else {
+            return e;
+        }
     }
 }

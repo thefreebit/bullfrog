@@ -1,5 +1,5 @@
 <!--
-  Copyright 2013-2017 the original author or authors.
+  Copyright 2013-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -26,25 +26,34 @@
            class="form-horizontal"
            name="formCtrl"
            style="padding-top: 15px;">
-        <div gt-form-group
-             gt-label="Default displayed transaction type"
-             gt-model="config.defaultDisplayedTransactionType"
-             gt-number="true"
-             gt-required="loaded"
-             gt-disabled="!agentPermissions.config.edit.ui"
-             gt-width="20em"
-             gt-col-class1="col-lg-4"
-             gt-col-class2="col-lg-8">
-          <div class="help-block">
-            The default transaction type displayed on the transactions and errors page.
+        <div class="form-group">
+          <label class="col-lg-4 control-label"
+                 for="defaultTransactionType">
+            Default transaction type
+          </label>
+          <div class="col-lg-8">
+            <select ng-model="config.defaultTransactionType"
+                    ng-disabled="!agentRollup.permissions.config.edit.ui"
+                    id="defaultTransactionType"
+                    class="form-control"
+                    style="width: auto;">
+              <option ng-repeat="transactionType in allTransactionTypes track by transactionType.name"
+                      ng-value="transactionType.name"
+                      ng-disabled="transactionType.disabled">
+                {{transactionType.name}}
+              </option>
+            </select>
+            <div class="help-block">
+              The default transaction type displayed on the transactions and errors page.
+            </div>
           </div>
         </div>
         <div gt-form-group
-             gt-label="Default displayed percentiles"
-             gt-model="page.defaultDisplayedPercentiles"
+             gt-label="Default percentiles"
+             gt-model="page.defaultPercentiles"
              gt-pattern="pattern.percentageList"
              gt-required="loaded"
-             gt-disabled="!agentPermissions.config.edit.ui"
+             gt-disabled="!agentRollup.permissions.config.edit.ui"
              gt-width="20em"
              gt-col-class1="col-lg-4"
              gt-col-class2="col-lg-8">
@@ -64,7 +73,7 @@
           <div class="col-lg-8">
             <select multiple
                     ng-model="config.defaultGaugeNames"
-                    ng-disabled="!agentPermissions.config.edit.ui"
+                    ng-disabled="!agentRollup.permissions.config.edit.ui"
                     id="defaultGaugeNames"
                     class="form-control"
                     style="width: auto; height: 200px; border-top-right-radius: 0; border-bottom-right-radius: 0;">
@@ -80,7 +89,7 @@
           </div>
         </div>
         <div class="form-group gt-form-buttons"
-             ng-if="agentPermissions.config.edit.ui">
+             ng-if="agentRollup.permissions.config.edit.ui">
           <div class="col-lg-offset-4 col-lg-8">
             <div gt-button
                  gt-label="Save changes"
@@ -93,3 +102,5 @@
     </div>
   </div>
 </div>
+<!-- each page with confirmation dialog needs its own confirmation dom so that it is deleted on $destroy -->
+<div ng-include="'template/gt-confirmation.html'"></div>

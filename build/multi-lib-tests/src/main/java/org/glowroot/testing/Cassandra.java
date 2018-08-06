@@ -1,5 +1,5 @@
 /**
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ public class Cassandra {
         run("2.1.10.1", "guava-19.0");
         run("2.1.10.2", "guava-19.0");
         run("2.1.10.3", "guava-19.0");
-        for (int i = 0; i <= 7; i++) {
+        for (int i = 0; i <= 8; i++) {
             run("3.0." + i, "guava-19.0");
         }
         for (int i = 0; i <= 4; i++) {
@@ -47,6 +47,10 @@ public class Cassandra {
         }
         run("3.2.0");
         run("3.3.0");
+        run("3.3.1");
+        run("3.3.2");
+        run("3.4.0");
+        run("3.5.0");
     }
 
     private static void run(String version, String... profiles) throws Exception {

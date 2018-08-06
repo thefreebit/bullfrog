@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
     <groupId>org.glowroot</groupId>
     <artifactId>glowroot-parent</artifactId>
-    <version>0.9.25</version>
+    <version>0.10.12</version>
     <relativePath>../../..</relativePath>
   </parent>
 
@@ -20,10 +21,10 @@
     <logback.version>1.2.3</logback.version>
     <slf4j.version>1.7.25</slf4j.version>
     <log4j.version>1.2.17</log4j.version>
-    <!-- log4j 2.9.1 only works under javaagent container due to
-      https://issues.apache.org/jira/browse/LOG4J2-2055 -->
-    <log4j2x.version>2.9.0</log4j2x.version>
+    <log4j2x.version>2.11.0</log4j2x.version>
     <commons.logging.version>1.2</commons.logging.version>
+    <!-- JBoss Logging 2.1+ requires Java 8+ -->
+    <jboss.logging.version>2.0.9.Final</jboss.logging.version>
   </properties>
 
   <dependencies>
@@ -31,13 +32,6 @@
       <groupId>org.glowroot</groupId>
       <artifactId>glowroot-agent-plugin-api</artifactId>
       <version>${project.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.google.code.findbugs</groupId>
-      <artifactId>jsr305</artifactId>
-      <!-- cannot set to optional, all annotation classes must be available on IBM Java 1.6 SR8 and
-        earlier due to http://www-01.ibm.com/support/docview.wss?uid=swg1IZ76354 -->
       <scope>provided</scope>
     </dependency>
     <dependency>
@@ -51,16 +45,9 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.glowroot</groupId>
-      <artifactId>glowroot-agent-it-harness</artifactId>
-      <version>${project.version}</version>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
       <scope>test</scope>
-      <exclusions>
-        <exclusion>
-          <artifactId>jul-to-slf4j</artifactId>
-          <groupId>org.slf4j</groupId>
-        </exclusion>
-      </exclusions>
     </dependency>
     <dependency>
       <groupId>ch.qos.logback</groupId>
@@ -114,6 +101,12 @@
       <version>${commons.logging.version}</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.jboss.logmanager</groupId>
+      <artifactId>jboss-logmanager</artifactId>
+      <version>${jboss.logging.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -152,51 +145,28 @@
 
   <profiles>
     <profile>
-      <id>shade</id>
+      <id>auto-activated-test-unshaded</id>
       <activation>
         <property>
-          <name>!glowroot.shade.skip</name>
+          <name>!glowroot.test.shaded</name>
         </property>
       </activation>
-      <build>
-        <plugins>
-          <plugin>
-            <artifactId>maven-shade-plugin</artifactId>
-            <configuration>
-              <dependencyReducedPomLocation>
-                ${project.build.directory}/dependency-reduced-pom.xml
-              </dependencyReducedPomLocation>
-              <createSourcesJar>true</createSourcesJar>
-              <shadeSourcesContent>true</shadeSourcesContent>
-            </configuration>
-            <executions>
-              <execution>
-                <id>default</id>
-                <goals>
-                  <goal>shade</goal>
-                </goals>
-                <configuration>
-                  <relocations>
-                    <relocation>
-                      <!-- all annotation classes must be available on IBM Java 1.6 SR8 and earlier
-                        due to http://www-01.ibm.com/support/docview.wss?uid=swg1IZ76354 -->
-                      <pattern>javax.annotation</pattern>
-                      <shadedPattern>org.glowroot.agent.shaded.javax.annotation</shadedPattern>
-                    </relocation>
-                  </relocations>
-                </configuration>
-              </execution>
-            </executions>
-          </plugin>
-        </plugins>
-      </build>
+      <dependencies>
+        <dependency>
+          <groupId>org.glowroot</groupId>
+          <artifactId>glowroot-agent-it-harness-unshaded</artifactId>
+          <version>${project.version}</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
     </profile>
     <profile>
-      <id>logback-old</id>
-      <properties>
-        <logback.version>0.9.15</logback.version>
-        <slf4j.version>1.5.6</slf4j.version>
-      </properties>
+      <id>auto-activated-test-shaded</id>
+      <activation>
+        <property>
+          <name>glowroot.test.shaded</name>
+        </property>
+      </activation>
       <dependencies>
         <dependency>
           <groupId>org.glowroot</groupId>
@@ -205,32 +175,26 @@
           <scope>test</scope>
           <exclusions>
             <exclusion>
-              <groupId>org.slf4j</groupId>
-              <artifactId>jul-to-slf4j</artifactId>
+              <!-- exclusion is needed due to https://issues.apache.org/jira/browse/MSHADE-206 -->
+              <groupId>org.glowroot</groupId>
+              <artifactId>glowroot-agent-it-harness-unshaded</artifactId>
+            </exclusion>
+            <exclusion>
+              <!-- exclusion is needed due to https://issues.apache.org/jira/browse/MSHADE-206 -->
+              <groupId>org.glowroot</groupId>
+              <artifactId>glowroot-agent-core</artifactId>
             </exclusion>
           </exclusions>
         </dependency>
       </dependencies>
-      <build>
-        <testResources>
-          <testResource>
-            <directory>src/test/resources-logback-old</directory>
-          </testResource>
-        </testResources>
-        <plugins>
-          <plugin>
-            <artifactId>maven-failsafe-plugin</artifactId>
-            <configuration>
-              <systemPropertyVariables>
-                <glowroot.test.oldLogback>true</glowroot.test.oldLogback>
-              </systemPropertyVariables>
-            </configuration>
-          </plugin>
-        </plugins>
-      </build>
     </profile>
     <profile>
       <id>force-java6</id>
+      <activation>
+        <property>
+          <name>glowroot.forceJava6</name>
+        </property>
+      </activation>
       <build>
         <pluginManagement>
           <plugins>
@@ -248,6 +212,45 @@
             </plugin>
           </plugins>
         </pluginManagement>
+      </build>
+    </profile>
+    <profile>
+      <id>jboss-logging</id>
+      <build>
+        <plugins>
+          <plugin>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <systemPropertyVariables>
+                <glowroot.test.julManager>org.jboss.logmanager.LogManager</glowroot.test.julManager>
+              </systemPropertyVariables>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>logback-old</id>
+      <properties>
+        <logback.version>0.9.15</logback.version>
+        <slf4j.version>1.5.6</slf4j.version>
+      </properties>
+      <build>
+        <testResources>
+          <testResource>
+            <directory>src/test/resources-logback-old</directory>
+          </testResource>
+        </testResources>
+        <plugins>
+          <plugin>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <systemPropertyVariables>
+                <glowroot.test.oldLogback>true</glowroot.test.oldLogback>
+              </systemPropertyVariables>
+            </configuration>
+          </plugin>
+        </plugins>
       </build>
     </profile>
   </profiles>

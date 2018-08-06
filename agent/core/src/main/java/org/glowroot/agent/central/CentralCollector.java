@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,17 +22,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import javax.annotation.Nullable;
-
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 import io.grpc.stub.StreamObserver;
+import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.glowroot.agent.central.CentralConnection.GrpcCall;
 import org.glowroot.agent.collector.Collector;
+import org.glowroot.agent.config.ConfigService;
 import org.glowroot.agent.live.LiveJvmServiceImpl;
 import org.glowroot.agent.live.LiveTraceRepositoryImpl;
 import org.glowroot.agent.live.LiveWeavingServiceImpl;
@@ -48,6 +49,7 @@ import org.glowroot.wire.api.model.CollectorServiceOuterClass.EmptyMessage;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.Environment;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.GaugeValue;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.GaugeValueMessage;
+import org.glowroot.wire.api.model.CollectorServiceOuterClass.GaugeValueResponseMessage;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.InitMessage;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.InitResponse;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.LogEvent;
@@ -57,6 +59,7 @@ import org.glowroot.wire.api.model.CollectorServiceOuterClass.OverallAggregate;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.TraceStreamCounts;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.TraceStreamHeader;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.TraceStreamMessage;
+import org.glowroot.wire.api.model.CollectorServiceOuterClass.TraceStreamMessage.Queries;
 import org.glowroot.wire.api.model.CollectorServiceOuterClass.TransactionAggregate;
 import org.glowroot.wire.api.model.ProfileOuterClass.Profile;
 import org.glowroot.wire.api.model.TraceOuterClass.Trace;
@@ -69,37 +72,44 @@ public class CentralCollector implements Collector {
     private static final Logger startupLogger = LoggerFactory.getLogger("org.glowroot");
 
     private final String agentId;
-    private final String agentRollupId;
     private final String collectorAddress;
+    private final ConfigService configService;
     private final CentralConnection centralConnection;
     private final CollectorServiceStub collectorServiceStub;
     private final DownstreamServiceObserver downstreamServiceObserver;
 
     private final SharedQueryTextLimiter sharedQueryTextLimiter = new SharedQueryTextLimiter();
 
+    private volatile @MonotonicNonNull Environment environment;
     private volatile int nextAggregateDelayMillis;
 
     public CentralCollector(Map<String, String> properties, String collectorAddress,
+            @Nullable String collectorAuthority, File confDir, @Nullable File sharedConfDir,
             LiveJvmServiceImpl liveJvmService, LiveWeavingServiceImpl liveWeavingService,
-            LiveTraceRepositoryImpl liveTraceRepository, AgentConfigUpdater agentConfigUpdater)
-            throws Exception {
+            LiveTraceRepositoryImpl liveTraceRepository, AgentConfigUpdater agentConfigUpdater,
+            ConfigService configService) throws Exception {
 
         String agentId = properties.get("glowroot.agent.id");
         if (Strings.isNullOrEmpty(agentId)) {
-            agentId = InetAddress.getLocalHost().getHostName();
+            agentId = escapeHostName(InetAddress.getLocalHost().getHostName());
+        } else if (agentId.endsWith("::")) {
+            agentId += escapeHostName(InetAddress.getLocalHost().getHostName());
+        } else if (!agentId.contains("::")) {
+            // check for 0.9.x agent rollup id
+            String v09AgentRollupId = properties.get("glowroot.agent.rollup.id");
+            if (!Strings.isNullOrEmpty(v09AgentRollupId)) {
+                agentId = convertFromV09AgentRollupId(v09AgentRollupId) + agentId;
+            }
         }
         this.agentId = agentId;
-        this.agentRollupId = Strings.nullToEmpty(properties.get("glowroot.agent.rollup.id"));
         this.collectorAddress = collectorAddress;
+        this.configService = configService;
 
-        if (agentRollupId.isEmpty()) {
-            startupLogger.info("agent id: {}", agentId);
-        } else {
-            startupLogger.info("agent id: {}, rollup id: {}", agentId, agentRollupId);
-        }
+        startupLogger.info("agent id: {}", agentId);
 
         AtomicBoolean inConnectionFailure = new AtomicBoolean();
-        centralConnection = new CentralConnection(collectorAddress, inConnectionFailure);
+        centralConnection = new CentralConnection(collectorAddress, collectorAuthority, confDir,
+                sharedConfDir, inConnectionFailure);
         collectorServiceStub = CollectorServiceGrpc.newStub(centralConnection.getChannel())
                 .withCompression("gzip");
         downstreamServiceObserver = new DownstreamServiceObserver(centralConnection,
@@ -108,11 +118,10 @@ public class CentralCollector implements Collector {
     }
 
     @Override
-    public void init(File confDir, @Nullable File sharedConfDir, Environment environment,
+    public void init(File confDir, @Nullable File sharedConfDir, final Environment environment,
             AgentConfig agentConfig, final AgentConfigUpdater agentConfigUpdater) {
         final InitMessage initMessage = InitMessage.newBuilder()
                 .setAgentId(agentId)
-                .setAgentRollupId(agentRollupId)
                 .setEnvironment(environment)
                 .setAgentConfig(agentConfig)
                 .build();
@@ -123,6 +132,7 @@ public class CentralCollector implements Collector {
             }
             @Override
             void doWithResponse(final InitResponse response) {
+                CentralCollector.this.environment = environment;
                 // don't need to suppress sending this log message to the central collector because
                 // startup logger info messages are never sent to the central collector
                 startupLogger.info("connected to the central collector {}, version {}",
@@ -151,11 +161,29 @@ public class CentralCollector implements Collector {
         final GaugeValueMessage gaugeValueMessage = GaugeValueMessage.newBuilder()
                 .setAgentId(agentId)
                 .addAllGaugeValues(gaugeValues)
+                .setPostV09(true)
                 .build();
-        centralConnection.callWithAFewRetries(new GrpcCall<EmptyMessage>() {
+        centralConnection.callWithAFewRetries(new GrpcCall<GaugeValueResponseMessage>() {
             @Override
-            public void call(StreamObserver<EmptyMessage> responseObserver) {
+            public void call(StreamObserver<GaugeValueResponseMessage> responseObserver) {
                 collectorServiceStub.collectGaugeValues(gaugeValueMessage, responseObserver);
+            }
+            @Override
+            public void doWithResponse(GaugeValueResponseMessage response) {
+                if (response.getResendInit() && environment != null) {
+                    final InitMessage initMessage = InitMessage.newBuilder()
+                            .setAgentId(agentId)
+                            .setEnvironment(environment)
+                            .setAgentConfig(configService.getAgentConfig())
+                            .build();
+                    // only once, since resendInit will continue to be sent back until it succeeds
+                    centralConnection.callOnce(new GrpcCall<InitResponse>() {
+                        @Override
+                        void call(StreamObserver<InitResponse> responseObserver) {
+                            collectorServiceStub.collectInit(initMessage, responseObserver);
+                        }
+                    });
+                }
             }
         });
     }
@@ -183,6 +211,7 @@ public class CentralCollector implements Collector {
         final LogMessage logMessage = LogMessage.newBuilder()
                 .setAgentId(agentId)
                 .setLogEvent(logEvent)
+                .setPostV09(true)
                 .build();
         centralConnection.callWithAFewRetries(new GrpcCall<EmptyMessage>() {
             @Override
@@ -203,51 +232,24 @@ public class CentralCollector implements Collector {
         centralConnection.awaitClose();
     }
 
-    private class CollectAggregatesGrpcCall extends GrpcCall<AggregateResponseMessage> {
-
-        private class AggregateVisitorImpl implements AggregateVisitor {
-            private final StreamObserver<AggregateStreamMessage> requestObserver;
-            private AggregateVisitorImpl(StreamObserver<AggregateStreamMessage> requestObserver) {
-                this.requestObserver = requestObserver;
-            }
-            @Override
-            public void visitOverallAggregate(String transactionType,
-                    List<String> sharedQueryTexts, Aggregate overallAggregate) {
-                for (String sharedQueryText : sharedQueryTexts) {
-                    Aggregate.SharedQueryText aggregateSharedQueryText = sharedQueryTextLimiter
-                            .buildAggregateSharedQueryText(sharedQueryText);
-                    String fullTextSha1 = aggregateSharedQueryText.getFullTextSha1();
-                    if (!fullTextSha1.isEmpty()) {
-                        fullTextSha1s.add(fullTextSha1);
-                    }
-                    requestObserver.onNext(AggregateStreamMessage.newBuilder()
-                            .setSharedQueryText(aggregateSharedQueryText)
-                            .build());
-                }
-                requestObserver.onNext(AggregateStreamMessage.newBuilder()
-                        .setOverallAggregate(OverallAggregate.newBuilder()
-                                .setTransactionType(transactionType)
-                                .setAggregate(overallAggregate))
-                        .build());
-            }
-            @Override
-            public void visitTransactionAggregate(String transactionType,
-                    String transactionName, List<String> sharedQueryTexts,
-                    Aggregate transactionAggregate) {
-                for (String sharedQueryText : sharedQueryTexts) {
-                    requestObserver.onNext(AggregateStreamMessage.newBuilder()
-                            .setSharedQueryText(sharedQueryTextLimiter
-                                    .buildAggregateSharedQueryText(sharedQueryText))
-                            .build());
-                }
-                requestObserver.onNext(AggregateStreamMessage.newBuilder()
-                        .setTransactionAggregate(TransactionAggregate.newBuilder()
-                                .setTransactionType(transactionType)
-                                .setTransactionName(transactionName)
-                                .setAggregate(transactionAggregate))
-                        .build());
-            }
+    @VisibleForTesting
+    static String escapeHostName(String hostName) {
+        hostName = hostName.replace("\\", "\\\\");
+        if (hostName.startsWith(":")) {
+            hostName = "\\" + hostName;
         }
+        while (hostName.contains("::")) {
+            hostName = hostName.replace("::", ":\\:");
+        }
+        return hostName;
+    }
+
+    private static String convertFromV09AgentRollupId(String agentRollupId) {
+        // old agent rollup id supported spaces around separator
+        return agentRollupId.replaceAll(" */ *", "::").trim() + "::";
+    }
+
+    private class CollectAggregatesGrpcCall extends GrpcCall<AggregateResponseMessage> {
 
         private final AggregateReader aggregateReader;
         private final List<String> fullTextSha1s = Lists.newArrayList();
@@ -263,7 +265,8 @@ public class CentralCollector implements Collector {
             requestObserver.onNext(AggregateStreamMessage.newBuilder()
                     .setStreamHeader(AggregateStreamHeader.newBuilder()
                             .setAgentId(agentId)
-                            .setCaptureTime(aggregateReader.captureTime()))
+                            .setCaptureTime(aggregateReader.captureTime())
+                            .setPostV09(true))
                     .build());
             // need to clear in case this is a retry
             fullTextSha1s.clear();
@@ -283,6 +286,50 @@ public class CentralCollector implements Collector {
             nextAggregateDelayMillis = Math.min(response.getNextDelayMillis(), 30000);
             for (String fullTextSha1 : fullTextSha1s) {
                 sharedQueryTextLimiter.onSuccessfullySentToCentralCollector(fullTextSha1);
+            }
+        }
+
+        private class AggregateVisitorImpl implements AggregateVisitor {
+
+            private final StreamObserver<AggregateStreamMessage> requestObserver;
+
+            private AggregateVisitorImpl(StreamObserver<AggregateStreamMessage> requestObserver) {
+                this.requestObserver = requestObserver;
+            }
+
+            @Override
+            public void visitOverallAggregate(String transactionType,
+                    List<String> sharedQueryTexts, Aggregate overallAggregate) {
+                for (String sharedQueryText : sharedQueryTexts) {
+                    Aggregate.SharedQueryText aggregateSharedQueryText = sharedQueryTextLimiter
+                            .buildAggregateSharedQueryText(sharedQueryText, fullTextSha1s);
+                    requestObserver.onNext(AggregateStreamMessage.newBuilder()
+                            .setSharedQueryText(aggregateSharedQueryText)
+                            .build());
+                }
+                requestObserver.onNext(AggregateStreamMessage.newBuilder()
+                        .setOverallAggregate(OverallAggregate.newBuilder()
+                                .setTransactionType(transactionType)
+                                .setAggregate(overallAggregate))
+                        .build());
+            }
+
+            @Override
+            public void visitTransactionAggregate(String transactionType,
+                    String transactionName, List<String> sharedQueryTexts,
+                    Aggregate transactionAggregate) {
+                for (String sharedQueryText : sharedQueryTexts) {
+                    requestObserver.onNext(AggregateStreamMessage.newBuilder()
+                            .setSharedQueryText(sharedQueryTextLimiter
+                                    .buildAggregateSharedQueryText(sharedQueryText, fullTextSha1s))
+                            .build());
+                }
+                requestObserver.onNext(AggregateStreamMessage.newBuilder()
+                        .setTransactionAggregate(TransactionAggregate.newBuilder()
+                                .setTransactionType(transactionType)
+                                .setTransactionName(transactionName)
+                                .setAggregate(transactionAggregate))
+                        .build());
             }
         }
     }
@@ -305,7 +352,8 @@ public class CentralCollector implements Collector {
                     .setStreamHeader(TraceStreamHeader.newBuilder()
                             .setAgentId(agentId)
                             .setTraceId(traceReader.traceId())
-                            .setUpdate(traceReader.update()))
+                            .setUpdate(traceReader.update())
+                            .setPostV09(true))
                     .build());
             // need to clear in case this is a retry
             fullTextSha1s.clear();
@@ -319,8 +367,8 @@ public class CentralCollector implements Collector {
             }
             requestObserver.onNext(TraceStreamMessage.newBuilder()
                     .setStreamCounts(TraceStreamCounts.newBuilder()
-                            .setSharedQueryTextCount(traceVisitor.sharedQueryTextCount)
-                            .setEntryCount(traceVisitor.entryCount))
+                            .setEntryCount(traceVisitor.entryCount)
+                            .setSharedQueryTextCount(traceVisitor.sharedQueryTextCount))
                     .build());
             requestObserver.onCompleted();
         }
@@ -338,10 +386,8 @@ public class CentralCollector implements Collector {
         private final StreamObserver<TraceStreamMessage> requestObserver;
         private final List<String> fullTextSha1s;
 
-        private final Map<String, Integer> sharedQueryTextIndexes = Maps.newHashMap();
-
-        private int sharedQueryTextCount;
         private int entryCount;
+        private int sharedQueryTextCount;
 
         private TraceVisitorImpl(StreamObserver<TraceStreamMessage> requestObserver,
                 List<String> fullTextSha1s) {
@@ -350,32 +396,31 @@ public class CentralCollector implements Collector {
         }
 
         @Override
-        public int visitSharedQueryText(String sharedQueryText) {
-            Integer sharedQueryTextIndex = sharedQueryTextIndexes.get(sharedQueryText);
-            if (sharedQueryTextIndex != null) {
-                return sharedQueryTextIndex;
-            }
-            sharedQueryTextIndex = sharedQueryTextIndexes.size();
-            sharedQueryTextIndexes.put(sharedQueryText, sharedQueryTextIndex);
-            Trace.SharedQueryText traceSharedQueryText =
-                    sharedQueryTextLimiter.buildTraceSharedQueryText(sharedQueryText);
-            String fullTextSha1 = traceSharedQueryText.getFullTextSha1();
-            if (!fullTextSha1.isEmpty()) {
-                fullTextSha1s.add(fullTextSha1);
-            }
-            requestObserver.onNext(TraceStreamMessage.newBuilder()
-                    .setSharedQueryText(traceSharedQueryText)
-                    .build());
-            sharedQueryTextCount++;
-            return sharedQueryTextIndex;
-        }
-
-        @Override
         public void visitEntry(Trace.Entry entry) {
             requestObserver.onNext(TraceStreamMessage.newBuilder()
                     .setEntry(entry)
                     .build());
             entryCount++;
+        }
+
+        @Override
+        public void visitQueries(List<Aggregate.Query> queries) {
+            requestObserver.onNext(TraceStreamMessage.newBuilder()
+                    .setQueries(Queries.newBuilder()
+                            .addAllQuery(queries))
+                    .build());
+        }
+
+        @Override
+        public void visitSharedQueryTexts(List<String> sharedQueryTexts) {
+            for (String sharedQueryText : sharedQueryTexts) {
+                Trace.SharedQueryText traceSharedQueryText = sharedQueryTextLimiter
+                        .buildTraceSharedQueryText(sharedQueryText, fullTextSha1s);
+                requestObserver.onNext(TraceStreamMessage.newBuilder()
+                        .setSharedQueryText(traceSharedQueryText)
+                        .build());
+            }
+            sharedQueryTextCount = sharedQueryTexts.size();
         }
 
         @Override

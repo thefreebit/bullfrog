@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,42 +16,42 @@
 package org.glowroot.central.repo;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
-
-import javax.annotation.Nullable;
 
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.Row;
 import com.datastax.driver.core.utils.UUIDs;
+import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 import com.google.common.io.BaseEncoding;
 import com.google.protobuf.ByteString;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
-import org.glowroot.central.repo.AgentRollupDao.AgentConfigUpdate;
+import org.glowroot.central.repo.ActiveAgentDao.AgentConfigUpdate;
 import org.glowroot.central.util.Cache;
 import org.glowroot.central.util.Cache.CacheLoader;
 import org.glowroot.central.util.ClusterManager;
 import org.glowroot.central.util.Session;
-import org.glowroot.common.repo.ConfigRepository.OptimisticLockException;
+import org.glowroot.common2.config.MoreConfigDefaults;
+import org.glowroot.common2.repo.ConfigRepository.OptimisticLockException;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AdvancedConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.PluginConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.PluginProperty;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 // TODO agent config records never expire for abandoned agent rollup ids
 public class AgentConfigDao {
-
-    private static final String WITH_LCS =
-            "with compaction = { 'class' : 'LeveledCompactionStrategy' }";
 
     private static final Random random = new Random();
 
@@ -68,9 +68,9 @@ public class AgentConfigDao {
     AgentConfigDao(Session session, ClusterManager clusterManager) throws Exception {
         this.session = session;
 
-        session.execute("create table if not exists agent_config (agent_rollup_id"
-                + " varchar, config blob, config_update boolean, config_update_token uuid,"
-                + " primary key (agent_rollup_id)) " + WITH_LCS);
+        session.createTableWithLCS("create table if not exists agent_config (agent_rollup_id"
+                + " varchar, config blob, config_update boolean, config_update_token uuid, primary"
+                + " key (agent_rollup_id))");
         // secondary index is needed for Cassandra 2.x (to avoid error on readUpdatePS)
         session.execute(
                 "create index if not exists config_update_idx on agent_config (config_update)");
@@ -84,26 +84,28 @@ public class AgentConfigDao {
         readForUpdatePS = session.prepare("select config, config_update_token from agent_config"
                 + " where agent_rollup_id = ? and config_update = true allow filtering");
         markUpdatedPS = session.prepare("update agent_config set config_update = false,"
-                + " config_update_token = null where agent_rollup_id = ?"
-                + " if config_update_token = ?");
+                + " config_update_token = null where agent_rollup_id = ? if config_update_token"
+                + " = ?");
 
         agentConfigCache =
                 clusterManager.createCache("agentConfigCache", new AgentConfigCacheLoader());
     }
 
-    public AgentConfig store(String agentId, @Nullable String agentRollupId,
-            AgentConfig agentConfig) throws Exception {
+    public AgentConfig store(String agentId, AgentConfig agentConfig) throws Exception {
         AgentConfig existingAgentConfig = read(agentId);
         AgentConfig updatedAgentConfig;
         if (existingAgentConfig == null) {
-            updatedAgentConfig = agentConfig;
+            updatedAgentConfig = agentConfig.toBuilder()
+                    // agent should not send general config, but clearing it just to be safe
+                    .clearGeneralConfig()
+                    .build();
         } else {
             // sync list of plugin properties, central property values win
-            Map<String, PluginConfig> existingPluginConfigs = Maps.newHashMap();
+            Map<String, PluginConfig> existingPluginConfigs = new HashMap<>();
             for (PluginConfig existingPluginConfig : existingAgentConfig.getPluginConfigList()) {
                 existingPluginConfigs.put(existingPluginConfig.getId(), existingPluginConfig);
             }
-            List<PluginConfig> pluginConfigs = Lists.newArrayList();
+            List<PluginConfig> pluginConfigs = new ArrayList<>();
             for (PluginConfig agentPluginConfig : agentConfig.getPluginConfigList()) {
                 PluginConfig existingPluginConfig =
                         existingPluginConfigs.get(agentPluginConfig.getId());
@@ -111,11 +113,11 @@ public class AgentConfigDao {
                     pluginConfigs.add(agentPluginConfig);
                     continue;
                 }
-                Map<String, PluginProperty> existingProperties = Maps.newHashMap();
+                Map<String, PluginProperty> existingProperties = new HashMap<>();
                 for (PluginProperty existingProperty : existingPluginConfig.getPropertyList()) {
                     existingProperties.put(existingProperty.getName(), existingProperty);
                 }
-                List<PluginProperty> properties = Lists.newArrayList();
+                List<PluginProperty> properties = new ArrayList<>();
                 for (PluginProperty agentProperty : agentPluginConfig.getPropertyList()) {
                     PluginProperty existingProperty =
                             existingProperties.get(agentProperty.getName());
@@ -152,8 +154,9 @@ public class AgentConfigDao {
             session.execute(boundStatement);
             agentConfigCache.invalidate(agentId);
         }
+        String agentRollupId = AgentRollupIds.getParent(agentId);
         if (agentRollupId != null) {
-            List<String> agentRollupIds = AgentRollupDao.getAgentRollupIds(agentRollupId);
+            List<String> agentRollupIds = AgentRollupIds.getAgentRollupIds(agentRollupId);
             for (String loopAgentRollupId : agentRollupIds) {
                 if (read(loopAgentRollupId) != null) {
                     continue;
@@ -168,10 +171,9 @@ public class AgentConfigDao {
                 boundStatement.setBytes(i++, ByteBuffer.wrap(AgentConfig.newBuilder()
                         .setUiConfig(updatedAgentConfig.getUiConfig())
                         .setAdvancedConfig(AdvancedConfig.newBuilder()
-                                .setMaxAggregateQueriesPerType(
-                                        advancedConfig.getMaxAggregateQueriesPerType())
-                                .setMaxAggregateServiceCallsPerType(
-                                        advancedConfig.getMaxAggregateServiceCallsPerType()))
+                                .setMaxQueryAggregates(advancedConfig.getMaxQueryAggregates())
+                                .setMaxServiceCallAggregates(
+                                        advancedConfig.getMaxServiceCallAggregates()))
                         .build()
                         .toByteArray()));
                 boundStatement.setBool(i++, false);
@@ -183,8 +185,7 @@ public class AgentConfigDao {
         return updatedAgentConfig;
     }
 
-    void update(String agentRollupId, AgentConfigUpdater agentConfigUpdater)
-            throws Exception {
+    void update(String agentRollupId, AgentConfigUpdater agentConfigUpdater) throws Exception {
         for (int j = 0; j < 10; j++) {
             BoundStatement boundStatement = readPS.bind();
             boundStatement.setString(0, agentRollupId);
@@ -201,7 +202,6 @@ public class AgentConfigDao {
             boundStatement.setBool(i++, true);
             boundStatement.setUUID(i++, UUIDs.random());
             boundStatement.setString(i++, agentRollupId);
-
             boundStatement.setBytes(i++, ByteBuffer.wrap(currValue.toByteArray()));
             results = session.execute(boundStatement);
             row = checkNotNull(results.one());
@@ -210,13 +210,27 @@ public class AgentConfigDao {
                 agentConfigCache.invalidate(agentRollupId);
                 return;
             }
-            Thread.sleep(200);
+            MILLISECONDS.sleep(200);
         }
         throw new OptimisticLockException();
     }
 
-    @Nullable
-    AgentConfig read(String agentRollupId) throws Exception {
+    public String readAgentRollupDisplay(String agentRollupId) throws Exception {
+        List<String> displayParts = readAgentRollupDisplayParts(agentRollupId);
+        return Joiner.on(" :: ").join(displayParts);
+    }
+
+    public List<String> readAgentRollupDisplayParts(String agentRollupId) throws Exception {
+        List<String> agentRollupIds = AgentRollupIds.getAgentRollupIds(agentRollupId);
+        List<String> displayParts = new ArrayList<>();
+        for (ListIterator<String> i = agentRollupIds.listIterator(agentRollupIds.size()); i
+                .hasPrevious();) {
+            displayParts.add(readAgentRollupLastDisplayPart(i.previous()));
+        }
+        return displayParts;
+    }
+
+    public @Nullable AgentConfig read(String agentRollupId) throws Exception {
         return agentConfigCache.get(agentRollupId).orNull();
     }
 
@@ -245,6 +259,18 @@ public class AgentConfigDao {
         boundStatement.setString(i++, agentId);
         boundStatement.setUUID(i++, configUpdateToken);
         session.execute(boundStatement);
+    }
+
+    private String readAgentRollupLastDisplayPart(String agentRollupId) throws Exception {
+        AgentConfig agentConfig = read(agentRollupId);
+        if (agentConfig == null) {
+            return MoreConfigDefaults.getDefaultAgentRollupDisplayPart(agentRollupId);
+        }
+        String display = agentConfig.getGeneralConfig().getDisplay();
+        if (display.isEmpty()) {
+            return MoreConfigDefaults.getDefaultAgentRollupDisplayPart(agentRollupId);
+        }
+        return display;
     }
 
     static String generateNewId() {

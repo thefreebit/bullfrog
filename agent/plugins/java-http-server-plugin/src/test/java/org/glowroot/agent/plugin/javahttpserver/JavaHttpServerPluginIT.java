@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,6 @@ package org.glowroot.agent.plugin.javahttpserver;
 import java.io.IOException;
 import java.util.Iterator;
 
-import javax.annotation.Nullable;
-
 import com.sun.net.httpserver.HttpExchange;
 import org.junit.After;
 import org.junit.AfterClass;
@@ -34,6 +32,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SuppressWarnings("restriction")
 public class JavaHttpServerPluginIT {
+
+    private static final String PLUGIN_ID = "java-http-server";
 
     private static Container container;
 
@@ -160,14 +160,45 @@ public class JavaHttpServerPluginIT {
         assertThat(entry.getError().getMessage())
                 .isEqualTo("sendResponseHeaders, HTTP status code 500");
         assertThat(entry.getError().hasException()).isFalse();
-        assertThat(entry.getLocationStackTraceElementList()).isNotEmpty();
-        assertThat(entry.getLocationStackTraceElementList().get(0).getMethodName())
-                .isEqualTo("sendResponseHeaders");
 
         assertThat(i.hasNext()).isFalse();
     }
 
-    private static @Nullable String getDetailValue(Trace.Header header, String name) {
+    @Test
+    public void testSend400Error() throws Exception {
+        // when
+        Trace trace = container.execute(Send400Error.class, "Web");
+
+        // then
+        assertThat(trace.getHeader().hasError()).isFalse();
+        assertThat(trace.getEntryList()).isEmpty();
+    }
+
+    @Test
+    public void testSend400ErrorWithCaptureOn() throws Exception {
+        // given
+        container.getConfigService().setPluginProperty(PLUGIN_ID, "traceErrorOn4xxResponseCode",
+                true);
+
+        // when
+        Trace trace = container.execute(Send400Error.class, "Web");
+
+        // then
+        assertThat(trace.getHeader().getError().getMessage())
+                .isEqualTo("sendResponseHeaders, HTTP status code 400");
+        assertThat(trace.getHeader().getError().hasException()).isFalse();
+
+        Iterator<Trace.Entry> i = trace.getEntryList().iterator();
+
+        Trace.Entry entry = i.next();
+        assertThat(entry.getError().getMessage())
+                .isEqualTo("sendResponseHeaders, HTTP status code 400");
+        assertThat(entry.getError().hasException()).isFalse();
+
+        assertThat(i.hasNext()).isFalse();
+    }
+
+    private static String getDetailValue(Trace.Header header, String name) {
         for (Trace.DetailEntry detail : header.getDetailEntryList()) {
             if (detail.getName().equals(name)) {
                 return detail.getValueList().get(0).getString();
@@ -251,6 +282,13 @@ public class JavaHttpServerPluginIT {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             exchange.sendResponseHeaders(500, 0);
+        }
+    }
+
+    public static class Send400Error extends TestHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            exchange.sendResponseHeaders(400, 0);
         }
     }
 

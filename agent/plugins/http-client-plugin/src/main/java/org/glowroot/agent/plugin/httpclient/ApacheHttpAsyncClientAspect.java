@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,6 @@ package org.glowroot.agent.plugin.httpclient;
 
 import java.net.URI;
 
-import javax.annotation.Nullable;
-
 import org.glowroot.agent.plugin.api.Agent;
 import org.glowroot.agent.plugin.api.AsyncTraceEntry;
 import org.glowroot.agent.plugin.api.AuxThreadContext;
@@ -26,6 +24,7 @@ import org.glowroot.agent.plugin.api.MessageSupplier;
 import org.glowroot.agent.plugin.api.ThreadContext;
 import org.glowroot.agent.plugin.api.TimerName;
 import org.glowroot.agent.plugin.api.TraceEntry;
+import org.glowroot.agent.plugin.api.checker.Nullable;
 import org.glowroot.agent.plugin.api.util.FastThreadLocal;
 import org.glowroot.agent.plugin.api.weaving.BindParameter;
 import org.glowroot.agent.plugin.api.weaving.BindReceiver;
@@ -52,7 +51,7 @@ public class ApacheHttpAsyncClientAspect {
     public abstract static class HttpAsyncResponseConsumerImpl
             implements HttpAsyncResponseConsumerMixin {
 
-        private volatile @Nullable AsyncTraceEntry glowroot$asyncTraceEntry;
+        private transient volatile @Nullable AsyncTraceEntry glowroot$asyncTraceEntry;
 
         @Override
         public @Nullable AsyncTraceEntry glowroot$getAsyncTraceEntry() {
@@ -69,7 +68,7 @@ public class ApacheHttpAsyncClientAspect {
     @Mixin("org.apache.http.concurrent.FutureCallback")
     public abstract static class FutureCallbackImpl implements FutureCallbackMixin {
 
-        private volatile @Nullable AuxThreadContext glowroot$auxContext;
+        private transient volatile @Nullable AuxThreadContext glowroot$auxContext;
 
         @Override
         public @Nullable AuxThreadContext glowroot$getAuxContext() {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,56 +15,61 @@
  */
 package org.glowroot.central.repo;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-import javax.annotation.Nullable;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
-import com.google.common.base.Function;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.io.BaseEncoding;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.central.repo.AgentConfigDao.AgentConfigUpdater;
-import org.glowroot.common.config.AgentRollupConfig;
-import org.glowroot.common.config.CentralStorageConfig;
-import org.glowroot.common.config.CentralWebConfig;
-import org.glowroot.common.config.EmbeddedStorageConfig;
-import org.glowroot.common.config.EmbeddedWebConfig;
-import org.glowroot.common.config.HealthchecksIoConfig;
-import org.glowroot.common.config.HttpProxyConfig;
-import org.glowroot.common.config.ImmutableCentralStorageConfig;
-import org.glowroot.common.config.ImmutableCentralWebConfig;
-import org.glowroot.common.config.ImmutableEmbeddedStorageConfig;
-import org.glowroot.common.config.ImmutableHttpProxyConfig;
-import org.glowroot.common.config.ImmutableLdapConfig;
-import org.glowroot.common.config.ImmutablePagerDutyConfig;
-import org.glowroot.common.config.ImmutableSmtpConfig;
-import org.glowroot.common.config.LdapConfig;
-import org.glowroot.common.config.PagerDutyConfig;
-import org.glowroot.common.config.PagerDutyConfig.PagerDutyIntegrationKey;
-import org.glowroot.common.config.RoleConfig;
-import org.glowroot.common.config.SmtpConfig;
-import org.glowroot.common.config.StorageConfig;
-import org.glowroot.common.config.UserConfig;
-import org.glowroot.common.config.WebConfig;
-import org.glowroot.common.repo.ConfigRepository;
-import org.glowroot.common.repo.util.LazySecretKey;
 import org.glowroot.common.util.Versions;
+import org.glowroot.common2.config.CentralAdminGeneralConfig;
+import org.glowroot.common2.config.CentralStorageConfig;
+import org.glowroot.common2.config.CentralWebConfig;
+import org.glowroot.common2.config.EmbeddedAdminGeneralConfig;
+import org.glowroot.common2.config.EmbeddedStorageConfig;
+import org.glowroot.common2.config.EmbeddedWebConfig;
+import org.glowroot.common2.config.HealthchecksIoConfig;
+import org.glowroot.common2.config.HttpProxyConfig;
+import org.glowroot.common2.config.ImmutableCentralAdminGeneralConfig;
+import org.glowroot.common2.config.ImmutableCentralStorageConfig;
+import org.glowroot.common2.config.ImmutableCentralWebConfig;
+import org.glowroot.common2.config.ImmutableHttpProxyConfig;
+import org.glowroot.common2.config.ImmutableLdapConfig;
+import org.glowroot.common2.config.ImmutablePagerDutyConfig;
+import org.glowroot.common2.config.ImmutableSmtpConfig;
+import org.glowroot.common2.config.LdapConfig;
+import org.glowroot.common2.config.MoreConfigDefaults;
+import org.glowroot.common2.config.PagerDutyConfig;
+import org.glowroot.common2.config.PagerDutyConfig.PagerDutyIntegrationKey;
+import org.glowroot.common2.config.RoleConfig;
+import org.glowroot.common2.config.SmtpConfig;
+import org.glowroot.common2.config.StorageConfig;
+import org.glowroot.common2.config.UserConfig;
+import org.glowroot.common2.config.WebConfig;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.util.LazySecretKey;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AdvancedConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig.AlertCondition;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.GaugeConfig;
+import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.GeneralConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.InstrumentationConfig;
+import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.JvmConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.PluginConfig;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.PluginProperty;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.PluginProperty.Value.ValCase;
@@ -81,9 +86,8 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     private static final long GAUGE_COLLECTION_INTERVAL_MILLIS =
             Long.getLong("glowroot.internal.gaugeCollectionIntervalMillis", 5000);
 
-    private final AgentRollupDao agentRollupDao;
-    private final AgentConfigDao agentConfigDao;
     private final CentralConfigDao centralConfigDao;
+    private final AgentConfigDao agentConfigDao;
     private final UserDao userDao;
     private final RoleDao roleDao;
 
@@ -93,17 +97,16 @@ public class ConfigRepositoryImpl implements ConfigRepository {
 
     private final Set<AgentConfigListener> agentConfigListeners = Sets.newCopyOnWriteArraySet();
 
-    ConfigRepositoryImpl(AgentRollupDao agentRollupDao, AgentConfigDao agentConfigDao,
-            CentralConfigDao centralConfigDao, UserDao userDao, RoleDao roleDao,
-            String symmetricEncryptionKey) {
-        this.agentRollupDao = agentRollupDao;
-        this.agentConfigDao = agentConfigDao;
+    ConfigRepositoryImpl(CentralConfigDao centralConfigDao, AgentConfigDao agentConfigDao,
+            UserDao userDao, RoleDao roleDao, String symmetricEncryptionKey) {
         this.centralConfigDao = centralConfigDao;
+        this.agentConfigDao = agentConfigDao;
         this.userDao = userDao;
         this.roleDao = roleDao;
         rollupConfigs = ImmutableList.copyOf(RollupConfig.buildRollupConfigs());
         lazySecretKey = new LazySecretKeyImpl(symmetricEncryptionKey);
 
+        centralConfigDao.addKeyType(GENERAL_KEY, ImmutableCentralAdminGeneralConfig.class);
         centralConfigDao.addKeyType(WEB_KEY, ImmutableCentralWebConfig.class);
         centralConfigDao.addKeyType(STORAGE_KEY, ImmutableCentralStorageConfig.class);
         centralConfigDao.addKeyType(SMTP_KEY, ImmutableSmtpConfig.class);
@@ -113,13 +116,40 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     }
 
     @Override
+    public String readAgentRollupDisplay(String agentRollupId) throws Exception {
+        return agentConfigDao.readAgentRollupDisplay(agentRollupId);
+    }
+
+    @Override
+    public List<String> readAgentRollupDisplayParts(String agentRollupId) throws Exception {
+        return agentConfigDao.readAgentRollupDisplayParts(agentRollupId);
+    }
+
+    @Override
+    public GeneralConfig getGeneralConfig(String agentRollupId) throws Exception {
+        AgentConfig agentConfig = agentConfigDao.read(agentRollupId);
+        if (agentConfig == null) {
+            throw new AgentConfigNotFoundException(agentRollupId);
+        }
+        return agentConfig.getGeneralConfig();
+    }
+
+    @Override
     public TransactionConfig getTransactionConfig(String agentId) throws Exception {
         AgentConfig agentConfig = agentConfigDao.read(agentId);
         if (agentConfig == null) {
-            // for some reason received data from agent, but not initial agent config
             throw new AgentConfigNotFoundException(agentId);
         }
         return agentConfig.getTransactionConfig();
+    }
+
+    @Override
+    public JvmConfig getJvmConfig(String agentId) throws Exception {
+        AgentConfig agentConfig = agentConfigDao.read(agentId);
+        if (agentConfig == null) {
+            throw new AgentConfigNotFoundException(agentId);
+        }
+        return agentConfig.getJvmConfig();
     }
 
     // central supports ui config on rollups
@@ -127,7 +157,6 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     public UiConfig getUiConfig(String agentRollupId) throws Exception {
         AgentConfig agentConfig = agentConfigDao.read(agentRollupId);
         if (agentConfig == null) {
-            // for some reason received data from agent, but not initial agent config
             throw new AgentConfigNotFoundException(agentRollupId);
         }
         return agentConfig.getUiConfig();
@@ -137,19 +166,16 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     public UserRecordingConfig getUserRecordingConfig(String agentId) throws Exception {
         AgentConfig agentConfig = agentConfigDao.read(agentId);
         if (agentConfig == null) {
-            // for some reason received data from agent, but not initial agent config
             throw new AgentConfigNotFoundException(agentId);
         }
         return agentConfig.getUserRecordingConfig();
     }
 
-    // central supports advanced config on rollups
-    // (maxAggregateQueriesPerType and maxAggregateServiceCallsPerType)
+    // central supports advanced config on rollups (maxQueryAggregates and maxServiceCallAggregates)
     @Override
     public AdvancedConfig getAdvancedConfig(String agentRollupId) throws Exception {
         AgentConfig agentConfig = agentConfigDao.read(agentRollupId);
         if (agentConfig == null) {
-            // for some reason received data from agent, but not initial agent config
             throw new AgentConfigNotFoundException(agentRollupId);
         }
         return agentConfig.getAdvancedConfig();
@@ -159,7 +185,7 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     public List<GaugeConfig> getGaugeConfigs(String agentId) throws Exception {
         AgentConfig agentConfig = agentConfigDao.read(agentId);
         if (agentConfig == null) {
-            return ImmutableList.of();
+            throw new AgentConfigNotFoundException(agentId);
         }
         return agentConfig.getGaugeConfigList();
     }
@@ -180,7 +206,7 @@ public class ConfigRepositoryImpl implements ConfigRepository {
             throws Exception {
         AgentConfig agentConfig = agentConfigDao.read(agentRollupId);
         if (agentConfig == null) {
-            return ImmutableList.of();
+            throw new AgentConfigNotFoundException(agentRollupId);
         }
         return agentConfig.getSyntheticMonitorConfigList();
     }
@@ -202,7 +228,7 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     public List<AlertConfig> getAlertConfigs(String agentRollupId) throws Exception {
         AgentConfig agentConfig = agentConfigDao.read(agentRollupId);
         if (agentConfig == null) {
-            return ImmutableList.of();
+            throw new AgentConfigNotFoundException(agentRollupId);
         }
         return agentConfig.getAlertConfigList();
     }
@@ -210,7 +236,7 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     // central supports alert configs on rollups
     public List<AlertConfig> getAlertConfigsForSyntheticMonitorId(String agentRollupId,
             String syntheticMonitorId) throws Exception {
-        List<AlertConfig> configs = Lists.newArrayList();
+        List<AlertConfig> configs = new ArrayList<>();
         for (AlertConfig config : getAlertConfigs(agentRollupId)) {
             AlertCondition alertCondition = config.getCondition();
             if (alertCondition.getValCase() == AlertCondition.ValCase.SYNTHETIC_MONITOR_CONDITION
@@ -238,7 +264,7 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     public List<PluginConfig> getPluginConfigs(String agentId) throws Exception {
         AgentConfig agentConfig = agentConfigDao.read(agentId);
         if (agentConfig == null) {
-            return ImmutableList.of();
+            throw new AgentConfigNotFoundException(agentId);
         }
         return agentConfig.getPluginConfigList();
     }
@@ -257,7 +283,7 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     public List<InstrumentationConfig> getInstrumentationConfigs(String agentId) throws Exception {
         AgentConfig agentConfig = agentConfigDao.read(agentId);
         if (agentConfig == null) {
-            return ImmutableList.of();
+            throw new AgentConfigNotFoundException(agentId);
         }
         return agentConfig.getInstrumentationConfigList();
     }
@@ -274,8 +300,18 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     }
 
     @Override
-    public @Nullable AgentRollupConfig getAgentRollupConfig(String agentRollupId) throws Exception {
-        return agentRollupDao.readAgentRollupConfig(agentRollupId);
+    public EmbeddedAdminGeneralConfig getEmbeddedAdminGeneralConfig() {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public CentralAdminGeneralConfig getCentralAdminGeneralConfig() throws Exception {
+        CentralAdminGeneralConfig config =
+                (CentralAdminGeneralConfig) centralConfigDao.read(GENERAL_KEY);
+        if (config == null) {
+            return ImmutableCentralAdminGeneralConfig.builder().build();
+        }
+        return config;
     }
 
     @Override
@@ -395,6 +431,24 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     }
 
     @Override
+    public void updateGeneralConfig(String agentId, GeneralConfig config, String priorVersion)
+            throws Exception {
+        agentConfigDao.update(agentId, new AgentConfigUpdater() {
+            @Override
+            public AgentConfig updateAgentConfig(AgentConfig agentConfig) throws Exception {
+                String existingVersion = Versions.getVersion(agentConfig.getGeneralConfig());
+                if (!priorVersion.equals(existingVersion)) {
+                    throw new OptimisticLockException();
+                }
+                return agentConfig.toBuilder()
+                        .setGeneralConfig(config)
+                        .build();
+            }
+        });
+        notifyAgentConfigListeners(agentId);
+    }
+
+    @Override
     public void updateTransactionConfig(String agentId, TransactionConfig config,
             String priorVersion) throws Exception {
         agentConfigDao.update(agentId, new AgentConfigUpdater() {
@@ -495,6 +549,24 @@ public class ConfigRepositoryImpl implements ConfigRepository {
         notifyAgentConfigListeners(agentId);
     }
 
+    @Override
+    public void updateJvmConfig(String agentId, JvmConfig config, String priorVersion)
+            throws Exception {
+        agentConfigDao.update(agentId, new AgentConfigUpdater() {
+            @Override
+            public AgentConfig updateAgentConfig(AgentConfig agentConfig) throws Exception {
+                String existingVersion = Versions.getVersion(agentConfig.getJvmConfig());
+                if (!priorVersion.equals(existingVersion)) {
+                    throw new OptimisticLockException();
+                }
+                return agentConfig.toBuilder()
+                        .setJvmConfig(config)
+                        .build();
+            }
+        });
+        notifyAgentConfigListeners(agentId);
+    }
+
     // central supports synthetic monitor configs on rollups
     @Override
     public String insertSyntheticMonitorConfig(String agentRollupId,
@@ -506,10 +578,11 @@ public class ConfigRepositoryImpl implements ConfigRepository {
         agentConfigDao.update(agentRollupId, new AgentConfigUpdater() {
             @Override
             public AgentConfig updateAgentConfig(AgentConfig agentConfig) throws Exception {
-                // check for duplicate name
+                // check for duplicate display
+                String display = MoreConfigDefaults.getDisplayOrDefault(config);
                 for (SyntheticMonitorConfig loopConfig : agentConfig
                         .getSyntheticMonitorConfigList()) {
-                    if (loopConfig.getDisplay().equals(config.getDisplay())) {
+                    if (MoreConfigDefaults.getDisplayOrDefault(loopConfig).equals(display)) {
                         throw new DuplicateSyntheticMonitorDisplayException();
                     }
                 }
@@ -534,6 +607,7 @@ public class ConfigRepositoryImpl implements ConfigRepository {
                         Lists.newArrayList(agentConfig.getSyntheticMonitorConfigList());
                 ListIterator<SyntheticMonitorConfig> i = existingConfigs.listIterator();
                 boolean found = false;
+                String display = config.getDisplay();
                 while (i.hasNext()) {
                     SyntheticMonitorConfig loopConfig = i.next();
                     if (loopConfig.getId().equals(config.getId())) {
@@ -542,7 +616,7 @@ public class ConfigRepositoryImpl implements ConfigRepository {
                         }
                         i.set(config);
                         found = true;
-                    } else if (loopConfig.getDisplay().equals(config.getDisplay())) {
+                    } else if (MoreConfigDefaults.getDisplayOrDefault(loopConfig).equals(display)) {
                         throw new DuplicateSyntheticMonitorDisplayException();
                     }
                 }
@@ -868,14 +942,15 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     }
 
     @Override
-    public void updateAgentRollupConfig(AgentRollupConfig config, String priorVersion)
-            throws Exception {
-        agentRollupDao.update(config, priorVersion);
+    public void updateEmbeddedAdminGeneralConfig(EmbeddedAdminGeneralConfig config,
+            String priorVersion) {
+        throw new UnsupportedOperationException();
     }
 
     @Override
-    public void deleteAgentRollupConfig(String agentRollupId) throws Exception {
-        agentRollupDao.delete(agentRollupId);
+    public void updateCentralAdminGeneralConfig(CentralAdminGeneralConfig config,
+            String priorVersion) throws Exception {
+        centralConfigDao.write(GENERAL_KEY, config, priorVersion);
     }
 
     @Override
@@ -1007,8 +1082,8 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     public void updatePagerDutyConfig(PagerDutyConfig config, String priorVersion)
             throws Exception {
         // check for duplicate integration key / display
-        Set<String> integrationKeys = Sets.newHashSet();
-        Set<String> integrationDisplays = Sets.newHashSet();
+        Set<String> integrationKeys = new HashSet<>();
+        Set<String> integrationDisplays = new HashSet<>();
         for (PagerDutyIntegrationKey integrationKey : config.integrationKeys()) {
             if (!integrationKeys.add(integrationKey.key())) {
                 throw new DuplicatePagerDutyIntegrationKeyException();
@@ -1083,15 +1158,7 @@ public class ConfigRepositoryImpl implements ConfigRepository {
 
     private static Map<String, PluginProperty> buildMutablePropertiesMap(
             List<PluginProperty> properties) {
-        // it would be nice to use "PluginProperty::getName", or even
-        // "pluginProperty -> pluginProperty.getName()" as the second argument, but both of these
-        // fail to compile under older Java 8 releases (at least 1.8.0_31)
-        return Maps.newHashMap(Maps.uniqueIndex(properties, new Function<PluginProperty, String>() {
-            @Override
-            public String apply(PluginProperty pluginProperty) {
-                return pluginProperty.getName();
-            }
-        }));
+        return Maps.newHashMap(Maps.uniqueIndex(properties, PluginProperty::getName));
     }
 
     private static boolean isSameType(PluginProperty.Value left, PluginProperty.Value right) {
@@ -1105,12 +1172,16 @@ public class ConfigRepositoryImpl implements ConfigRepository {
     }
 
     private static CentralStorageConfig withCorrectedLists(CentralStorageConfig config) {
-        EmbeddedStorageConfig defaultConfig = ImmutableEmbeddedStorageConfig.builder().build();
-        ImmutableList<Integer> rollupExpirationHours =
-                fix(config.rollupExpirationHours(), defaultConfig.rollupExpirationHours());
+        CentralStorageConfig defaultConfig = ImmutableCentralStorageConfig.builder().build();
         return ImmutableCentralStorageConfig.builder()
                 .copyFrom(config)
-                .rollupExpirationHours(rollupExpirationHours)
+                .rollupExpirationHours(
+                        fix(config.rollupExpirationHours(), defaultConfig.rollupExpirationHours()))
+                .queryAndServiceCallRollupExpirationHours(
+                        fix(config.queryAndServiceCallRollupExpirationHours(),
+                                defaultConfig.queryAndServiceCallRollupExpirationHours()))
+                .profileRollupExpirationHours(fix(config.profileRollupExpirationHours(),
+                        defaultConfig.profileRollupExpirationHours()))
                 .build();
     }
 

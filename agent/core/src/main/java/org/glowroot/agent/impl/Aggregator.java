@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,16 @@
 package org.glowroot.agent.impl;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,6 +37,7 @@ import org.glowroot.common.util.Clock;
 import org.glowroot.common.util.OnlyUsedByTests;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class Aggregator {
@@ -83,10 +86,19 @@ public class Aggregator {
                 .newSingleThreadExecutor(ThreadFactories.create("Glowroot-Aggregate-Flushing"));
         activeIntervalCollector =
                 new AggregateIntervalCollector(clock.currentTimeMillis(), aggregateIntervalMillis,
-                        configService.getAdvancedConfig().maxAggregateTransactionsPerType(),
-                        configService.getAdvancedConfig().maxAggregateQueriesPerType(),
-                        configService.getAdvancedConfig().maxAggregateServiceCallsPerType(), clock);
+                        configService.getAdvancedConfig().maxTransactionAggregates(),
+                        configService.getAdvancedConfig().maxQueryAggregates(),
+                        configService.getAdvancedConfig().maxServiceCallAggregates(), clock);
         processingExecutor.execute(new TransactionProcessor());
+    }
+
+    public Set<String> getTransactionTypes() {
+        Set<String> transactionTypes = Sets.newHashSet();
+        transactionTypes.addAll(activeIntervalCollector.getTransactionTypes());
+        for (AggregateIntervalCollector intervalCollector : pendingIntervalCollectors) {
+            transactionTypes.addAll(intervalCollector.getTransactionTypes());
+        }
+        return transactionTypes;
     }
 
     // from is non-inclusive
@@ -179,7 +191,7 @@ public class Aggregator {
                     maybeEndOfInterval();
                 } else {
                     // TODO benchmark other alternatives to sleep (e.g. wait/notify)
-                    Thread.sleep(1);
+                    MILLISECONDS.sleep(1);
                 }
                 return;
             }
@@ -202,9 +214,9 @@ public class Aggregator {
                 flushActiveIntervalCollector();
                 activeIntervalCollector = new AggregateIntervalCollector(
                         pendingTransaction.captureTime, aggregateIntervalMillis,
-                        configService.getAdvancedConfig().maxAggregateTransactionsPerType(),
-                        configService.getAdvancedConfig().maxAggregateQueriesPerType(),
-                        configService.getAdvancedConfig().maxAggregateServiceCallsPerType(), clock);
+                        configService.getAdvancedConfig().maxTransactionAggregates(),
+                        configService.getAdvancedConfig().maxQueryAggregates(),
+                        configService.getAdvancedConfig().maxServiceCallAggregates(), clock);
             }
             activeIntervalCollector.add(transaction);
         }
@@ -228,9 +240,9 @@ public class Aggregator {
                 flushActiveIntervalCollector();
                 activeIntervalCollector = new AggregateIntervalCollector(currentTime,
                         aggregateIntervalMillis,
-                        configService.getAdvancedConfig().maxAggregateTransactionsPerType(),
-                        configService.getAdvancedConfig().maxAggregateQueriesPerType(),
-                        configService.getAdvancedConfig().maxAggregateServiceCallsPerType(), clock);
+                        configService.getAdvancedConfig().maxTransactionAggregates(),
+                        configService.getAdvancedConfig().maxQueryAggregates(),
+                        configService.getAdvancedConfig().maxServiceCallAggregates(), clock);
             }
         }
 

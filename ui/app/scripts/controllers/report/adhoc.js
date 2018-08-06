@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,75 +39,7 @@ glowroot.controller('ReportAdhocCtrl', [
 
     var gaugeUnits = {};
 
-    var METRICS = [
-      {
-        id: 'transaction',
-        display: 'Transactions',
-        heading: true,
-        disabled: true
-      },
-      {
-        id: 'transaction:average',
-        display: 'Response time (average)'
-      },
-      {
-        id: 'transaction:x-percentile',
-        display: 'Response time (X\u1d57\u02b0 percentile)'
-      },
-      // TODO
-      // {
-      //   id: 'transaction:timer-inclusive',
-      //   display: 'Breakdown metric time (inclusive)'
-      // },
-      // {
-      //   id: 'transaction:timer-exclusive',
-      //   display: 'Breakdown metric time (exclusive)'
-      // },
-      // {
-      //   id: 'transaction:timer-count',
-      //   display: 'Breakdown metric count'
-      // },
-      // {
-      //   id: 'transaction:profile-sample-count',
-      //   display: 'Profile sample count'
-      // },
-      {
-        id: 'transaction:count',
-        display: 'Count'
-      },
-      {
-        id: '-empty1-',
-        display: '',
-        disabled: true
-      },
-      {
-        id: 'error',
-        display: 'Errors',
-        heading: true,
-        disabled: true
-      },
-      {
-        id: 'error:rate',
-        display: 'Error rate (%)'
-      },
-      {
-        id: 'error:count',
-        display: 'Count'
-      },
-      {
-        id: '-empty2-',
-        display: '',
-        disabled: true
-      },
-      {
-        id: 'gauge',
-        display: 'JVM Gauges',
-        heading: true,
-        disabled: true
-      }
-    ];
-
-    $scope.metrics = angular.copy(METRICS);
+    $scope.metrics = angular.copy($scope.METRICS);
     $scope.metrics.push({
       id: 'gauge:select',
       display: '(select one or more agents to see available gauges)',
@@ -118,10 +50,6 @@ glowroot.controller('ReportAdhocCtrl', [
 
     $scope.currentTabUrl = function () {
       return 'report/ad-hoc';
-    };
-
-    $scope.hasAgents = function () {
-      return !angular.equals({}, $scope.layout.agentRollups);
     };
 
     $scope.allTransactionTypes = [];
@@ -141,15 +69,6 @@ glowroot.controller('ReportAdhocCtrl', [
       ]);
     }
 
-    angular.forEach($scope.layout.agentRollupValues, function (agentRollup) {
-      // for now (for simplicity) reporting requires permission for ALL reportable metrics
-      // (currently transaction:overview, error:overview and jvm:gauges)
-      if (agentRollup.permissions.transaction.overview
-          && agentRollup.permissions.error.overview && agentRollup.permissions.jvm.gauges) {
-        $scope.agentRollups.push(agentRollup);
-      }
-    });
-
     function showTransactionTypeAndName(metric) {
       return metric && (metric.lastIndexOf('transaction:', 0) === 0 || metric.lastIndexOf('error:', 0) === 0);
     }
@@ -158,28 +77,57 @@ glowroot.controller('ReportAdhocCtrl', [
       return showTransactionTypeAndName($scope.report.metric);
     };
 
-    $scope.$watch('report.agentRollupIds', function () {
-      var temp = {};
-      angular.forEach($scope.report.agentRollupIds, function (agentRollupId) {
-        var agentRollup = $scope.layout.agentRollups[agentRollupId];
-        angular.forEach(agentRollup.transactionTypes, function (transactionType) {
-          temp[transactionType] = true;
-        });
+    if ($scope.layout.central) {
+      $scope.$watchGroup(['report.fromDate', 'report.toDate'], function () {
+        var query = {
+          fromDate: moment($scope.report.fromDate).format('YYYYMMDD'),
+          toDate: moment($scope.report.toDate).format('YYYYMMDD'),
+          timeZoneId: $scope.report.timeZoneId
+        };
+        $http.get('backend/report/agent-rollups' + queryStrings.encodeObject(query))
+            .then(function (response) {
+              $scope.allAgentRollups = response.data;
+              angular.forEach($scope.allAgentRollups, function (agentRollup) {
+                var indent = '';
+                for (var i = 0; i < agentRollup.depth; i++) {
+                  indent += '\u00a0\u00a0\u00a0\u00a0';
+                }
+                agentRollup.indentedDisplay = indent + agentRollup.lastDisplayPart;
+              });
+              if ($scope.allAgentRollups.length === 0) {
+                $scope.allAgentRollups = [{
+                  id: '',
+                  display: 'No active agents in this time period',
+                  indentedDisplay: 'No active agents in this time period',
+                  disabled: true,
+                  italic: true
+                }];
+              }
+            }, function (response) {
+              // TODO equivalent of $scope.showChartSpinner--;
+              httpErrors.handle(response, $scope);
+            });
       });
-      $scope.allTransactionTypes = Object.keys(temp).sort();
-      if ($scope.allTransactionTypes.indexOf($scope.report.transactionType) === -1) {
-        $scope.report.transactionType = '';
-      }
+    }
 
+    $scope.$watchGroup(['report.agentRollupIds', 'report.fromDate', 'report.toDate'], function () {
       if ($scope.report.agentRollupIds.length) {
         var query = {
-          agentRollupIds: $scope.report.agentRollupIds
+          agentRollupIds: $scope.report.agentRollupIds,
+          fromDate: moment($scope.report.fromDate).format('YYYYMMDD'),
+          toDate: moment($scope.report.toDate).format('YYYYMMDD'),
+          timeZoneId: $scope.report.timeZoneId
         };
-        $http.get('backend/report/all-gauges' + queryStrings.encodeObject(query))
+        $http.get('backend/report/transaction-types-and-gauges' + queryStrings.encodeObject(query))
             .then(function (response) {
-              $scope.metrics = angular.copy(METRICS);
+              $scope.transactionTypes = response.data.transactionTypes;
+              if ($scope.transactionTypes.indexOf($scope.report.transactionType) === -1) {
+                $scope.report.transactionType = '';
+              }
+
+              $scope.metrics = angular.copy($scope.METRICS);
               gaugeUnits = {};
-              angular.forEach(response.data, function (gauge) {
+              angular.forEach(response.data.gauges, function (gauge) {
                 $scope.metrics.push({
                   id: 'gauge:' + gauge.name,
                   display: gauge.display
@@ -191,11 +139,11 @@ glowroot.controller('ReportAdhocCtrl', [
                 }
               });
             }, function (response) {
-              // FIXME equivalent of $scope.showChartSpinner--;
+              // TODO equivalent of $scope.showChartSpinner--;
               httpErrors.handle(response, $scope);
             });
       } else {
-        $scope.metrics = angular.copy(METRICS);
+        $scope.metrics = angular.copy($scope.METRICS);
         $scope.metrics.push({
           id: 'gauge:select',
           display: '(select one or more agents to see available gauges)',
@@ -248,7 +196,7 @@ glowroot.controller('ReportAdhocCtrl', [
         min: 0,
         labelPadding: 7,
         tickFormatter: function (val) {
-          return val.toLocaleString(undefined);
+          return val.toLocaleString(undefined, {maximumFractionDigits: 20});
         }
       },
       series: {
@@ -333,8 +281,11 @@ glowroot.controller('ReportAdhocCtrl', [
         appliedReport.fromDate = moment(appliedReport.fromDate).valueOf();
         appliedReport.toDate = moment(appliedReport.toDate).valueOf();
       } else {
-        appliedReport.fromDate = moment().startOf('day').subtract(7, 'days').valueOf();
-        appliedReport.toDate = moment().startOf('day').subtract(1, 'days').valueOf();
+        // match the default time period of "last 4 hours" used on other pages
+        // (partly because when viewing last 4 hours on another page, there is no criteria in the query and so it
+        // doesn't get passed over when clicking on the Report header link)
+        appliedReport.fromDate = moment().subtract(4, 'hours').startOf('day').valueOf();
+        appliedReport.toDate = moment().startOf('day').valueOf();
       }
       appliedReport.rollup = $location.search().rollup || 'daily';
       appliedReport.timeZoneId = $location.search()['time-zone-id'] || browserTimeZone;
@@ -362,8 +313,7 @@ glowroot.controller('ReportAdhocCtrl', [
     });
 
     $scope.$watchGroup(['report.fromDate', 'report.toDate'], function (newValue) {
-      $scope.useFourHourAggregates = newValue[0] < new Date().getTime() - $scope.layout.rollupExpirationMillis[2]
-          && $scope.layout.rollupExpirationMillis[3] > $scope.layout.rollupExpirationMillis[2];
+      $scope.useFourHourAggregates = newValue[0] < new Date().getTime() - $scope.layout.rollupExpirationMillis[2];
       if ($scope.useFourHourAggregates) {
         $scope.rollups = [
           'Daily',
@@ -458,6 +408,31 @@ glowroot.controller('ReportAdhocCtrl', [
       $location.search('time-zone-id', $scope.report.timeZoneId);
       appliedReport = angular.copy($scope.report);
       refreshData(deferred);
+    };
+
+    $scope.exportAsCsv = function () {
+      var csv = '<strong>';
+      if ($scope.layout.central) {
+        csv += 'Agent,';
+      }
+      angular.forEach($scope.allXvals, function (xval) {
+        csv += $scope.exportColumnHeader(xval) + ',';
+      });
+      csv += 'Overall</strong><br>';
+      angular.forEach($scope.tableRows, function (tableRow) {
+        if ($scope.layout.central) {
+          csv += tableRow.label + ',';
+        }
+        angular.forEach($scope.allXvals, function (xval) {
+          if (tableRow[xval] !== Number.NEGATIVE_INFINITY) {
+            csv += tableRow[xval];
+          }
+          csv += ',';
+        });
+        csv += tableRow.overall + '\n';
+      });
+      var csvWindow = window.open();
+      $(csvWindow.document.body).html('<pre style="white-space: pre-wrap;">' + csv + '</pre>');
     };
 
     function updateYvalMap(label, points) {
@@ -672,13 +647,23 @@ glowroot.controller('ReportAdhocCtrl', [
         return from.format('ddd L');
       } else if (appliedReport.rollup === 'weekly') {
         to.subtract(1, 'days');
-        return moment(from).format('ddd L') + ' through ' + moment(to).format('ddd L');
+        return from.format('ddd L') + ' through ' + to.format('ddd L');
       } else if (appliedReport.rollup === 'monthly') {
         to.subtract(1, 'days');
-        return moment(from).format('L') + ' through ' + moment(to).format('L');
+        return from.format('L') + ' through ' + to.format('L');
       } else {
         // unexpected rollup
         return '';
+      }
+    };
+
+    $scope.exportColumnHeader = function (xval) {
+      var fromTo = getFromTo(xval);
+      var from = fromTo[0];
+      if (appliedReport.rollup === 'hourly') {
+        return from.format('L') + ' ' + from.format('LT');
+      } else {
+        return from.format('L');
       }
     };
 
@@ -718,12 +703,11 @@ glowroot.controller('ReportAdhocCtrl', [
       } else if (appliedReport.metric.indexOf('gauge:') === 0) {
         path = 'jvm/gauges';
       }
-      var agentRollup = $scope.layout.agentRollups[agentRollupId];
       var url = path;
-      if (agentRollup.agent) {
-        url += '?agent-id=';
-      } else {
+      if ($scope.isAgentRollup()) {
         url += '?agent-rollup-id=';
+      } else {
+        url += '?agent-id=';
       }
       url += encodeURIComponent(agentRollupId);
       if (showTransactionTypeAndName(appliedReport.metric)) {

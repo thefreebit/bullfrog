@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,25 +21,23 @@ import java.util.Set;
 import java.util.TimeZone;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import org.glowroot.common.repo.AgentRollupRepository;
-import org.glowroot.common.repo.AgentRollupRepository.AgentRollup;
-import org.glowroot.common.repo.ConfigRepository;
-import org.glowroot.common.repo.ConfigRepository.AgentConfigNotFoundException;
-import org.glowroot.common.repo.ConfigRepository.RollupConfig;
-import org.glowroot.common.repo.TraceAttributeNameRepository;
-import org.glowroot.common.repo.TransactionTypeRepository;
+import org.glowroot.common.ConfigDefaults;
+import org.glowroot.common.live.LiveAggregateRepository;
 import org.glowroot.common.util.ObjectMappers;
 import org.glowroot.common.util.Versions;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.ConfigRepository.AgentConfigNotFoundException;
+import org.glowroot.common2.repo.ConfigRepository.RollupConfig;
+import org.glowroot.common2.repo.TraceAttributeNameRepository;
+import org.glowroot.common2.repo.TransactionTypeRepository;
 import org.glowroot.ui.HttpSessionManager.Authentication;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.UiConfig;
 
@@ -47,33 +45,29 @@ import static java.util.concurrent.TimeUnit.HOURS;
 
 class LayoutService {
 
-    private static final Logger logger = LoggerFactory.getLogger(LayoutService.class);
-
     private static final String AGENT_ID = "";
 
     private static final ObjectMapper mapper = ObjectMappers.create();
 
     private final boolean central;
-    private final boolean servlet;
-    private final boolean offline;
+    private final boolean offlineViewer;
     private final String version;
     private final ConfigRepository configRepository;
-    private final AgentRollupRepository agentRollupRepository;
     private final TransactionTypeRepository transactionTypeRepository;
     private final TraceAttributeNameRepository traceAttributeNameRepository;
+    private final LiveAggregateRepository liveAggregateRepository;
 
-    LayoutService(boolean central, boolean servlet, boolean offline, String version,
-            ConfigRepository configRepository, AgentRollupRepository agentRollupRepository,
-            TransactionTypeRepository transactionTypeRepository,
-            TraceAttributeNameRepository traceAttributeNameRepository) {
+    LayoutService(boolean central, boolean offlineViewer, String version,
+            ConfigRepository configRepository, TransactionTypeRepository transactionTypeRepository,
+            TraceAttributeNameRepository traceAttributeNameRepository,
+            LiveAggregateRepository liveAggregateRepository) {
         this.central = central;
-        this.servlet = servlet;
-        this.offline = offline;
+        this.offlineViewer = offlineViewer;
         this.version = version;
         this.configRepository = configRepository;
-        this.agentRollupRepository = agentRollupRepository;
         this.transactionTypeRepository = transactionTypeRepository;
         this.traceAttributeNameRepository = traceAttributeNameRepository;
+        this.liveAggregateRepository = liveAggregateRepository;
     }
 
     String getLayoutJson(Authentication authentication) throws Exception {
@@ -86,6 +80,71 @@ class LayoutService {
         return layout.version();
     }
 
+    String getAgentRollupLayoutJson(String agentRollupId, Authentication authentication)
+            throws Exception {
+        AgentRollupLayout agentRollupLayout = buildAgentRollupLayout(authentication, agentRollupId);
+        return mapper.writeValueAsString(agentRollupLayout);
+    }
+
+    @Nullable
+    String getAgentRollupLayoutVersion(Authentication authentication, String agentRollupId)
+            throws Exception {
+        AgentRollupLayout agentRollupLayout = buildAgentRollupLayout(authentication, agentRollupId);
+        if (agentRollupLayout == null) {
+            return null;
+        }
+        return agentRollupLayout.version();
+    }
+
+    @Nullable
+    AgentRollupLayout buildAgentRollupLayout(Authentication authentication, String agentRollupId)
+            throws Exception {
+        Permissions permissions =
+                LayoutService.getPermissions(authentication, agentRollupId);
+        List<String> agentRollupDisplayParts =
+                configRepository.readAgentRollupDisplayParts(agentRollupId);
+        FilteredAgentRollup agentRollup = ImmutableFilteredAgentRollup.builder()
+                .id(agentRollupId)
+                .display(Joiner.on(" :: ").join(agentRollupDisplayParts))
+                .lastDisplayPart(Iterables.getLast(agentRollupDisplayParts))
+                .permissions(permissions)
+                .build();
+        Set<String> transactionTypes = Sets.newHashSet();
+        transactionTypes.addAll(transactionTypeRepository.read(agentRollupId));
+        transactionTypes.addAll(liveAggregateRepository.getTransactionTypes(agentRollupId));
+        return buildAgentRollupLayout(agentRollup, transactionTypes,
+                traceAttributeNameRepository.read(agentRollupId));
+    }
+
+    private @Nullable AgentRollupLayout buildAgentRollupLayout(FilteredAgentRollup agentRollup,
+            Set<String> transactionTypes, Map<String, List<String>> traceAttributeNames)
+            throws Exception {
+        UiConfig uiConfig;
+        try {
+            uiConfig = configRepository.getUiConfig(agentRollup.id());
+        } catch (AgentConfigNotFoundException e) {
+            uiConfig = UiConfig.newBuilder()
+                    .setDefaultTransactionType(ConfigDefaults.UI_DEFAULT_TRANSACTION_TYPE)
+                    .addAllDefaultPercentile(ConfigDefaults.UI_DEFAULT_PERCENTILES)
+                    .addAllDefaultGaugeName(ConfigDefaults.UI_DEFAULT_GAUGE_NAMES)
+                    .build();
+        }
+        Permissions permissions = agentRollup.permissions();
+        String defaultTransactionType = uiConfig.getDefaultTransactionType();
+        Set<String> transactionTypesWithDefault = Sets.newTreeSet(transactionTypes);
+        transactionTypesWithDefault.add(defaultTransactionType);
+        return ImmutableAgentRollupLayout.builder()
+                .id(agentRollup.id())
+                .display(agentRollup.display())
+                .permissions(permissions)
+                .addAllTransactionTypes(transactionTypesWithDefault)
+                .putAllTraceAttributeNames(traceAttributeNames)
+                .defaultTransactionType(defaultTransactionType)
+                .defaultPercentiles(uiConfig.getDefaultPercentileList())
+                .defaultGaugeNames(uiConfig.getDefaultGaugeNameList())
+                .build();
+    }
+
     private Layout buildLayout(Authentication authentication) throws Exception {
         if (central) {
             return buildLayoutCentral(authentication);
@@ -95,10 +154,9 @@ class LayoutService {
     }
 
     private Layout buildLayoutEmbedded(Authentication authentication) throws Exception {
-        Permissions permissions = getPermissions(authentication, AGENT_ID, true);
+        Permissions permissions = getPermissions(authentication, AGENT_ID);
         boolean hasSomeAccess =
-                permissions.hasSomeAccess()
-                        || authentication.isAdminPermitted("admin:view");
+                permissions.hasSomeAccess() || authentication.isAdminPermitted("admin:view");
         if (!hasSomeAccess) {
             return createNoAccessLayout(authentication);
         }
@@ -114,51 +172,58 @@ class LayoutService {
         boolean showNavbarConfig = permissions.config().view();
         // a couple of special cases for embedded ui
         UiConfig uiConfig = configRepository.getUiConfig(AGENT_ID);
-        String defaultDisplayedTransactionType = uiConfig.getDefaultDisplayedTransactionType();
+        String defaultTransactionType = uiConfig.getDefaultTransactionType();
         Set<String> transactionTypes = Sets.newTreeSet();
-        List<String> storedTransactionTypes = transactionTypeRepository.read().get(AGENT_ID);
+        List<String> storedTransactionTypes = transactionTypeRepository.read(AGENT_ID);
         if (storedTransactionTypes != null) {
             transactionTypes.addAll(storedTransactionTypes);
         }
-        transactionTypes.add(defaultDisplayedTransactionType);
+        transactionTypes.add(defaultTransactionType);
 
-        Map<String, List<String>> traceAttributeNames =
-                traceAttributeNameRepository.read().get(AGENT_ID);
-        if (traceAttributeNames == null) {
-            traceAttributeNames = ImmutableMap.of();
-        }
-
-        Map<String, AgentRollupLayout> agentRollups = Maps.newLinkedHashMap();
-        agentRollups.put(AGENT_ID, ImmutableAgentRollupLayout.builder()
-                .display(AGENT_ID)
-                .depth(0)
-                .agent(true)
+        AgentRollupLayout embeddedAgentRollup = ImmutableAgentRollupLayout.builder()
+                .id(AGENT_ID)
+                .display(getEmbeddedAgentDisplayName())
                 .permissions(permissions)
                 .addAllTransactionTypes(transactionTypes)
-                .putAllTraceAttributeNames(traceAttributeNames)
-                .defaultDisplayedTransactionType(defaultDisplayedTransactionType)
-                .defaultDisplayedPercentiles(uiConfig.getDefaultDisplayedPercentileList())
-                .build());
+                .putAllTraceAttributeNames(traceAttributeNameRepository.read(AGENT_ID))
+                .defaultTransactionType(defaultTransactionType)
+                .defaultPercentiles(uiConfig.getDefaultPercentileList())
+                .defaultGaugeNames(uiConfig.getDefaultGaugeNameList())
+                .build();
 
-        return createLayout(authentication, agentRollups, showNavbarTransaction, showNavbarError,
-                showNavbarJvm, false, showNavbarIncident, showNavbarReport, showNavbarConfig);
+        return createLayout(authentication, showNavbarTransaction, showNavbarError,
+                showNavbarJvm, false, showNavbarIncident, showNavbarReport, showNavbarConfig,
+                embeddedAgentRollup);
     }
 
     private Layout buildLayoutCentral(Authentication authentication) throws Exception {
-        List<FilteredAgentRollup> agentRollups =
-                filter(agentRollupRepository.readAgentRollups(), authentication);
-        CentralLayoutBuilder centralLayoutBuilder = new CentralLayoutBuilder(authentication);
-        for (FilteredAgentRollup agentRollup : agentRollups) {
-            centralLayoutBuilder.process(agentRollup, 0);
+        boolean showNavbarTransaction =
+                authentication.hasAnyPermissionImpliedBy("agent:transaction");
+        boolean showNavbarError = authentication.hasAnyPermissionImpliedBy("agent:error");
+        boolean showNavbarJvm = authentication.hasAnyPermissionImpliedBy("agent:jvm");
+        boolean showNavbarSyntheticMonitor =
+                authentication.hasAnyPermissionImpliedBy("agent:syntheticMonitor");
+        boolean showNavbarIncident = authentication.hasAnyPermissionImpliedBy("agent:incident");
+        // for now (for simplicity) reporting requires permission for ALL reportable metrics
+        // (currently transaction:overview, error:overview and jvm:gauges)
+        boolean showNavbarReport =
+                authentication.isPermittedForSomeAgentRollup("agent:transaction:overview")
+                        && authentication.isPermittedForSomeAgentRollup("agent:error:overview")
+                        && authentication.isPermittedForSomeAgentRollup("agent:jvm:gauges");
+        boolean showNavbarConfig = authentication.hasAnyPermissionImpliedBy("agent:config");
+        if (!showNavbarTransaction && !showNavbarError && !showNavbarJvm && !showNavbarIncident
+                && !showNavbarReport && !authentication.isAdminPermitted("admin:view")) {
+            return createNoAccessLayout(authentication);
         }
-        return centralLayoutBuilder.build(authentication);
+        return createLayout(authentication, showNavbarTransaction, showNavbarError, showNavbarJvm,
+                showNavbarSyntheticMonitor, showNavbarIncident, showNavbarReport, showNavbarConfig,
+                null);
     }
 
     private ImmutableLayout createNoAccessLayout(Authentication authentication) {
         return ImmutableLayout.builder()
                 .central(central)
-                .servlet(servlet)
-                .offline(offline)
+                .offlineViewer(offlineViewer)
                 .glowrootVersion(version)
                 .loginEnabled(true)
                 .gaugeCollectionIntervalMillis(0)
@@ -179,26 +244,24 @@ class LayoutService {
     }
 
     private ImmutableLayout createLayout(Authentication authentication,
-            Map<String, AgentRollupLayout> agentRollups, boolean showNavbarTransaction,
-            boolean showNavbarError, boolean showNavbarJvm, boolean showNavbarSyntheticMonitor,
-            boolean showNavbarIncident, boolean showNavbarReport, boolean showNavbarConfig)
-            throws Exception {
+            boolean showNavbarTransaction, boolean showNavbarError, boolean showNavbarJvm,
+            boolean showNavbarSyntheticMonitor, boolean showNavbarIncident,
+            boolean showNavbarReport, boolean showNavbarConfig,
+            @Nullable AgentRollupLayout embeddedAgentRollup) throws Exception {
         List<Long> rollupExpirationMillis = Lists.newArrayList();
         for (long hours : configRepository.getStorageConfig().rollupExpirationHours()) {
             rollupExpirationMillis.add(HOURS.toMillis(hours));
         }
         return ImmutableLayout.builder()
                 .central(central)
-                .servlet(servlet)
-                .offline(offline)
+                .offlineViewer(offlineViewer)
                 .glowrootVersion(version)
-                .loginEnabled(offline ? false
+                .loginEnabled(offlineViewer ? false
                         : configRepository.namedUsersExist()
                                 || !configRepository.getLdapConfig().host().isEmpty())
                 .addAllRollupConfigs(configRepository.getRollupConfigs())
                 .addAllRollupExpirationMillis(rollupExpirationMillis)
                 .gaugeCollectionIntervalMillis(configRepository.getGaugeCollectionIntervalMillis())
-                .agentRollups(agentRollups)
                 .showNavbarTransaction(showNavbarTransaction)
                 .showNavbarError(showNavbarError)
                 .showNavbarJvm(showNavbarJvm)
@@ -213,103 +276,90 @@ class LayoutService {
                 .redirectToLogin(false)
                 .defaultTimeZoneId(TimeZone.getDefault().getID())
                 .addAllTimeZoneIds(getAllTimeZoneIds())
+                .embeddedAgentRollup(embeddedAgentRollup)
                 .build();
     }
 
-    // need to filter out agent rollups with no access rights, and move children up if needed
-    private List<FilteredAgentRollup> filter(List<AgentRollup> agentRollups,
-            Authentication authentication) throws Exception {
-        List<FilteredAgentRollup> filtered = Lists.newArrayList();
-        for (AgentRollup agentRollup : agentRollups) {
-            Permissions permissions =
-                    getPermissions(authentication, agentRollup.id(), agentRollup.agent());
-            if (permissions.hasSomeAccess()) {
-                filtered.add(ImmutableFilteredAgentRollup.builder()
-                        .id(agentRollup.id())
-                        .display(agentRollup.display())
-                        .agent(agentRollup.agent())
-                        .addAllChildren(filter(agentRollup.children(), authentication))
-                        .permissions(permissions)
-                        .build());
-            } else {
-                // move children (if they are accessible themselves) up to this level
-                filtered.addAll(filter(agentRollup.children(), authentication));
-            }
-        }
-        // re-sort in case any children were moved up to this level
-        return new FilteredAgentRollupOrdering().sortedCopy(filtered);
+    private String getEmbeddedAgentDisplayName() {
+        return configRepository.getEmbeddedAdminGeneralConfig().agentDisplayNameOrDefault();
     }
 
-    private static Permissions getPermissions(Authentication authentication, String agentRollupId,
-            boolean agent) throws Exception {
+    static Permissions getPermissions(Authentication authentication, String agentRollupId)
+            throws Exception {
         return ImmutablePermissions.builder()
                 .transaction(ImmutableTransactionPermissions.builder()
-                        .overview(authentication.isAgentPermitted(agentRollupId,
+                        .overview(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:transaction:overview"))
-                        .traces(authentication.isAgentPermitted(agentRollupId,
+                        .traces(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:transaction:traces"))
-                        .queries(authentication.isAgentPermitted(agentRollupId,
+                        .queries(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:transaction:queries"))
-                        .serviceCalls(authentication.isAgentPermitted(agentRollupId,
+                        .serviceCalls(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:transaction:serviceCalls"))
-                        .profile(authentication.isAgentPermitted(agentRollupId,
+                        .profile(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:transaction:profile"))
                         .build())
                 .error(ImmutableErrorPermissions.builder()
-                        .overview(authentication.isAgentPermitted(agentRollupId,
+                        .overview(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:error:overview"))
-                        .traces(authentication.isAgentPermitted(agentRollupId,
+                        .traces(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:error:traces"))
                         .build())
                 .jvm(ImmutableJvmPermissions.builder()
-                        .gauges(authentication.isAgentPermitted(agentRollupId, "agent:jvm:gauges"))
-                        .threadDump(agent && authentication.isAgentPermitted(agentRollupId,
+                        .gauges(authentication.isPermittedForAgentRollup(agentRollupId,
+                                "agent:jvm:gauges"))
+                        .threadDump(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:jvm:threadDump"))
-                        .heapDump(agent && authentication.isAgentPermitted(agentRollupId,
+                        .heapDump(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:jvm:heapDump"))
-                        .heapHistogram(agent && authentication.isAgentPermitted(agentRollupId,
+                        .heapHistogram(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:jvm:heapHistogram"))
-                        .gc(agent && authentication.isAgentPermitted(agentRollupId, "agent:jvm:gc"))
-                        .mbeanTree(agent && authentication.isAgentPermitted(agentRollupId,
+                        .forceGC(authentication.isPermittedForAgentRollup(agentRollupId,
+                                "agent:jvm:forceGC"))
+                        .mbeanTree(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:jvm:mbeanTree"))
-                        .systemProperties(agent && authentication.isAgentPermitted(agentRollupId,
+                        .systemProperties(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:jvm:systemProperties"))
-                        .environment(agent && authentication.isAgentPermitted(agentRollupId,
+                        .environment(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:jvm:environment"))
-                        .capabilities(agent && authentication.isAgentPermitted(agentRollupId,
+                        .capabilities(authentication.isPermittedForAgentRollup(agentRollupId,
                                 "agent:jvm:capabilities"))
                         .build())
-                .syntheticMonitor(
-                        authentication.isAgentPermitted(agentRollupId, "agent:syntheticMonitor"))
-                .incident(authentication.isAgentPermitted(agentRollupId, "agent:incident"))
+                .syntheticMonitor(authentication.isPermittedForAgentRollup(agentRollupId,
+                        "agent:syntheticMonitor"))
+                .incident(authentication.isPermittedForAgentRollup(agentRollupId, "agent:incident"))
                 .config(ImmutableConfigPermissions.builder()
                         // central supports alert configs and ui config on rollups
-                        .view(authentication.isAgentPermitted(agentRollupId, "agent:config:view"))
+                        .view(authentication.isPermittedForAgentRollup(agentRollupId,
+                                "agent:config:view"))
                         .edit(ImmutableEditConfigPermissions.builder()
-                                .transaction(agent && authentication.isAgentPermitted(agentRollupId,
+                                .general(authentication.isPermittedForAgentRollup(agentRollupId,
+                                        "agent:config:edit:general"))
+                                .transaction(authentication.isPermittedForAgentRollup(agentRollupId,
                                         "agent:config:edit:transaction"))
-                                .gauge(agent && authentication.isAgentPermitted(agentRollupId,
+                                .gauge(authentication.isPermittedForAgentRollup(agentRollupId,
                                         "agent:config:edit:gauge"))
+                                .jvm(authentication.isPermittedForAgentRollup(agentRollupId,
+                                        "agent:config:edit:jvm"))
                                 // central supports synthetic monitor configs on rollups
-                                .syntheticMonitor(authentication.isAgentPermitted(agentRollupId,
-                                        "agent:config:edit:syntheticMonitor"))
+                                .syntheticMonitor(authentication.isPermittedForAgentRollup(
+                                        agentRollupId, "agent:config:edit:syntheticMonitor"))
                                 // central supports alert configs on rollups
-                                .alert(authentication.isAgentPermitted(agentRollupId,
+                                .alert(authentication.isPermittedForAgentRollup(agentRollupId,
                                         "agent:config:edit:alert"))
                                 // central supports ui config on rollups
-                                .ui(authentication.isAgentPermitted(agentRollupId,
+                                .ui(authentication.isPermittedForAgentRollup(agentRollupId,
                                         "agent:config:edit:ui"))
-                                .plugin(agent && authentication.isAgentPermitted(agentRollupId,
+                                .plugin(authentication.isPermittedForAgentRollup(agentRollupId,
                                         "agent:config:edit:plugin"))
-                                .instrumentation(agent && authentication.isAgentPermitted(
+                                .instrumentation(authentication.isPermittedForAgentRollup(
                                         agentRollupId, "agent:config:edit:instrumentation"))
-                                // central supports advanced config on rollups
-                                // (maxAggregateQueriesPerType and maxAggregateServiceCallsPerType)
-                                .advanced(authentication.isAgentPermitted(agentRollupId,
+                                // central supports advanced config on rollups (maxQueryAggregates
+                                // and maxServiceCallAggregates)
+                                .advanced(authentication.isPermittedForAgentRollup(agentRollupId,
                                         "agent:config:edit:advanced"))
-                                .userRecording(
-                                        agent && authentication.isAgentPermitted(agentRollupId,
-                                                "agent:config:edit:userRecording"))
+                                .userRecording(authentication.isPermittedForAgentRollup(
+                                        agentRollupId, "agent:config:edit:userRecording"))
                                 .build())
                         .build())
                 .build();
@@ -327,111 +377,11 @@ class LayoutService {
         return allTimeZoneIds;
     }
 
-    private class CentralLayoutBuilder {
-
-        // linked hash map to preserve ordering
-        private final Map<String, AgentRollupLayout> agentRollups = Maps.newLinkedHashMap();
-        private final Map<String, List<String>> transactionTypesMap;
-        private final Map<String, Map<String, List<String>>> traceAttributeNamesMap;
-
-        private boolean hasSomeAccess = false;
-        private boolean showNavbarTransaction = false;
-        private boolean showNavbarError = false;
-        private boolean showNavbarJvm = false;
-        private boolean showNavbarSyntheticMonitor = false;
-        private boolean showNavbarIncident = false;
-        private boolean showNavbarReport = false;
-        private boolean showNavbarConfig = false;
-
-        private CentralLayoutBuilder(Authentication authentication) throws Exception {
-            transactionTypesMap = transactionTypeRepository.read();
-            traceAttributeNamesMap = traceAttributeNameRepository.read();
-            // "*" is to check permissions for "all agents"
-            Permissions permissions = getPermissions(authentication, "*", true);
-            hasSomeAccess =
-                    permissions.hasSomeAccess()
-                            || authentication.isAdminPermitted("admin:view");
-            showNavbarTransaction = permissions.transaction().hasSomeAccess();
-            showNavbarError = permissions.error().hasSomeAccess();
-            showNavbarJvm = permissions.jvm().hasSomeAccess();
-            showNavbarSyntheticMonitor = permissions.syntheticMonitor();
-            showNavbarIncident = permissions.incident();
-            // for now (for simplicity) reporting requires permission for ALL reportable metrics
-            // (currently transaction:overview, error:overview and jvm:gauges)
-            showNavbarReport = permissions.transaction().overview()
-                    && permissions.error().overview() && permissions.jvm().gauges();
-            showNavbarConfig = permissions.config().view();
-        }
-
-        private void process(FilteredAgentRollup agentRollup, int depth) throws Exception {
-            UiConfig uiConfig;
-            try {
-                uiConfig = configRepository.getUiConfig(agentRollup.id());
-            } catch (AgentConfigNotFoundException e) {
-                // this shouldn't happen anymore, but just in case, don't want to kill entire ui
-                logger.error(e.getMessage(), e);
-                return;
-            }
-            Permissions permissions = agentRollup.permissions();
-            hasSomeAccess = true;
-            showNavbarTransaction =
-                    showNavbarTransaction || permissions.transaction().hasSomeAccess();
-            showNavbarError = showNavbarError || permissions.error().hasSomeAccess();
-            showNavbarJvm = showNavbarJvm || permissions.jvm().hasSomeAccess();
-            showNavbarSyntheticMonitor =
-                    showNavbarSyntheticMonitor || permissions.syntheticMonitor();
-            showNavbarIncident = showNavbarIncident || permissions.incident();
-            // for now (for simplicity) reporting requires permission for ALL reportable metrics
-            // (currently transaction:overview, error:overview and jvm:gauges)
-            showNavbarReport = showNavbarReport || (permissions.transaction().overview()
-                    && permissions.error().overview() && permissions.jvm().gauges());
-            showNavbarConfig = showNavbarConfig || permissions.config().view();
-            String defaultDisplayedTransactionType = uiConfig.getDefaultDisplayedTransactionType();
-            List<Double> defaultDisplayedPercentiles = uiConfig.getDefaultDisplayedPercentileList();
-            Set<String> transactionTypes = Sets.newTreeSet();
-            List<String> storedTransactionTypes = transactionTypesMap.get(agentRollup.id());
-            if (storedTransactionTypes != null) {
-                transactionTypes.addAll(storedTransactionTypes);
-            }
-            transactionTypes.add(defaultDisplayedTransactionType);
-            Map<String, List<String>> traceAttributeNames =
-                    traceAttributeNamesMap.get(agentRollup.id());
-            if (traceAttributeNames == null) {
-                traceAttributeNames = ImmutableMap.of();
-            }
-            agentRollups.put(agentRollup.id(),
-                    ImmutableAgentRollupLayout.builder()
-                            .display(agentRollup.display())
-                            .depth(depth)
-                            .agent(agentRollup.agent())
-                            .permissions(permissions)
-                            .addAllTransactionTypes(transactionTypes)
-                            .putAllTraceAttributeNames(traceAttributeNames)
-                            .defaultDisplayedTransactionType(defaultDisplayedTransactionType)
-                            .defaultDisplayedPercentiles(defaultDisplayedPercentiles)
-                            .build());
-            for (FilteredAgentRollup childAgentRollup : agentRollup.children()) {
-                process(childAgentRollup, depth + 1);
-            }
-        }
-
-        private ImmutableLayout build(Authentication authentication) throws Exception {
-            if (hasSomeAccess) {
-                return createLayout(authentication, agentRollups, showNavbarTransaction,
-                        showNavbarError, showNavbarJvm, showNavbarSyntheticMonitor,
-                        showNavbarIncident,
-                        showNavbarReport, showNavbarConfig);
-            } else {
-                return createNoAccessLayout(authentication);
-            }
-        }
-    }
-
     @Value.Immutable
     interface FilteredAgentRollup {
         String id();
         String display();
-        boolean agent();
+        String lastDisplayPart();
         Permissions permissions();
         List<FilteredAgentRollup> children();
     }
@@ -440,14 +390,12 @@ class LayoutService {
     abstract static class Layout {
 
         abstract boolean central();
-        abstract boolean servlet();
-        abstract boolean offline();
+        abstract boolean offlineViewer();
         abstract String glowrootVersion();
         abstract boolean loginEnabled();
         abstract ImmutableList<RollupConfig> rollupConfigs();
         abstract ImmutableList<Long> rollupExpirationMillis();
         abstract long gaugeCollectionIntervalMillis();
-        abstract ImmutableMap<String, AgentRollupLayout> agentRollups();
         abstract boolean showNavbarTransaction();
         abstract boolean showNavbarError();
         abstract boolean showNavbarJvm();
@@ -462,6 +410,7 @@ class LayoutService {
         abstract boolean redirectToLogin();
         abstract String defaultTimeZoneId();
         abstract List<String> timeZoneIds();
+        abstract @Nullable AgentRollupLayout embeddedAgentRollup();
 
         @Value.Derived
         public String version() {
@@ -470,15 +419,20 @@ class LayoutService {
     }
 
     @Value.Immutable
-    interface AgentRollupLayout {
-        String display();
-        int depth();
-        boolean agent();
-        Permissions permissions();
-        List<String> transactionTypes();
-        Map<String, List<String>> traceAttributeNames(); // key is transaction type
-        String defaultDisplayedTransactionType();
-        List<Double> defaultDisplayedPercentiles();
+    abstract static class AgentRollupLayout {
+        abstract String id();
+        abstract String display();
+        abstract Permissions permissions();
+        abstract List<String> transactionTypes();
+        abstract Map<String, List<String>> traceAttributeNames(); // key is transaction type
+        abstract String defaultTransactionType();
+        abstract List<Double> defaultPercentiles();
+        abstract List<String> defaultGaugeNames();
+
+        @Value.Derived
+        public String version() {
+            return Versions.getJsonVersion(this);
+        }
     }
 
     @Value.Immutable
@@ -491,7 +445,7 @@ class LayoutService {
         abstract boolean incident();
         abstract ConfigPermissions config();
 
-        private boolean hasSomeAccess() {
+        boolean hasSomeAccess() {
             return transaction().hasSomeAccess() || error().hasSomeAccess() || jvm().hasSomeAccess()
                     || config().view();
         }
@@ -529,7 +483,7 @@ class LayoutService {
         abstract boolean threadDump();
         abstract boolean heapDump();
         abstract boolean heapHistogram();
-        abstract boolean gc();
+        abstract boolean forceGC();
         abstract boolean mbeanTree();
         abstract boolean systemProperties();
         abstract boolean environment();
@@ -537,8 +491,8 @@ class LayoutService {
 
         private boolean hasSomeAccess() {
             // capabilities is not in sidebar, so not included here
-            return gauges() || threadDump() || heapDump() || heapHistogram() || gc() || mbeanTree()
-                    || systemProperties() || environment();
+            return gauges() || threadDump() || heapDump() || heapHistogram() || forceGC()
+                    || mbeanTree() || systemProperties() || environment();
         }
     }
 
@@ -550,8 +504,10 @@ class LayoutService {
 
     @Value.Immutable
     interface EditConfigPermissions {
+        boolean general();
         boolean transaction();
         boolean gauge();
+        boolean jvm();
         boolean syntheticMonitor();
         boolean alert();
         boolean ui();
@@ -559,12 +515,5 @@ class LayoutService {
         boolean instrumentation();
         boolean userRecording();
         boolean advanced();
-    }
-
-    private static class FilteredAgentRollupOrdering extends Ordering<FilteredAgentRollup> {
-        @Override
-        public int compare(FilteredAgentRollup left, FilteredAgentRollup right) {
-            return left.display().compareToIgnoreCase(right.display());
-        }
     }
 }

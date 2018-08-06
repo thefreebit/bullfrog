@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2017 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,10 +19,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
-import javax.annotation.Nullable;
-
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Charsets;
 import com.google.common.base.Strings;
 import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
@@ -49,12 +46,14 @@ import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.QueryStringDecoder;
 import io.netty.handler.stream.ChunkedInput;
 import io.netty.util.concurrent.GlobalEventExecutor;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.glowroot.ui.CommonHandler.CommonRequest;
 import org.glowroot.ui.CommonHandler.CommonResponse;
 
+import static com.google.common.base.Charsets.UTF_8;
 import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 import static io.netty.handler.codec.http.HttpResponseStatus.FOUND;
 import static io.netty.handler.codec.http.HttpResponseStatus.INTERNAL_SERVER_ERROR;
@@ -66,14 +65,14 @@ class HttpServerHandler extends ChannelInboundHandlerAdapter {
 
     private static final Logger logger = LoggerFactory.getLogger(HttpServerHandler.class);
 
+    private static final ThreadLocal</*@Nullable*/ Channel> currentChannel =
+            new ThreadLocal</*@Nullable*/ Channel>();
+
     private final ChannelGroup allChannels;
 
     private final Supplier<String> contextPathSupplier;
 
     private final CommonHandler commonHandler;
-
-    private final ThreadLocal</*@Nullable*/ Channel> currentChannel =
-            new ThreadLocal</*@Nullable*/ Channel>();
 
     HttpServerHandler(Supplier<String> contextPathSupplier, CommonHandler commonHandler) {
         this.contextPathSupplier = contextPathSupplier;
@@ -87,11 +86,11 @@ class HttpServerHandler extends ChannelInboundHandlerAdapter {
         super.channelActive(ctx);
     }
 
-    void closeAllButCurrent() throws InterruptedException {
+    void closeAllButCurrent() throws Exception {
         Channel current = currentChannel.get();
         for (Channel channel : allChannels) {
             if (channel != current) {
-                channel.close().await();
+                channel.close().await().get();
             }
         }
     }
@@ -142,7 +141,7 @@ class HttpServerHandler extends ChannelInboundHandlerAdapter {
         }
     }
 
-    private void sendResponse(ChannelHandlerContext ctx, FullHttpRequest request,
+    private static void sendResponse(ChannelHandlerContext ctx, FullHttpRequest request,
             CommonResponse response, boolean keepAlive) throws IOException {
         Object content = response.getContent();
         if (content instanceof ByteBuf) {
@@ -152,7 +151,8 @@ class HttpServerHandler extends ChannelInboundHandlerAdapter {
         } else if (content instanceof ChunkSource) {
             HttpResponse resp = new DefaultHttpResponse(HTTP_1_1, OK, response.getHeaders());
             resp.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
-            ctx.write(resp);
+            ChannelFuture future = ctx.write(resp);
+            HttpServices.addErrorListener(future);
             ChunkSource chunkSource = (ChunkSource) content;
             ChunkedInput<HttpContent> chunkedInput;
             String zipFileName = response.getZipFileName();
@@ -161,7 +161,7 @@ class HttpServerHandler extends ChannelInboundHandlerAdapter {
             } else {
                 chunkedInput = ChunkedInputs.createZipFileDownload(chunkSource, zipFileName);
             }
-            ChannelFuture future = ctx.write(chunkedInput);
+            future = ctx.write(chunkedInput);
             HttpServices.addErrorListener(future);
             if (!keepAlive) {
                 HttpServices.addCloseListener(future);
@@ -172,15 +172,16 @@ class HttpServerHandler extends ChannelInboundHandlerAdapter {
     }
 
     @SuppressWarnings("argument.type.incompatible")
-    private void sendFullResponse(ChannelHandlerContext ctx, FullHttpRequest request,
+    private static void sendFullResponse(ChannelHandlerContext ctx, FullHttpRequest request,
             FullHttpResponse response, boolean keepAlive) {
         response.headers().add(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes());
         if (keepAlive && !request.protocolVersion().isKeepAliveDefault()) {
             response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
         }
-        ChannelFuture f = ctx.write(response);
+        ChannelFuture future = ctx.write(response);
+        HttpServices.addErrorListener(future);
         if (!keepAlive) {
-            f.addListener(ChannelFutureListener.CLOSE);
+            future.addListener(ChannelFutureListener.CLOSE);
         }
     }
 
@@ -259,7 +260,7 @@ class HttpServerHandler extends ChannelInboundHandlerAdapter {
 
         @Override
         public String getContent() {
-            return request.content().toString(Charsets.UTF_8);
+            return request.content().toString(UTF_8);
         }
     }
 }

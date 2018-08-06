@@ -1,5 +1,5 @@
 <!--
-  Copyright 2017 the original author or authors.
+  Copyright 2017-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -14,25 +14,37 @@
   limitations under the License.
 -->
 <div class="gt-header clearfix"
-     style="padding-bottom: 46px;">
+     style="padding-bottom: 45px;">
   <div class="gt-header-page-name pull-left">
     <div style="margin-top: -16px;">
       <!-- negative margin-left is so background doesn't bleed through transparent 1px border when menu is open -->
       <span class="gt-inline-block gt-header-menu"
-            style="margin: 20px 0 8px -1px;">
+            style="margin-left: -1px; vertical-align: 2px;">
         <select gt-selectpicker
-                gt-model="selectedAgentRollup"
-                gt-title="layout.agentRollups[agentRollupId].display || '&amp;lt;select&amp;gt;'"
+                gt-title="agentRollup.display || '&amp;lt;select&amp;gt;'"
                 data-live-search="true"
                 data-style="btn-flat"
-                id="agentRollupDropdown">
-          <!-- using layout.agentRollupValues instead of layout.agentRollups in case there are any agent rollup ids
-               that start with '$', because angular silently ignores object keys starting with '$' -->
-          <option ng-repeat="agentRollup in layout.agentRollupValues"
-                  data-href="{{agentRollupUrl(agentRollup)}}"
-                  value="{{agentRollup.id}}"
-                  ng-hide="!agentRollup.permissions.syntheticMonitor">
-            {{agentRollup.indentedDisplay}}
+                id="agentRollupDropdown"
+                aria-label="Agent">
+          <option ng-repeat="item in agentRollups track by item.id"
+                  data-href="{{agentRollupUrl(item.id)}}"
+                  data-tokens="{{item.display}}"
+                  value="{{item.id}}"
+                  title="{{agentRollup.display}}"
+                  ng-disabled="item.disabled"
+                  ng-selected="item.id == agentRollup.id">
+            {{item.indentedDisplay}}
+          </option>
+          <option disabled
+                  class="gt-agent-rollup-dropdown-message hide"
+                  style="font-style: italic; font-size: 16px; cursor: inherit;"
+                  ng-if="agentRollups.length === 0">
+            No active agents in this time period
+          </option>
+          <!-- can't use gt-spinner due to selectpicker behavior -->
+          <option disabled
+                  class="gt-agent-rollup-dropdown-spinner hide"
+                  style="position: relative; height: 30px; cursor: inherit;">
           </option>
         </select>
       </span>
@@ -42,9 +54,9 @@
       <span class="gt-inline-block gt-separator">
         |
       </span>
-      <span class="gt-inline-block">
+      <h1 class="gt-inline-block">
         Synthetic monitors
-      </span>
+      </h1>
     </div>
   </div>
   <div class="pull-right">
@@ -63,19 +75,19 @@
       <div ng-show="loaded">
         <div ng-hide="allSyntheticMonitors.length" style="font-size: 16px; margin-top: 20px;">
           No synthetic monitors configured.
-          See <a href="config/synthetic-list{{agentQueryString()}}">Synthetic monitor configuration</a>.
+          See <a href="config/synthetic-monitor-list{{agentQueryString()}}">Synthetic monitor configuration</a>.
         </div>
         <div ng-show="allSyntheticMonitors.length">
           <!-- z-index 800 is needed to keep the buttons in front of the chart spinner overlay -->
           <div class="clearfix" style="position: relative; z-index: 800; margin-top: 25px;">
-            <div class="pull-right" style="margin-top: -20px; margin-bottom: -8px; font-size: 22px;">
+            <div class="pull-right" style="margin-top: -20px; margin-bottom: -8px; font-size: 20px;">
               <!-- using anchor instead of button due to nicer focus ring behavior in chrome -->
               <a role="button"
                  class="gt-chart-button"
                  href="#"
                  ng-click="zoomOut()">
                 <span title="Zoom out"
-                      class="fa fa-search-minus"></span><!-- lack of space here is significant
+                      class="fas fa-search-minus"></span><!-- lack of space here is significant
          --></a>
               <!-- using anchor instead of button due to nicer focus ring behavior in chrome -->
               <a role="button"
@@ -83,7 +95,7 @@
                  href="#"
                  ng-click="refresh()">
                 <span title="Refresh"
-                      class="fa fa-refresh"></span><!-- lack of space here is significant
+                      class="fas fa-sync"></span><!-- lack of space here is significant
          --></a>
               <!-- using anchor instead of button due to nicer focus ring behavior in chrome -->
               <a role="button"
@@ -93,7 +105,7 @@
                  popover-placement="left"
                  popover-trigger="'outsideClick'">
                 <span title="Help"
-                      class="fa fa-question-circle"></span><!-- lack of space here is significant
+                      class="fas fa-question-circle"></span><!-- lack of space here is significant
          --></a>
             </div>
           </div>

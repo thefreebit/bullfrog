@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
     <groupId>org.glowroot</groupId>
     <artifactId>glowroot-parent</artifactId>
-    <version>0.9.25</version>
+    <version>0.10.12</version>
     <relativePath>../../..</relativePath>
   </parent>
 
@@ -17,15 +18,15 @@
 
   <properties>
     <!-- instrumented libraries -->
-    <apache.httpclient.version>4.5.3</apache.httpclient.version>
+    <apache.httpclient.version>4.5.5</apache.httpclient.version>
     <apache.httpasyncclient.version>4.1.3</apache.httpasyncclient.version>
     <apache.httpclient3x.version>3.1</apache.httpclient3x.version>
-    <apache.httpcore.version>4.4.6</apache.httpcore.version>
+    <apache.httpcore.version>4.4.9</apache.httpcore.version>
     <okhttpclient.version>2.7.5</okhttpclient.version>
     <!-- CXF 3.2.0+ requires Java 8+ -->
-    <cxf.version>3.1.13</cxf.version>
+    <cxf.version>3.1.15</cxf.version>
     <!-- Spring 5+ requires Java 8+ -->
-    <spring.version>4.3.11.RELEASE</spring.version>
+    <spring.version>4.3.17.RELEASE</spring.version>
   </properties>
 
   <dependencies>
@@ -33,13 +34,6 @@
       <groupId>org.glowroot</groupId>
       <artifactId>glowroot-agent-plugin-api</artifactId>
       <version>${project.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.google.code.findbugs</groupId>
-      <artifactId>jsr305</artifactId>
-      <!-- cannot set to optional, all annotation classes must be available on IBM Java 1.6 SR8 and
-        earlier due to http://www-01.ibm.com/support/docview.wss?uid=swg1IZ76354 -->
       <scope>provided</scope>
     </dependency>
     <dependency>
@@ -53,9 +47,8 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.glowroot</groupId>
-      <artifactId>glowroot-agent-it-harness</artifactId>
-      <version>${project.version}</version>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -87,6 +80,18 @@
       <artifactId>cxf-rt-bindings-soap</artifactId>
       <version>${cxf.version}</version>
       <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <!-- new jaxb runtime is included below -->
+          <groupId>com.sun.xml.bind</groupId>
+          <artifactId>jaxb-impl</artifactId>
+        </exclusion>
+        <exclusion>
+          <!-- new jaxb runtime is included below -->
+          <groupId>com.sun.xml.bind</groupId>
+          <artifactId>jaxb-core</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.apache.cxf</groupId>
@@ -120,6 +125,14 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <!-- executor plugin is included to test suppression of "wait for future" timer
+        and also to test that it has no other adverse effects -->
+      <groupId>org.glowroot</groupId>
+      <artifactId>glowroot-agent-executor-plugin</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <!-- this is to resolve maven enforcer RequireUpperBoundDeps error -->
       <groupId>org.apache.httpcomponents</groupId>
       <artifactId>httpcore</artifactId>
@@ -130,7 +143,7 @@
       <!-- this is to resolve maven enforcer RequireUpperBoundDeps error -->
       <groupId>org.ow2.asm</groupId>
       <artifactId>asm</artifactId>
-      <version>6.0</version>
+      <version>6.1.1</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -171,41 +184,141 @@
 
   <profiles>
     <profile>
-      <id>shade</id>
+      <id>auto-activated-test-unshaded</id>
       <activation>
         <property>
-          <name>!glowroot.shade.skip</name>
+          <name>!glowroot.test.shaded</name>
         </property>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>org.glowroot</groupId>
+          <artifactId>glowroot-agent-it-harness-unshaded</artifactId>
+          <version>${project.version}</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <id>auto-activated-test-shaded</id>
+      <activation>
+        <property>
+          <name>glowroot.test.shaded</name>
+        </property>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>org.glowroot</groupId>
+          <artifactId>glowroot-agent-it-harness</artifactId>
+          <version>${project.version}</version>
+          <scope>test</scope>
+          <exclusions>
+            <exclusion>
+              <!-- exclusion is needed due to https://issues.apache.org/jira/browse/MSHADE-206 -->
+              <groupId>org.glowroot</groupId>
+              <artifactId>glowroot-agent-it-harness-unshaded</artifactId>
+            </exclusion>
+            <exclusion>
+              <!-- exclusion is needed due to https://issues.apache.org/jira/browse/MSHADE-206 -->
+              <groupId>org.glowroot</groupId>
+              <artifactId>glowroot-agent-core</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <id>not-force-java6</id>
+      <activation>
+        <property>
+          <name>!glowroot.forceJava6</name>
+        </property>
+      </activation>
+      <dependencies>
+        <!-- these dependencies require Java 7+ -->
+        <dependency>
+          <!-- this is needed for running tests on Java 9 -->
+          <groupId>javax.xml.bind</groupId>
+          <artifactId>jaxb-api</artifactId>
+          <version>2.3.0</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <!-- this is needed for running tests on Java 9 -->
+          <groupId>javax.xml.ws</groupId>
+          <artifactId>jaxws-api</artifactId>
+          <version>2.3.0</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <!-- this is needed for running tests on Java 9 -->
+          <groupId>javax.jws</groupId>
+          <artifactId>jsr181-api</artifactId>
+          <version>1.0-MR1</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <!-- this is needed for running tests on Java 9 -->
+          <groupId>javax.annotation</groupId>
+          <artifactId>javax.annotation-api</artifactId>
+          <version>1.3.2</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <!-- this is needed for running tests on Java 9 -->
+          <groupId>org.glassfish.jaxb</groupId>
+          <artifactId>jaxb-runtime</artifactId>
+          <version>2.3.0.1</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <!-- this is needed for running tests on Java 9 -->
+          <groupId>com.sun.activation</groupId>
+          <artifactId>javax.activation</artifactId>
+          <version>1.2.0</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <id>force-java6</id>
+      <activation>
+        <property>
+          <name>glowroot.forceJava6</name>
+        </property>
+      </activation>
+      <build>
+        <pluginManagement>
+          <plugins>
+            <plugin>
+              <artifactId>maven-compiler-plugin</artifactId>
+              <executions>
+                <execution>
+                  <id>default-testCompile</id>
+                  <configuration>
+                    <source>1.6</source>
+                    <target>1.6</target>
+                  </configuration>
+                </execution>
+              </executions>
+            </plugin>
+          </plugins>
+        </pluginManagement>
+      </build>
+    </profile>
+    <profile>
+      <id>java6or7</id>
+      <activation>
+        <jdk>[1.6,1.8)</jdk>
       </activation>
       <build>
         <plugins>
           <plugin>
-            <artifactId>maven-shade-plugin</artifactId>
+            <artifactId>maven-failsafe-plugin</artifactId>
             <configuration>
-              <dependencyReducedPomLocation>
-                ${project.build.directory}/dependency-reduced-pom.xml
-              </dependencyReducedPomLocation>
-              <createSourcesJar>true</createSourcesJar>
-              <shadeSourcesContent>true</shadeSourcesContent>
+              <!-- this is needed when building with Java 6 or 7 -->
+              <argLine>-XX:MaxPermSize=128m</argLine>
             </configuration>
-            <executions>
-              <execution>
-                <id>default</id>
-                <goals>
-                  <goal>shade</goal>
-                </goals>
-                <configuration>
-                  <relocations>
-                    <relocation>
-                      <!-- all annotation classes must be available on IBM Java 1.6 SR8 and earlier
-                        due to http://www-01.ibm.com/support/docview.wss?uid=swg1IZ76354 -->
-                      <pattern>javax.annotation</pattern>
-                      <shadedPattern>org.glowroot.agent.shaded.javax.annotation</shadedPattern>
-                    </relocation>
-                  </relocations>
-                </configuration>
-              </execution>
-            </executions>
           </plugin>
         </plugins>
       </build>
@@ -222,13 +335,6 @@
           <groupId>org.asynchttpclient</groupId>
           <artifactId>async-http-client</artifactId>
           <version>${asynchttpclient.version}</version>
-          <scope>test</scope>
-        </dependency>
-        <dependency>
-          <!-- executor plugin is included to test suppression of "wait for future" timer -->
-          <groupId>org.glowroot</groupId>
-          <artifactId>glowroot-agent-executor-plugin</artifactId>
-          <version>${project.version}</version>
           <scope>test</scope>
         </dependency>
       </dependencies>
@@ -264,13 +370,6 @@
           <groupId>com.ning</groupId>
           <artifactId>async-http-client</artifactId>
           <version>${asynchttpclient.version}</version>
-          <scope>test</scope>
-        </dependency>
-        <dependency>
-          <!-- executor plugin is included to test suppression of "wait for future" timer -->
-          <groupId>org.glowroot</groupId>
-          <artifactId>glowroot-agent-executor-plugin</artifactId>
-          <version>${project.version}</version>
           <scope>test</scope>
         </dependency>
       </dependencies>
@@ -346,44 +445,6 @@
             </configuration>
           </plugin>
         </plugins>
-      </build>
-    </profile>
-    <profile>
-      <id>java6or7</id>
-      <activation>
-        <jdk>[1.6,1.8)</jdk>
-      </activation>
-      <build>
-        <plugins>
-          <plugin>
-            <artifactId>maven-failsafe-plugin</artifactId>
-            <configuration>
-              <!-- this is needed when building with Java 6 or 7 -->
-              <argLine>-XX:MaxPermSize=128m</argLine>
-            </configuration>
-          </plugin>
-        </plugins>
-      </build>
-    </profile>
-    <profile>
-      <id>force-java6</id>
-      <build>
-        <pluginManagement>
-          <plugins>
-            <plugin>
-              <artifactId>maven-compiler-plugin</artifactId>
-              <executions>
-                <execution>
-                  <id>default-testCompile</id>
-                  <configuration>
-                    <source>1.6</source>
-                    <target>1.6</target>
-                  </configuration>
-                </execution>
-              </executions>
-            </plugin>
-          </plugins>
-        </pluginManagement>
       </build>
     </profile>
   </profiles>

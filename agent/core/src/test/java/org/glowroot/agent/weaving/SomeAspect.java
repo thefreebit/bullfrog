@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package org.glowroot.agent.weaving;
 
 import java.lang.reflect.Method;
 
-import javax.annotation.Nullable;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.agent.plugin.api.weaving.BindClassMeta;
 import org.glowroot.agent.plugin.api.weaving.BindMethodMeta;
@@ -44,7 +44,9 @@ import org.glowroot.agent.weaving.targets.Misc;
 
 public class SomeAspect {
 
-    @Pointcut(className = "org.glowroot.agent.weaving.targets.Misc",
+    @Pointcut(className = "org.glowroot.agent.weaving.targets.Misc"
+            + "|org.glowroot.agent.weaving.targets.DefaultMethodMisc"
+            + "|org.glowroot.agent.weaving.targets.DefaultMethodMisc2",
             methodName = "execute1|execute2", methodParameterTypes = {}, timerName = "xyz")
     public static class BasicAdvice {
         @IsEnabled
@@ -1052,7 +1054,7 @@ public class SomeAspect {
 
     @Mixin("org.glowroot.agent.weaving.targets.BasicMisc")
     public static class HasStringClassMixin implements HasString {
-        private String string;
+        private transient String string;
         @MixinInit
         private void initHasString() {
             if (string == null) {
@@ -1073,7 +1075,7 @@ public class SomeAspect {
 
     @Mixin("org.glowroot.agent.weaving.targets.Misc")
     public static class HasStringInterfaceMixin implements HasString {
-        private String string;
+        private transient String string;
         @MixinInit
         private void initHasString() {
             string = "a string";
@@ -1090,7 +1092,7 @@ public class SomeAspect {
 
     @Mixin({"org.glowroot.agent.weaving.targets.Misc", "org.glowroot.agent.weaving.targets.Misc2"})
     public static class HasStringMultipleMixin implements HasString {
-        private String string;
+        private transient String string;
         @MixinInit
         private void initHasString() {
             string = "a string";
@@ -1373,14 +1375,62 @@ public class SomeAspect {
         }
     }
 
-    @Pointcut(className = "org.glowroot.agent.weaving.GenerateMoreNotPerfectBytecode$Test",
-            methodName = "execute", methodParameterTypes = {}, timerName = "xyz")
+    @Pointcut(className = "org.glowroot.agent.weaving.GenerateMoreNotPerfectBytecode$Test"
+            + "|org.glowroot.agent.weaving.GenerateStillMoreNotPerfectBytecode$Test",
+            methodName = "execute", methodParameterTypes = {".."}, timerName = "xyz")
     public static class MoreNotPerfectBytecodeAdvice {
         @IsEnabled
         public static boolean isEnabled() {
             SomeAspectThreadLocals.enabledCount.increment();
             return true;
         }
+        @OnBefore
+        public static void onBefore() {
+            SomeAspectThreadLocals.onBeforeCount.increment();
+        }
+        @OnReturn
+        public static void onReturn() {
+            SomeAspectThreadLocals.onReturnCount.increment();
+        }
+        @OnThrow
+        public static void onThrow() {
+            SomeAspectThreadLocals.onThrowCount.increment();
+        }
+        @OnAfter
+        public static void onAfter() {
+            SomeAspectThreadLocals.onAfterCount.increment();
+        }
+    }
+
+    @Pointcut(className = "HackedConstructorBytecode", methodName = "<init>",
+            methodParameterTypes = {}, timerName = "xyz")
+    public static class HackedConstructorBytecodeAdvice {
+        @IsEnabled
+        public static boolean isEnabled() {
+            SomeAspectThreadLocals.enabledCount.increment();
+            return true;
+        }
+        @OnBefore
+        public static void onBefore() {
+            SomeAspectThreadLocals.onBeforeCount.increment();
+        }
+        @OnReturn
+        public static void onReturn() {
+            SomeAspectThreadLocals.onReturnCount.increment();
+        }
+        @OnThrow
+        public static void onThrow() {
+            SomeAspectThreadLocals.onThrowCount.increment();
+        }
+        @OnAfter
+        public static void onAfter() {
+            SomeAspectThreadLocals.onAfterCount.increment();
+        }
+    }
+
+    @Pointcut(className = "java.lang.Iterable", methodName = "iterator|spliterator",
+            methodParameterTypes = {".."})
+    public static class IterableAdvice {
         @OnBefore
         public static void onBefore() {
             SomeAspectThreadLocals.onBeforeCount.increment();

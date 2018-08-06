@@ -1,5 +1,5 @@
 <!--
-  Copyright 2017 the original author or authors.
+  Copyright 2017-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -13,10 +13,23 @@
   See the License for the specific language governing permissions and
   limitations under the License.
 -->
-<div class="gt-header" style="margin-bottom: 8px;">
-  <div class="gt-header-page-name"
-       style="margin-bottom: 10px;">
-    Incidents
+<div class="gt-header" style="margin-bottom: 5px;">
+  <div class="gt-header-page-name">
+    <h1 style="margin-bottom: 10px;">
+      Incidents
+    </h1>
+    <div style="margin-top: -16px;" ng-show="layout.embeddedAgentRollup.display">
+      {{layout.embeddedAgentRollup.display}}
+      <!-- don't use border to simulate vertical bar since this will jitter on reload (at least in Chrome)
+           while chrome guesses the placement of the border based on default font and then it moves slightly
+           once font is available -->
+      <span class="gt-inline-block gt-separator">
+        |
+      </span>
+      <h1 class="gt-inline-block">
+        Incidents
+      </h1>
+    </div>
   </div>
 </div>
 
@@ -31,19 +44,22 @@
       <table class="table"
              style="table-layout: fixed;">
         <thead>
-        <th style="width: 105px;">Severity</th>
-        <th style="width: 110px;">Duration</th>
-        <th style="width: 160px;" ng-if="layout.central">Agent</th>
-        <th>Condition</th>
+        <th scope="col" style="width: 105px;">Severity</th>
+        <th scope="col" style="width: 110px;">Duration</th>
+        <th scope="col" style="width: 180px;" ng-if="layout.central">Agent</th>
+        <th scope="col">Condition</th>
         </thead>
         <tbody>
         <tr ng-repeat="incident in openIncidents"
             class="gt-red"
-            style="font-weight: bold; font-size: 16px;">
+            style="font-weight: 600; font-size: 16px;">
           <td>{{incident.severity}}</td>
           <td>{{incident.durationMillis | gtDuration}}</td>
-          <td ng-if="layout.central">{{layout.agentRollups[incident.agentRollupId].display}}</td>
-          <td>{{incident.display}}</td>
+          <td ng-if="layout.central">{{incident.agentRollupDisplay}}</td>
+          <td>
+            <a ng-if="incident.href" ng-href="{{incident.href}}">{{incident.display}}</a>
+            <span ng-if="!incident.href">{{incident.display}}</span>
+          </td>
         </tr>
         </tbody>
       </table>
@@ -55,7 +71,9 @@
      ng-if="loaded"
      style="margin-top: 50px;">
   <div class="panel-heading">
-    <h2>Resolved<div style="float: right; padding-top: 10px; font-size: 24px;">(last 30 days)</div></h2>
+    <h2>Resolved
+      <div style="float: right; padding-top: 10px; font-size: 24px;">(last 30 days)</div>
+    </h2>
   </div>
   <div class="panel-body">
     <div ng-include src="'template/gt-http-error-overlay.html'"></div>
@@ -63,11 +81,11 @@
       <table class="table"
              style="table-layout: fixed;">
         <thead>
-        <th style="width: 105px;">Severity</th>
-        <th style="width: 220px;">Resolved</th>
-        <th style="width: 110px;">Duration</th>
-        <th style="width: 160px;" ng-if="layout.central">Agent</th>
-        <th>Condition</th>
+        <th scope="col" style="width: 105px;">Severity</th>
+        <th scope="col" style="width: 220px;">Resolved</th>
+        <th scope="col" style="width: 110px;">Duration</th>
+        <th scope="col" style="width: 180px;" ng-if="layout.central">Agent</th>
+        <th scope="col">Condition</th>
         </thead>
         <tbody>
         <tr ng-repeat="incident in resolvedIncidents"
@@ -75,8 +93,11 @@
           <td>{{incident.severity}}</td>
           <td>{{incident.resolveTime | date:'medium'}}</td>
           <td>{{incident.durationMillis | gtDuration}}</td>
-          <td ng-if="layout.central">{{layout.agentRollups[incident.agentRollupId].display}}</td>
-          <td>{{incident.display}}</td>
+          <td ng-if="layout.central">{{incident.agentRollupDisplay}}</td>
+          <td>
+            <a ng-if="incident.href" ng-href="{{incident.href}}">{{incident.display}}</a>
+            <span ng-if="!incident.href">{{incident.display}}</span>
+          </td>
         </tr>
         </tbody>
       </table>

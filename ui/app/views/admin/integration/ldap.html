@@ -1,5 +1,5 @@
 <!--
-  Copyright 2016-2017 the original author or authors.
+  Copyright 2016-2018 the original author or authors.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -13,15 +13,20 @@
   See the License for the specific language governing permissions and
   limitations under the License.
 -->
+<div class="gt-config-return-outer-div">
+  <a class="gt-config-return-link"
+     href="admin/integration-list">
+    Return to list
+  </a>
+</div>
 <div class="panel panel-default">
   <div class="panel-heading">
     <h2>
-      <a class="pull-right"
-         style="font-size: 16px; padding-top: 16px;"
-         href="admin/integration-list">
-        Return to integration list
-      </a>
-      LDAP
+      Integrations
+      <span class="gt-inline-block gt-separator">
+        |
+      </span>
+      <span style="font-size: 24px;">LDAP</span>
     </h2>
   </div>
   <div class="panel-body">
@@ -60,7 +65,8 @@
         </div>
         <div gt-form-group
              gt-type="checkbox"
-             gt-label="Use SSL"
+             gt-label="SSL"
+             gt-checkbox-label="Use SSL"
              gt-model="config.ssl"
              gt-disabled="!layout.adminEdit"
              gt-col-class1="col-lg-4"
@@ -177,19 +183,23 @@
             Glowroot roles
           </label>
           <div class="col-lg-8">
-            <div class="gt-role-permission-block-last-checkbox">
-              <select multiple
-                      class="form-control"
-                      ng-model="roleMappingBlock.glowrootRoles"
-                      ng-options="glowrootRole as glowrootRole for glowrootRole in allGlowrootRoles"
-                      name="role{{$index}}"
-                      id="role{{$index}}"
-                      style="width: auto; min-width: 200px; display: inline; border-top-right-radius: 0; border-bottom-right-radius: 0;">
-              </select>
-            </div>
-            <button class="gt-ldap-role-mapping-block-remove btn btn-default"
+            <select multiple
+                    class="form-control"
+                    ng-model="roleMappingBlock.glowrootRoles"
+                    ng-options="glowrootRole as glowrootRole for glowrootRole in allGlowrootRoles"
+                    name="role{{$index}}"
+                    id="role{{$index}}"
+                    style="width: auto; min-width: 200px; border-top-right-radius: 0; border-bottom-right-radius: 0;">
+            </select>
+          </div>
+        </div>
+        <div class="form-group gt-form-buttons"
+             ng-if="layout.adminEdit"
+             style="padding-top: 5px;">
+          <div class="col-lg-offset-4 col-lg-8">
+            <button class="btn gt-btn-danger"
                     ng-click="removeRoleMappingBlock(roleMappingBlock)"
-                    ng-if="layout.adminEdit">
+                    style="float: right;">
               Remove this role mapping
             </button>
           </div>
@@ -259,3 +269,5 @@
     </div>
   </div>
 </div>
+<!-- each page with confirmation dialog needs its own confirmation dom so that it is deleted on $destroy -->
+<div ng-include="'template/gt-confirmation.html'"></div>

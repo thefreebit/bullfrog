@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2017 the original author or authors.
+ * Copyright 2012-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -93,7 +93,8 @@ glowroot.controller('ConfigInstrumentationCtrl', [
       methodAnnotation: '',
       nestingGroup: '',
       order: 0,
-      captureKind: 'timer',
+      captureKind: 'transaction',
+      alreadyInTransactionBehavior: 'capture-trace-entry',
       transactionType: '',
       transactionNameTemplate: '',
       transactionUserTemplate: '',
@@ -245,22 +246,23 @@ glowroot.controller('ConfigInstrumentationCtrl', [
     }
 
     $scope.onBlurMethodName = function () {
+      if (!$scope.config.className) {
+        return;
+      }
       if ($scope.config.methodName) {
         onBlurDebouncer = $timeout(function () {
           $scope.onSelectMethodName();
         }, 100);
       } else {
         // the user cleared the text input and tabbed away
-        resetMethodSignatures();
-        delete $scope.selectedMethodSignature;
+        resetMethodSignatures('');
       }
     };
 
     $scope.methodSignatureText = function (methodSignature) {
-      if (methodSignature.name.indexOf('*') !== -1 || methodSignature.name.indexOf('|') !== -1) {
-        return 'any signature';
-      }
-      if (isSignatureAll(methodSignature)) {
+      if (methodSignature === undefined || methodSignature.name === undefined
+          || methodSignature.name.indexOf('*') !== -1 || methodSignature.name.indexOf('|') !== -1
+          || isSignatureAll(methodSignature)) {
         return 'any signature';
       }
       var text = '';
@@ -334,8 +336,6 @@ glowroot.controller('ConfigInstrumentationCtrl', [
       $scope.jsonExport = JSON.stringify(config, null, 2);
 
       gtClipboard('#jsonExportModal .fa-clipboard', '#jsonExportModal', function () {
-        return document.getElementById('jsonExport');
-      }, function () {
         return $scope.jsonExport;
       });
 
@@ -372,23 +372,31 @@ glowroot.controller('ConfigInstrumentationCtrl', [
           });
     }
 
-    $scope.$watch('config.captureKind', function (newValue) {
+    $scope.$watchGroup(['config.captureKind', 'config.alreadyInTransactionBehavior'], function (newValue) {
       if (!$scope.config) {
         return;
       }
-      $scope.captureKindTransaction = newValue === 'transaction';
-      $scope.showTimer = newValue === 'timer' || newValue === 'trace-entry' || newValue === 'transaction';
-      $scope.showTraceEntry = newValue === 'trace-entry' || newValue === 'transaction';
-      $scope.showTraceEntryStackThreshold = newValue === 'trace-entry';
+      var newCaptureKind = newValue[0];
+      var newAlreadyInTransactionBehavior = newValue[1];
+      $scope.captureKindTransaction = newCaptureKind === 'transaction';
+      $scope.showTimer = newCaptureKind === 'timer' || newCaptureKind === 'trace-entry' || newCaptureKind === 'transaction';
+      $scope.showTraceEntry = newCaptureKind === 'trace-entry' || newCaptureKind === 'transaction';
+      $scope.showTraceEntryExtra = newCaptureKind === 'trace-entry'
+          || (newCaptureKind === 'transaction' && newAlreadyInTransactionBehavior === 'capture-trace-entry');
       if (!$scope.showTimer) {
         $scope.config.timerName = '';
       }
       if (!$scope.showTraceEntry) {
         $scope.config.traceEntryMessageTemplate = '';
-        $scope.config.traceEntryCaptureSelfNested = false;
       }
-      if (!$scope.showTraceEntryStackThreshold) {
+      if (!$scope.showTraceEntry) {
+        $scope.config.traceEntryCaptureSelfNested = false;
         $scope.config.traceEntryStackThresholdMillis = '';
+      }
+      if (!$scope.captureKindTransaction) {
+        $scope.config.alreadyInTransactionBehavior = null;
+      } else if (!$scope.config.alreadyInTransactionBehavior) {
+        $scope.config.alreadyInTransactionBehavior = 'capture-trace-entry';
       }
     });
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,13 @@
 package org.glowroot.ui;
 
 import java.util.List;
-import java.util.Map;
-
-import javax.annotation.Nullable;
 
 import com.google.common.base.Function;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
-import org.glowroot.common.config.ConfigDefaults;
+import org.glowroot.common.ConfigDefaults;
 import org.glowroot.common.live.ImmutableOverallQuery;
 import org.glowroot.common.live.ImmutableThroughputAggregate;
 import org.glowroot.common.live.ImmutableTransactionQuery;
@@ -36,6 +35,7 @@ import org.glowroot.common.live.LiveAggregateRepository.ThroughputAggregate;
 import org.glowroot.common.live.LiveAggregateRepository.TransactionQuery;
 import org.glowroot.common.model.MutableProfile;
 import org.glowroot.common.model.MutableQuery;
+import org.glowroot.common.model.MutableServiceCall;
 import org.glowroot.common.model.OverallSummaryCollector;
 import org.glowroot.common.model.OverallSummaryCollector.OverallSummary;
 import org.glowroot.common.model.ProfileCollector;
@@ -45,13 +45,13 @@ import org.glowroot.common.model.ServiceCallCollector;
 import org.glowroot.common.model.TransactionSummaryCollector;
 import org.glowroot.common.model.TransactionSummaryCollector.SummarySortOrder;
 import org.glowroot.common.model.TransactionSummaryCollector.TransactionSummary;
-import org.glowroot.common.repo.AggregateRepository;
-import org.glowroot.common.repo.ConfigRepository;
-import org.glowroot.common.repo.MutableAggregate;
-import org.glowroot.common.repo.Utils;
+import org.glowroot.common.util.CaptureTimes;
 import org.glowroot.common.util.Clock;
+import org.glowroot.common2.repo.AggregateRepository;
+import org.glowroot.common2.repo.ConfigRepository;
+import org.glowroot.common2.repo.ConfigRepository.AgentConfigNotFoundException;
+import org.glowroot.common2.repo.MutableAggregate;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AdvancedConfig;
-import org.glowroot.wire.api.model.AggregateOuterClass.Aggregate;
 
 class TransactionCommonService {
 
@@ -155,7 +155,7 @@ class TransactionCommonService {
         }
         long nonRolledUpFrom = revisedQuery.from();
         if (!aggregates.isEmpty()) {
-            long lastRolledUpTime = aggregates.get(aggregates.size() - 1).captureTime();
+            long lastRolledUpTime = Iterables.getLast(aggregates).captureTime();
             nonRolledUpFrom = Math.max(nonRolledUpFrom, lastRolledUpTime + 1);
         }
         List<OverviewAggregate> orderedNonRolledUpAggregates = Lists.newArrayList();
@@ -213,7 +213,7 @@ class TransactionCommonService {
         }
         long nonRolledUpFrom = revisedQuery.from();
         if (!aggregates.isEmpty()) {
-            long lastRolledUpTime = aggregates.get(aggregates.size() - 1).captureTime();
+            long lastRolledUpTime = Iterables.getLast(aggregates).captureTime();
             nonRolledUpFrom = Math.max(nonRolledUpFrom, lastRolledUpTime + 1);
         }
         List<PercentileAggregate> orderedNonRolledUpAggregates = Lists.newArrayList();
@@ -271,7 +271,7 @@ class TransactionCommonService {
         }
         long nonRolledUpFrom = revisedQuery.from();
         if (!aggregates.isEmpty()) {
-            long lastRolledUpTime = aggregates.get(aggregates.size() - 1).captureTime();
+            long lastRolledUpTime = Iterables.getLast(aggregates).captureTime();
             nonRolledUpFrom = Math.max(nonRolledUpFrom, lastRolledUpTime + 1);
         }
         List<ThroughputAggregate> orderedNonRolledUpAggregates = Lists.newArrayList();
@@ -303,10 +303,12 @@ class TransactionCommonService {
     }
 
     // query.from() is non-inclusive
-    Map<String, List<MutableQuery>> getMergedQueries(String agentRollupId,
-            TransactionQuery query) throws Exception {
-        int maxAggregateQueriesPerType = getMaxAggregateQueriesPerType(agentRollupId);
-        QueryCollector queryCollector = new QueryCollector(maxAggregateQueriesPerType);
+    List<MutableQuery> getMergedQueries(String agentRollupId, TransactionQuery query)
+            throws Exception {
+        int maxQueryAggregatesPerTransactionAggregate =
+                getMaxQueryAggregatesPerTransactionAggregate(agentRollupId);
+        QueryCollector queryCollector =
+                new QueryCollector(maxQueryAggregatesPerTransactionAggregate);
         long revisedFrom = query.from();
         long revisedTo =
                 liveAggregateRepository.mergeInQueries(agentRollupId, query, queryCollector);
@@ -340,13 +342,12 @@ class TransactionCommonService {
     }
 
     // query.from() is non-inclusive
-    List<Aggregate.ServiceCallsByType> getMergedServiceCalls(String agentRollupId,
-            TransactionQuery query)
+    List<MutableServiceCall> getMergedServiceCalls(String agentRollupId, TransactionQuery query)
             throws Exception {
-        int maxAggregateServiceCallsPerType =
-                getMaxAggregateServiceCallsPerType(agentRollupId);
+        int maxServiceCallAggregatesPerTransactionAggregate =
+                getMaxServiceCallAggregatesPerTransactionAggregate(agentRollupId);
         ServiceCallCollector serviceCallCollector =
-                new ServiceCallCollector(maxAggregateServiceCallsPerType, 0);
+                new ServiceCallCollector(maxServiceCallAggregatesPerTransactionAggregate);
         long revisedFrom = query.from();
         long revisedTo = liveAggregateRepository.mergeInServiceCalls(agentRollupId, query,
                 serviceCallCollector);
@@ -365,7 +366,7 @@ class TransactionCommonService {
                 break;
             }
         }
-        return serviceCallCollector.toProto();
+        return serviceCallCollector.getSortedAndTruncatedServiceCalls();
     }
 
     // query.from() is non-inclusive
@@ -559,21 +560,33 @@ class TransactionCommonService {
         return collector.getProfile();
     }
 
-    private int getMaxAggregateQueriesPerType(String agentRollupId) throws Exception {
-        AdvancedConfig advancedConfig = configRepository.getAdvancedConfig(agentRollupId);
-        if (advancedConfig.hasMaxAggregateQueriesPerType()) {
-            return advancedConfig.getMaxAggregateQueriesPerType().getValue();
+    private int getMaxQueryAggregatesPerTransactionAggregate(String agentRollupId)
+            throws Exception {
+        AdvancedConfig advancedConfig;
+        try {
+            advancedConfig = configRepository.getAdvancedConfig(agentRollupId);
+        } catch (AgentConfigNotFoundException e) {
+            return ConfigDefaults.ADVANCED_MAX_QUERY_AGGREGATES;
+        }
+        if (advancedConfig.hasMaxQueryAggregates()) {
+            return advancedConfig.getMaxQueryAggregates().getValue();
         } else {
-            return ConfigDefaults.MAX_AGGREGATE_QUERIES_PER_TYPE;
+            return ConfigDefaults.ADVANCED_MAX_QUERY_AGGREGATES;
         }
     }
 
-    private int getMaxAggregateServiceCallsPerType(String agentRollupId) throws Exception {
-        AdvancedConfig advancedConfig = configRepository.getAdvancedConfig(agentRollupId);
-        if (advancedConfig.hasMaxAggregateServiceCallsPerType()) {
-            return advancedConfig.getMaxAggregateServiceCallsPerType().getValue();
+    private int getMaxServiceCallAggregatesPerTransactionAggregate(String agentRollupId)
+            throws Exception {
+        AdvancedConfig advancedConfig;
+        try {
+            advancedConfig = configRepository.getAdvancedConfig(agentRollupId);
+        } catch (AgentConfigNotFoundException e) {
+            return ConfigDefaults.ADVANCED_MAX_SERVICE_CALL_AGGREGATES;
+        }
+        if (advancedConfig.hasMaxServiceCallAggregates()) {
+            return advancedConfig.getMaxServiceCallAggregates().getValue();
         } else {
-            return ConfigDefaults.MAX_AGGREGATE_SERVICE_CALLS_PER_TYPE;
+            return ConfigDefaults.ADVANCED_MAX_SERVICE_CALL_AGGREGATES;
         }
     }
 
@@ -587,7 +600,7 @@ class TransactionCommonService {
 
         @Override
         public Long apply(Long captureTime) {
-            return Utils.getRollupCaptureTime(captureTime, fixedIntervalMillis);
+            return CaptureTimes.getRollup(captureTime, fixedIntervalMillis);
         }
     }
 }

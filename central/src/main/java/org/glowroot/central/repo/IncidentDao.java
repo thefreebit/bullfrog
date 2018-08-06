@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,25 +16,24 @@
 package org.glowroot.central.repo;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-
-import javax.annotation.Nullable;
 
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.Row;
-import com.google.common.collect.Lists;
 import com.google.common.primitives.Ints;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import org.glowroot.central.util.Session;
-import org.glowroot.common.config.StorageConfig;
-import org.glowroot.common.repo.ImmutableOpenIncident;
-import org.glowroot.common.repo.ImmutableResolvedIncident;
-import org.glowroot.common.repo.IncidentRepository;
+import org.glowroot.common.Constants;
 import org.glowroot.common.util.Clock;
+import org.glowroot.common2.repo.ImmutableOpenIncident;
+import org.glowroot.common2.repo.ImmutableResolvedIncident;
+import org.glowroot.common2.repo.IncidentRepository;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig.AlertCondition;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig.AlertNotification;
 import org.glowroot.wire.api.model.AgentConfigOuterClass.AgentConfig.AlertConfig.AlertSeverity;
@@ -43,9 +42,6 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static java.util.concurrent.TimeUnit.HOURS;
 
 public class IncidentDao implements IncidentRepository {
-
-    private static final String WITH_LCS =
-            "with compaction = { 'class' : 'LeveledCompactionStrategy' }";
 
     private final Session session;
     private final Clock clock;
@@ -59,20 +55,19 @@ public class IncidentDao implements IncidentRepository {
     private final PreparedStatement insertResolvedIncidentPS;
     private final PreparedStatement readRecentResolvedIncidentsPS;
 
-    public IncidentDao(Session session, Clock clock) throws Exception {
+    IncidentDao(Session session, Clock clock) throws Exception {
         this.session = session;
         this.clock = clock;
 
-        session.execute("create table if not exists open_incident (one int,"
+        session.createTableWithLCS("create table if not exists open_incident (one int,"
                 + " agent_rollup_id varchar, condition blob, severity varchar, notification blob,"
-                + " open_time timestamp, primary key (one, agent_rollup_id, condition, severity)) "
-                + WITH_LCS);
+                + " open_time timestamp, primary key (one, agent_rollup_id, condition, severity))");
 
         session.createTableWithTWCS("create table if not exists resolved_incident (one int,"
-                + " resolve_time timestamp, agent_rollup_id varchar, condition blob,"
-                + " severity varchar, notification blob, open_time timestamp, primary key (one,"
+                + " resolve_time timestamp, agent_rollup_id varchar, condition blob, severity"
+                + " varchar, notification blob, open_time timestamp, primary key (one,"
                 + " resolve_time, agent_rollup_id, condition)) with clustering order by"
-                + " (resolve_time desc)", StorageConfig.RESOLVED_INCIDENT_EXPIRATION_HOURS, true);
+                + " (resolve_time desc)", Constants.RESOLVED_INCIDENT_EXPIRATION_HOURS, true);
 
         insertOpenIncidentPS = session.prepare("insert into open_incident (one, agent_rollup_id,"
                 + " condition, severity, notification, open_time) values (1, ?, ?, ?, ?, ?)");
@@ -82,8 +77,8 @@ public class IncidentDao implements IncidentRepository {
                 + " from open_incident where one = 1 and agent_rollup_id = ?");
         readAllOpenIncidentsPS = session.prepare("select agent_rollup_id, condition, severity,"
                 + " notification, open_time from open_incident where one = 1");
-        deleteOpenIncidentPS = session.prepare("delete from open_incident where one = 1"
-                + " and agent_rollup_id = ? and condition = ? and severity = ?");
+        deleteOpenIncidentPS = session.prepare("delete from open_incident where one = 1 and"
+                + " agent_rollup_id = ? and condition = ? and severity = ?");
 
         insertResolvedIncidentPS = session.prepare("insert into resolved_incident (one,"
                 + " resolve_time, agent_rollup_id, condition, severity, notification, open_time)"
@@ -108,8 +103,8 @@ public class IncidentDao implements IncidentRepository {
     }
 
     @Override
-    public @Nullable OpenIncident readOpenIncident(String agentRollupId,
-            AlertCondition condition, AlertSeverity severity) throws Exception {
+    public @Nullable OpenIncident readOpenIncident(String agentRollupId, AlertCondition condition,
+            AlertSeverity severity) throws Exception {
         BoundStatement boundStatement = readOpenIncidentPS.bind();
         int i = 0;
         boundStatement.setString(i++, agentRollupId);
@@ -132,12 +127,11 @@ public class IncidentDao implements IncidentRepository {
     }
 
     @Override
-    public List<OpenIncident> readOpenIncidents(String agentRollupId)
-            throws Exception {
+    public List<OpenIncident> readOpenIncidents(String agentRollupId) throws Exception {
         BoundStatement boundStatement = readOpenIncidentsPS.bind();
         boundStatement.setString(0, agentRollupId);
         ResultSet results = session.execute(boundStatement);
-        List<OpenIncident> openIncidents = Lists.newArrayList();
+        List<OpenIncident> openIncidents = new ArrayList<>();
         for (Row row : results) {
             int i = 0;
             AlertCondition condition = AlertCondition.parseFrom(checkNotNull(row.getBytes(i++)));
@@ -161,7 +155,7 @@ public class IncidentDao implements IncidentRepository {
     public List<OpenIncident> readAllOpenIncidents() throws Exception {
         BoundStatement boundStatement = readAllOpenIncidentsPS.bind();
         ResultSet results = session.execute(boundStatement);
-        List<OpenIncident> openIncidents = Lists.newArrayList();
+        List<OpenIncident> openIncidents = new ArrayList<>();
         for (Row row : results) {
             int i = 0;
             String agentRollupId = checkNotNull(row.getString(i++));
@@ -184,9 +178,9 @@ public class IncidentDao implements IncidentRepository {
 
     @Override
     public void resolveIncident(OpenIncident openIncident, long resolveTime) throws Exception {
-        int adjustedTTL = AggregateDao.getAdjustedTTL(
+        int adjustedTTL = Common.getAdjustedTTL(
                 Ints.saturatedCast(
-                        HOURS.toSeconds(StorageConfig.RESOLVED_INCIDENT_EXPIRATION_HOURS)),
+                        HOURS.toSeconds(Constants.RESOLVED_INCIDENT_EXPIRATION_HOURS)),
                 resolveTime, clock);
 
         BoundStatement boundStatement = insertResolvedIncidentPS.bind();
@@ -217,7 +211,7 @@ public class IncidentDao implements IncidentRepository {
         BoundStatement boundStatement = readRecentResolvedIncidentsPS.bind();
         boundStatement.setTimestamp(0, new Date(from));
         ResultSet results = session.execute(boundStatement);
-        List<ResolvedIncident> resolvedIncidents = Lists.newArrayList();
+        List<ResolvedIncident> resolvedIncidents = new ArrayList<>();
         for (Row row : results) {
             int i = 0;
             long resolveTime = checkNotNull(row.getTimestamp(i++)).getTime();

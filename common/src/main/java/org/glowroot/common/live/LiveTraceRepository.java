@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,46 +18,48 @@ package org.glowroot.common.live;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
-
-import javax.annotation.Nullable;
 
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.immutables.value.Value;
 
+import org.glowroot.wire.api.model.AggregateOuterClass.Aggregate;
 import org.glowroot.wire.api.model.ProfileOuterClass.Profile;
 import org.glowroot.wire.api.model.TraceOuterClass.Trace;
 
 public interface LiveTraceRepository {
 
     // null return value means trace not found
-    @Nullable
-    Trace.Header getHeader(String agentRollupId, String agentId, String traceId) throws Exception;
+    Trace. /*@Nullable*/ Header getHeader(String agentId, String traceId) throws Exception;
 
     // null return value means trace not found or was found but had no entries
     //
     // SharedQueryTexts are returned with either fullTrace or
     // truncatedText/truncatedEndText/fullTraceSha1
     @Nullable
-    Entries getEntries(String agentRollupId, String agentId, String traceId) throws Exception;
+    Entries getEntries(String agentId, String traceId) throws Exception;
+
+    // null return value means trace not found or was found but had no queries
+    //
+    // SharedQueryTexts are returned with either fullTrace or truncatedText/fullTraceSha1
+    @Nullable
+    Queries getQueries(String agentId, String traceId) throws Exception;
 
     // null return value means trace not found or was found but had no main thread profile
     @Nullable
-    Profile getMainThreadProfile(String agentRollupId, String agentId, String traceId)
-            throws Exception;
+    Profile getMainThreadProfile(String agentId, String traceId) throws Exception;
 
     // null return value means trace not found or was found but had no aux thread profile
     @Nullable
-    Profile getAuxThreadProfile(String agentRollupId, String agentId, String traceId)
-            throws Exception;
+    Profile getAuxThreadProfile(String agentId, String traceId) throws Exception;
 
     // null return value means trace not found
     //
     // since this is only used by export, SharedQueryTexts are always returned with fullTrace
     // (never with truncatedText/truncatedEndText/fullTraceSha1)
     @Nullable
-    Trace getFullTrace(String agentRollupId, String agentId, String traceId) throws Exception;
+    Trace getFullTrace(String agentId, String traceId) throws Exception;
 
     int getMatchingTraceCount(String transactionType, @Nullable String transactionName);
 
@@ -75,8 +77,23 @@ public interface LiveTraceRepository {
     }
 
     @Value.Immutable
+    public interface Queries {
+        List<Aggregate.Query> queries();
+        List<Trace.SharedQueryText> sharedQueryTexts();
+    }
+
+    @Value.Immutable
+    public interface EntriesAndQueries {
+        List<Trace.Entry> entries();
+        List<Aggregate.Query> queries();
+        List<Trace.SharedQueryText> sharedQueryTexts();
+    }
+
+    @Value.Immutable
     abstract class TracePointFilter {
 
+        public abstract long durationNanosLow();
+        public abstract @Nullable Long durationNanosHigh();
         public abstract @Nullable StringComparator headlineComparator();
         public abstract @Nullable String headline();
         public abstract @Nullable StringComparator errorMessageComparator();
@@ -86,6 +103,14 @@ public interface LiveTraceRepository {
         public abstract @Nullable String attributeName();
         public abstract @Nullable StringComparator attributeValueComparator();
         public abstract @Nullable String attributeValue();
+
+        public boolean matchesDuration(long durationNanos) {
+            if (durationNanos < durationNanosLow()) {
+                return false;
+            }
+            Long durationNanosHigh = durationNanosHigh();
+            return durationNanosHigh == null || durationNanos <= durationNanosHigh;
+        }
 
         public boolean matchesHeadline(String headline) {
             return matchesUsingStringComparator(headline, headline(), headlineComparator());
@@ -106,7 +131,7 @@ public interface LiveTraceRepository {
                 // no custom attribute filter
                 return true;
             }
-            for (Entry<String, ? extends Collection<String>> entry : attributes.entrySet()) {
+            for (Map.Entry<String, ? extends Collection<String>> entry : attributes.entrySet()) {
                 String attributeName = entry.getKey();
                 if (!matchesUsingStringComparator(attributeName, attributeName(),
                         StringComparator.EQUALS)) {
@@ -124,8 +149,9 @@ public interface LiveTraceRepository {
             return false;
         }
 
-        private boolean matchesUsingStringComparator(String text, @Nullable String filterText,
-                @Nullable StringComparator filterComparator) throws AssertionError {
+        private static boolean matchesUsingStringComparator(String text,
+                @Nullable String filterText, @Nullable StringComparator filterComparator)
+                throws AssertionError {
             if (filterComparator == null || Strings.isNullOrEmpty(filterText)) {
                 return true;
             }
@@ -154,30 +180,32 @@ public interface LiveTraceRepository {
     class LiveTraceRepositoryNop implements LiveTraceRepository {
 
         @Override
-        public @Nullable Trace.Header getHeader(String agentRollupId, String agentId,
-                String traceId) {
+        public Trace. /*@Nullable*/ Header getHeader(String agentId, String traceId) {
             return null;
         }
 
         @Override
-        public @Nullable Entries getEntries(String agentRollupId, String agentId, String traceId) {
+        public @Nullable Entries getEntries(String agentId, String traceId) {
             return null;
         }
 
         @Override
-        public @Nullable Profile getMainThreadProfile(String agentRollupId, String agentId,
-                String traceId) {
+        public @Nullable Queries getQueries(String agentId, String traceId) {
             return null;
         }
 
         @Override
-        public @Nullable Profile getAuxThreadProfile(String agentRollupId, String agentId,
-                String traceId) {
+        public @Nullable Profile getMainThreadProfile(String agentId, String traceId) {
             return null;
         }
 
         @Override
-        public @Nullable Trace getFullTrace(String agentRollupId, String agentId, String traceId) {
+        public @Nullable Profile getAuxThreadProfile(String agentId, String traceId) {
+            return null;
+        }
+
+        @Override
+        public @Nullable Trace getFullTrace(String agentId, String traceId) {
             return null;
         }
 
